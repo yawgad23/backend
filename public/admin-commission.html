@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HY3N Admin — Commission Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0a;
+      color: #fafafa;
+      min-height: 100vh;
+    }
+
+    /* ── Login Gate ── */
+    #loginGate {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .login-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 40px;
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+    .login-logo { font-size: 40px; margin-bottom: 12px; }
+    .login-title { font-size: 22px; font-weight: 700; color: #d4af37; margin-bottom: 6px; }
+    .login-sub { font-size: 13px; color: #9ca3af; margin-bottom: 28px; }
+    .login-input {
+      width: 100%;
+      padding: 12px 14px;
+      background: #0a0a0a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      color: #fafafa;
+      font-size: 15px;
+      margin-bottom: 14px;
+      text-align: center;
+      letter-spacing: 4px;
+    }
+    .login-input:focus { outline: none; border-color: #d4af37; }
+    .login-btn {
+      width: 100%;
+      padding: 13px;
+      background: #d4af37;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .login-btn:hover { background: #e5c158; }
+    .login-error { color: #ef4444; font-size: 13px; margin-top: 10px; }
+
+    /* ── Dashboard ── */
+    #dashboard { display: none; }
+    .topbar {
+      background: #111;
+      border-bottom: 1px solid #2a2a2a;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .topbar-title { font-size: 18px; font-weight: 700; color: #d4af37; }
+    .topbar-user { font-size: 13px; color: #9ca3af; }
+    .topbar-logout {
+      background: none;
+      border: 1px solid #3a3a3a;
+      color: #9ca3af;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .topbar-logout:hover { border-color: #ef4444; color: #ef4444; }
+
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .stat-label { font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .stat-value { font-size: 28px; font-weight: 700; color: #d4af37; }
+    .stat-amount { font-size: 13px; color: #9ca3af; margin-top: 4px; }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    input[type="date"], input[type="text"], select {
+      padding: 10px 12px;
+      border: 1px solid #2a2a2a;
+      background: #1a1a1a;
+      color: #fafafa;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    input:focus, select:focus { outline: none; border-color: #d4af37; }
+    .refresh-btn {
+      padding: 10px 18px;
+      background: #d4af37;
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .refresh-btn:hover { background: #e5c158; }
+    .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #9ca3af;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .error-banner {
+      background: #ef444420;
+      border: 1px solid #ef444440;
+      color: #ef4444;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    .loading-row {
+      text-align: center;
+      padding: 40px;
+      color: #9ca3af;
+      font-size: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th {
+      background: #1a1a1a;
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #9ca3af;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #1e1e1e;
+      font-size: 13px;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #161616; }
+
+    .driver-name { font-weight: 600; color: #d4af37; }
+    .momo-num { font-family: monospace; font-size: 12px; color: #9ca3af; }
+    .ref-text { font-family: monospace; font-size: 11px; color: #6b7280; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .status-badge {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .status-paid, .status-confirmed { background: #22c55e20; color: #22c55e; }
+    .status-processing { background: #f59e0b20; color: #f59e0b; }
+    .status-failed { background: #ef444420; color: #ef4444; }
+
+    .actions { display: flex; gap: 6px; }
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 11px;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      font-weight: 600;
+    }
+    .btn-sm.success { background: #22c55e20; color: #22c55e; border-color: #22c55e40; }
+    .btn-sm.danger  { background: #ef444420; color: #ef4444; border-color: #ef444440; }
+    .btn-sm:hover { opacity: 0.8; }
+    .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.75);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-box {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 28px;
+      max-width: 420px;
+      width: 90%;
+    }
+    .modal-title { font-size: 17px; font-weight: 700; color: #d4af37; margin-bottom: 14px; }
+    .modal-info { font-size: 14px; color: #9ca3af; margin-bottom: 18px; line-height: 1.5; }
+    .modal-radio { margin-bottom: 10px; display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; }
+    .modal-reason {
+      width: 100%;
+      padding: 10px 12px;
+      background: #0a0a0a;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      color: #fafafa;
+      font-size: 13px;
+      margin-top: 14px;
+      resize: vertical;
+    }
+    .modal-reason:focus { outline: none; border-color: #d4af37; }
+    .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
+    .modal-actions button { flex: 1; padding: 11px; border-radius: 7px; font-weight: 600; font-size: 14px; cursor: pointer; border: none; }
+    .btn-cancel { background: #2a2a2a; color: #fafafa; }
+    .btn-confirm { background: #d4af37; color: #000; }
+    .btn-confirm:hover { background: #e5c158; }
+    .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+
+<!-- ── Login Gate ── -->
+<div id="loginGate">
+  <div class="login-card">
+    <div class="login-logo">🚗</div>
+    <div class="login-title">HY3N Admin</div>
+    <div class="login-sub">Commission Dashboard — Admin Access Only</div>
+    <input type="password" id="adminPin" class="login-input" placeholder="Enter admin PIN" maxlength="8" onkeydown="if(event.key==='Enter')checkPin()">
+    <button class="login-btn" onclick="checkPin()">Access Dashboard</button>
+    <div id="loginError" class="login-error"></div>
+  </div>
+</div>
+
+<!-- ── Dashboard ── -->
+<div id="dashboard">
+  <div class="topbar">
+    <div class="topbar-title">💰 Commission Dashboard</div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <span class="topbar-user" id="adminUserLabel">Admin</span>
+      <button class="topbar-logout" onclick="logout()">Log Out</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="errorBanner" class="error-banner" style="display:none;"></div>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-label">Total Today</div>
+        <div class="stat-value" id="stat-total">—</div>
+        <div class="stat-amount" id="stat-revenue">GH₵ 0.00 collected</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">✅ Paid</div>
+        <div class="stat-value" id="stat-paid" style="color:#22c55e;">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">⏳ Processing</div>
+        <div class="stat-value" id="stat-processing" style="color:#f59e0b;">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">❌ Failed</div>
+        <div class="stat-value" id="stat-failed" style="color:#ef4444;">—</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <input type="date" id="dateFilter">
+      <input type="text" id="driverFilter" placeholder="Search driver name...">
+      <select id="statusFilter">
+        <option value="">All Statuses</option>
+        <option value="paid">Paid</option>
+        <option value="confirmed">Confirmed</option>
+        <option value="processing">Processing</option>
+        <option value="failed">Failed</option>
+      </select>
+      <button class="refresh-btn" id="refreshBtn" onclick="loadCommissions()">↻ Refresh</button>
+    </div>
+
+    <div class="section-title">Driver Commissions</div>
+
+    <div id="loadingRow" class="loading-row">Loading commissions...</div>
+    <table id="commissionsTable" style="display:none;">
+      <thead>
+        <tr>
+          <th>Driver</th>
+          <th>Date</th>
+          <th>Amount</th>
+          <th>MoMo Number</th>
+          <th>Network</th>
+          <th>Status</th>
+          <th>Hubtel Ref</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="commissionsBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Override Modal ── -->
+<div id="overrideModal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-title">Override Commission Status</div>
+    <div class="modal-info" id="overrideInfo">Update commission status?</div>
+    <label class="modal-radio"><input type="radio" name="newStatus" value="paid"> Mark as <strong style="color:#22c55e;">Paid</strong></label>
+    <label class="modal-radio"><input type="radio" name="newStatus" value="processing"> Mark as <strong style="color:#f59e0b;">Processing</strong></label>
+    <label class="modal-radio"><input type="radio" name="newStatus" value="failed"> Mark as <strong style="color:#ef4444;">Failed</strong></label>
+    <textarea id="overrideReason" class="modal-reason" rows="2" placeholder="Reason for override (optional)"></textarea>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-confirm" id="confirmBtn" onclick="confirmOverride()">Update Status</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── Config ──────────────────────────────────────────────────────────────────
+  const SESSION_KEY = 'hy3n_admin_session';
+
+  // Derive API base URL: admin page is served from 3000-xxx, so same origin
+  function getApiBase() {
+    return window.location.origin;
+  }
+
+  // ── tRPC helper (JSON-RPC over HTTP GET/POST) ────────────────────────────────
+  async function trpcQuery(procedure, input = {}) {
+    const url = `${getApiBase()}/api/trpc/${procedure}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`;
+    const res = await fetch(url, { credentials: 'include' });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || 'tRPC error');
+    return data.result?.data?.json ?? data.result?.data;
+  }
+
+  async function trpcMutation(procedure, input = {}) {
+    const url = `${getApiBase()}/api/trpc/${procedure}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ json: input }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || 'tRPC error');
+    return data.result?.data?.json ?? data.result?.data;
+  }
+
+  // ── Auth ─────────────────────────────────────────────────────────────────────
+  async function checkPin() {
+    const pin = document.getElementById('adminPin').value.trim();
+    if (!pin) return;
+    const btn = document.querySelector('.login-btn');
+    btn.disabled = true;
+    btn.textContent = 'Verifying...';
+    try {
+      const res = await fetch(`${getApiBase()}/api/admin/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        sessionStorage.setItem(SESSION_KEY, '1');
+        showDashboard();
+      } else {
+        document.getElementById('loginError').textContent = 'Incorrect PIN. Please try again.';
+        document.getElementById('adminPin').value = '';
+      }
+    } catch (err) {
+      document.getElementById('loginError').textContent = 'Connection error. Please try again.';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Access Dashboard';
+    }
+  }
+
+  function logout() {
+    sessionStorage.removeItem(SESSION_KEY);
+    document.getElementById('dashboard').style.display = 'none';
+    document.getElementById('loginGate').style.display = 'flex';
+    document.getElementById('adminPin').value = '';
+    document.getElementById('loginError').textContent = '';
+  }
+
+  function showDashboard() {
+    document.getElementById('loginGate').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    // Set today's date as default filter
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').value = today;
+    loadCommissions();
+  }
+
+  // ── Data ─────────────────────────────────────────────────────────────────────
+  let allCommissions = [];
+  let currentOverride = null;
+
+  async function loadCommissions() {
+    const dateFilter = document.getElementById('dateFilter').value;
+    const statusFilter = document.getElementById('statusFilter').value;
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+
+    document.getElementById('loadingRow').style.display = 'block';
+    document.getElementById('commissionsTable').style.display = 'none';
+    document.getElementById('errorBanner').style.display = 'none';
+
+    try {
+      const input = {};
+      if (dateFilter) { input.dateFrom = dateFilter; input.dateTo = dateFilter; }
+      if (statusFilter) input.status = statusFilter;
+
+      const result = await trpcQuery('commission.listForAdmin', input);
+      allCommissions = result?.commissions || [];
+
+      // Apply client-side driver name filter
+      const driverFilter = document.getElementById('driverFilter').value.toLowerCase();
+      let filtered = allCommissions;
+      if (driverFilter) {
+        filtered = filtered.filter(c => (c.driver_name || '').toLowerCase().includes(driverFilter));
+      }
+
+      renderTable(filtered);
+      updateStats(allCommissions);
+    } catch (err) {
+      document.getElementById('errorBanner').textContent = '⚠ ' + (err.message || 'Failed to load commissions. Check admin access.');
+      document.getElementById('errorBanner').style.display = 'block';
+      document.getElementById('loadingRow').style.display = 'none';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '↻ Refresh';
+    }
+  }
+
+  function renderTable(commissions) {
+    document.getElementById('loadingRow').style.display = 'none';
+    const tbody = document.getElementById('commissionsBody');
+    tbody.innerHTML = '';
+
+    if (!commissions.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#6b7280;padding:40px;">No commissions found for the selected filters.</td></tr>';
+      document.getElementById('commissionsTable').style.display = 'table';
+      return;
+    }
+
+    const networkLabels = { 'mtn-gh': 'MTN', 'vodafone-gh': 'Vodafone', 'tigo-gh': 'AirtelTigo' };
+
+    commissions.forEach(c => {
+      const tr = document.createElement('tr');
+      const statusClass = c.status === 'confirmed' ? 'status-paid' : `status-${c.status}`;
+      const ref = c.hubtel_reference || c.clientReference || '—';
+      const shortRef = ref.length > 22 ? ref.substring(0, 22) + '…' : ref;
+      const network = networkLabels[c.momo_network] || c.momo_network || '—';
+      const isAdminOverride = c.admin_override ? ' title="Admin override"' : '';
+
+      tr.innerHTML = `
+        <td><span class="driver-name">${escHtml(c.driver_name || 'Unknown')}</span></td>
+        <td>${escHtml(c.date || '—')}</td>
+        <td>GH₵${c.amount || 0}</td>
+        <td class="momo-num">${escHtml(c.momo_number || '—')}</td>
+        <td>${escHtml(network)}</td>
+        <td><span class="status-badge ${statusClass}"${isAdminOverride}>${c.status || '—'}</span></td>
+        <td class="ref-text" title="${escHtml(ref)}">${escHtml(shortRef)}</td>
+        <td>
+          <div class="actions">
+            <button class="btn-sm success" onclick="openModal('${c.id}','${escHtml(c.driver_name || 'Driver')}','paid')">✓ Paid</button>
+            <button class="btn-sm danger" onclick="openModal('${c.id}','${escHtml(c.driver_name || 'Driver')}','failed')">✗ Failed</button>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('commissionsTable').style.display = 'table';
+  }
+
+  function updateStats(commissions) {
+    const paid = commissions.filter(c => c.status === 'paid' || c.status === 'confirmed').length;
+    const processing = commissions.filter(c => c.status === 'processing').length;
+    const failed = commissions.filter(c => c.status === 'failed').length;
+    const revenue = commissions
+      .filter(c => c.status === 'paid' || c.status === 'confirmed')
+      .reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+
+    document.getElementById('stat-total').textContent = commissions.length;
+    document.getElementById('stat-paid').textContent = paid;
+    document.getElementById('stat-processing').textContent = processing;
+    document.getElementById('stat-failed').textContent = failed;
+    document.getElementById('stat-revenue').textContent = `GH₵ ${revenue.toFixed(2)} collected`;
+  }
+
+  // ── Override Modal ────────────────────────────────────────────────────────────
+  function openModal(id, driverName, defaultStatus) {
+    currentOverride = { id, driverName };
+    document.getElementById('overrideInfo').textContent =
+      `You are about to manually update ${driverName}'s commission status.`;
+    const radio = document.querySelector(`input[name="newStatus"][value="${defaultStatus}"]`);
+    if (radio) radio.checked = true;
+    document.getElementById('overrideReason').value = '';
+    document.getElementById('overrideModal').classList.add('active');
+  }
+
+  function closeModal() {
+    document.getElementById('overrideModal').classList.remove('active');
+    currentOverride = null;
+  }
+
+  async function confirmOverride() {
+    if (!currentOverride) return;
+    const newStatus = document.querySelector('input[name="newStatus"]:checked')?.value;
+    if (!newStatus) { alert('Please select a status.'); return; }
+    const reason = document.getElementById('overrideReason').value.trim();
+    const btn = document.getElementById('confirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+
+    try {
+      await trpcMutation('commission.overrideStatus', {
+        commissionId: currentOverride.id,
+        newStatus,
+        reason: reason || `Admin override via dashboard`,
+      });
+      closeModal();
+      await loadCommissions();
+    } catch (err) {
+      alert('Override failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Update Status';
+    }
+  }
+
+  // ── Utility ──────────────────────────────────────────────────────────────────
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+  if (sessionStorage.getItem(SESSION_KEY) === '1') {
+    showDashboard();
+  }
+
+  // Allow Enter key on driver filter to refresh
+  document.addEventListener('DOMContentLoaded', () => {
+    const df = document.getElementById('driverFilter');
+    if (df) df.addEventListener('keydown', e => { if (e.key === 'Enter') loadCommissions(); });
+  });
+</script>
+</body>
+</html>
