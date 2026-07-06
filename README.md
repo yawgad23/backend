@@ -59,7 +59,7 @@ Add this repo as a dependency so `AppRouter` stays type-safe across repos:
 
 ```json
 "dependencies": {
-  "hy3n-backend": "github:yawgad23/hy3n-backend"
+  "hy3n-backend": "github:yawgad23/backend"
 }
 ```
 
