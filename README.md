@@ -65,6 +65,7 @@ firebase login                  # opens a browser — sign in with the Google
 firebase functions:secrets:set HUBTEL_API_ID
 firebase functions:secrets:set HUBTEL_API_KEY
 firebase functions:secrets:set HUBTEL_POS_NUMBER
+firebase functions:secrets:set EMAIL_USER
 firebase functions:secrets:set EMAIL_PASS
 firebase functions:secrets:set ADMIN_DASHBOARD_PIN
 firebase functions:secrets:set PUBLIC_PAYMENTS_API_USERNAME
@@ -77,12 +78,12 @@ firebase deploy --only functions
 `firebase.json`'s `predeploy` hook runs `npm run build:functions` (esbuild
 bundle of `src/functions.ts`) automatically before every deploy.
 
-**Non-secret config** (`EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_FROM`)
-isn't in the `secrets` list, so it needs to be read some other way in
-production — either hardcode the non-secret defaults already in
-`src/email.ts`, or add them as additional entries to the `secrets` list too
-(simplest, if you don't mind them living in Secret Manager alongside the
-real secrets).
+`EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_FROM` aren't in the `secrets` list — they
+already default to sensible values in `src/email.ts` (Gmail SMTP,
+`smtp.gmail.com:465`) with no secret content, so nothing to configure for
+those in production. `EMAIL_USER` *is* in the `secrets` list even though a
+Gmail address isn't really sensitive — it's just simplest to set it
+alongside `EMAIL_PASS` since they're used together.
 
 The deployed URL looks like
 `https://europe-west1-hy3n26.cloudfunctions.net/api` — note the function is
