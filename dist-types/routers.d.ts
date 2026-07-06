@@ -113,7 +113,7 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
         overrideStatus: import("@trpc/server").TRPCMutationProcedure<{
             input: {
                 commissionId: string;
-                newStatus: "failed" | "paid" | "processing";
+                newStatus: "paid" | "failed" | "processing";
                 reason?: string | undefined;
             };
             output: {

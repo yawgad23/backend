@@ -32,26 +32,73 @@ dashboard UI performs before it loads, not by per-request auth.
 
 ```bash
 npm install
-cp .env.example .env   # fill in real values
+cp .env.example .env   # fill in real values (do NOT set PORT — see note below)
 npm run dev            # tsx watch, listens on PORT (default 3000)
 npm run check          # tsc --noEmit
 ```
 
-## Build & deploy (Cloud Run)
+Don't set `PORT` in `.env` — it's a reserved variable name on both Cloud Run
+and Firebase Functions; `src/index.ts` already defaults to 3000 when it's
+unset, and setting it yourself breaks Firebase's env-file loading (see the
+`build:functions` section below).
+
+The actual routes/middleware live in `src/app.ts` (`createApp()`), shared by:
+- `src/index.ts` — plain Node server for local dev (`npm run dev`/`start`).
+- `src/functions.ts` — Firebase Cloud Functions (2nd gen) entry point, used
+  for the real deployment (see below).
+
+## Deploy (Firebase Cloud Functions)
+
+This deploys into the **same Firebase project the mobile apps already use**
+(`hy3n26`, set as the default project in `.firebaserc`) — that's what gives
+the function access to the same Firestore database without any extra
+credential setup.
 
 ```bash
-npm run build           # esbuild -> dist/index.js
-gcloud run deploy hy3n-api --source . --region <region> --allow-unauthenticated
+npm install -g firebase-tools   # if not already installed
+firebase login                  # opens a browser — sign in with the Google
+                                 # account that owns the hy3n26 Firebase project
+
+# One-time: set the real secrets (never committed, stored in Secret Manager
+# under the hood, injected as env vars at runtime — see the `secrets` list
+# in src/functions.ts)
+firebase functions:secrets:set HUBTEL_API_ID
+firebase functions:secrets:set HUBTEL_API_KEY
+firebase functions:secrets:set HUBTEL_POS_NUMBER
+firebase functions:secrets:set EMAIL_PASS
+firebase functions:secrets:set ADMIN_DASHBOARD_PIN
+firebase functions:secrets:set PUBLIC_PAYMENTS_API_USERNAME
+firebase functions:secrets:set PUBLIC_PAYMENTS_API_PASSWORD
+firebase functions:secrets:set GOOGLE_MAPS_API_KEY
+
+firebase deploy --only functions
 ```
 
-Skip `FIREBASE_SERVICE_ACCOUNT` on Cloud Run — grant the service's runtime
-service account the "Cloud Datastore User" IAM role instead and Application
-Default Credentials will pick it up automatically (`src/firebaseAdmin.ts`
-already falls back to ADC). Put the real secrets
-(`HUBTEL_API_ID`/`HUBTEL_API_KEY`/`HUBTEL_POS_NUMBER`, `EMAIL_PASS`,
-`ADMIN_DASHBOARD_PIN`, `PUBLIC_PAYMENTS_API_USERNAME`/`PASSWORD`,
-`GOOGLE_MAPS_API_KEY`) in Secret Manager and mount them with
-`--set-secrets`.
+`firebase.json`'s `predeploy` hook runs `npm run build:functions` (esbuild
+bundle of `src/functions.ts`) automatically before every deploy.
+
+**Non-secret config** (`EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_FROM`)
+isn't in the `secrets` list, so it needs to be read some other way in
+production — either hardcode the non-secret defaults already in
+`src/email.ts`, or add them as additional entries to the `secrets` list too
+(simplest, if you don't mind them living in Secret Manager alongside the
+real secrets).
+
+The deployed URL looks like
+`https://europe-west1-hy3n26.cloudfunctions.net/api` — note the function is
+named `api`, and this app's own routes all start with `/api/...` too, so the
+full paths end up double-nested, e.g.
+`.../api/api/trpc/commission.getStatus`. That's expected — set
+`EXPO_PUBLIC_API_BASE_URL` to `https://europe-west1-hy3n26.cloudfunctions.net/api`
+(the function's base URL) and the mobile apps' existing `/api/trpc/...`
+paths resolve correctly against it.
+
+Test locally against the Firebase emulator before deploying for real:
+
+```bash
+firebase emulators:start --only functions
+curl http://127.0.0.1:5001/hy3n26/europe-west1/api/api/health
+```
 
 ## Consuming from a mobile app
 
