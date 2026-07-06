@@ -90,16 +90,23 @@ those in production. `EMAIL_USER` *is* in the `secrets` list even though a
 Gmail address isn't really sensitive — it's just simplest to set it
 alongside `EMAIL_PASS` since they're used together.
 
-The deployed URL looks like
-`https://europe-west1-hy3n26.cloudfunctions.net/api` — note the function is
-named `api`, and this app's own routes all start with `/api/...` too, so the
-full paths end up double-nested, e.g.
-`.../api/api/trpc/commission.getStatus`. That's expected — set
-`EXPO_PUBLIC_API_BASE_URL` to `https://europe-west1-hy3n26.cloudfunctions.net/api`
-(the function's base URL) and the mobile apps' existing `/api/trpc/...`
-paths resolve correctly against it.
+The real deployed URL is a dedicated `.a.run.app` hostname, e.g.
+`https://api-yvurtipaxq-ew.a.run.app` (2nd gen functions run on Cloud Run
+under the hood, and this project got assigned a direct Cloud Run URL rather
+than the `<region>-<project>.cloudfunctions.net/<name>` path-nested style
+some setups use). No double-nesting — this app's own `/api/health`,
+`/api/trpc/...` etc. routes resolve directly against it. Set
+`EXPO_PUBLIC_API_BASE_URL` to that exact URL, no `/api` suffix, no trailing
+slash. **The hostname's random-looking segment (`yvurtipaxq`) is stable
+across redeploys** — it won't change unless the function is deleted and
+recreated.
 
-Test locally against the Firebase emulator before deploying for real:
+**By default 2nd gen HTTP functions require IAM invoker permission** —
+`src/functions.ts` sets `invoker: "public"` so unauthenticated requests
+(which is how the mobile apps call it) aren't rejected with a 403.
+
+Test locally against the Firebase emulator before deploying for real (the
+emulator does use the path-nested style, unlike the real deployed URL):
 
 ```bash
 firebase emulators:start --only functions
