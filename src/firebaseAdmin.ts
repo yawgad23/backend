@@ -70,11 +70,30 @@ export const ADMIN_COLLECTIONS = {
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────
 
+/**
+ * Firestore/ADC failures (bad credentials, missing IAM role, network blip) must
+ * surface as a normal rejected promise here — tRPC turns that into a clean
+ * per-request error. Without this, some of these failures happen deep inside
+ * google-gax's internal retry/token logic on a detached tick that Node treats
+ * as an unhandled rejection (fatal by default); see the process-level guard
+ * in index.ts for that second layer.
+ */
+async function withFirestoreErrorHandling<T>(op: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(`[Firestore] ${op} failed:`, err);
+    throw new Error("Firestore is unavailable. Check backend credentials/configuration.");
+  }
+}
+
 export const adminFirestore = {
   async get(collectionName: string, id: string) {
-    const snap = await getDb().collection(collectionName).doc(id).get();
-    if (!snap.exists) return null;
-    return { id: snap.id, ...snap.data() } as Record<string, any>;
+    return withFirestoreErrorHandling(`get(${collectionName}/${id})`, async () => {
+      const snap = await getDb().collection(collectionName).doc(id).get();
+      if (!snap.exists) return null;
+      return { id: snap.id, ...snap.data() } as Record<string, any>;
+    });
   },
 
   async list(
@@ -84,50 +103,60 @@ export const adminFirestore = {
     orderDir: 'asc' | 'desc' = 'desc',
     limitNum?: number,
   ): Promise<Array<Record<string, any>>> {
-    let q = getDb().collection(collectionName) as FirebaseFirestore.Query;
-    for (const [field, value] of Object.entries(filters)) {
-      if (value !== undefined && value !== null) {
-        q = q.where(field, '==', value);
+    return withFirestoreErrorHandling(`list(${collectionName})`, async () => {
+      let q = getDb().collection(collectionName) as FirebaseFirestore.Query;
+      for (const [field, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== null) {
+          q = q.where(field, '==', value);
+        }
       }
-    }
-    try {
-      q = q.orderBy(orderByField, orderDir);
-    } catch {
-      // orderBy may fail if composite index not ready — skip silently
-    }
-    if (limitNum) q = q.limit(limitNum);
-    const snap = await q.get();
-    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      try {
+        q = q.orderBy(orderByField, orderDir);
+      } catch {
+        // orderBy may fail if composite index not ready — skip silently
+      }
+      if (limitNum) q = q.limit(limitNum);
+      const snap = await q.get();
+      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
   },
 
   async create(collectionName: string, data: Record<string, any>) {
-    const payload = {
-      ...data,
-      created_date: data.created_date || new Date().toISOString(),
-      updated_date: new Date().toISOString(),
-    };
-    const ref = await getDb().collection(collectionName).add(payload);
-    return { id: ref.id, ...payload };
+    return withFirestoreErrorHandling(`create(${collectionName})`, async () => {
+      const payload = {
+        ...data,
+        created_date: data.created_date || new Date().toISOString(),
+        updated_date: new Date().toISOString(),
+      };
+      const ref = await getDb().collection(collectionName).add(payload);
+      return { id: ref.id, ...payload };
+    });
   },
 
   async update(collectionName: string, id: string, data: Record<string, any>) {
-    const payload = { ...data, updated_date: new Date().toISOString() };
-    await getDb().collection(collectionName).doc(id).update(payload);
-    return { id, ...payload };
+    return withFirestoreErrorHandling(`update(${collectionName}/${id})`, async () => {
+      const payload = { ...data, updated_date: new Date().toISOString() };
+      await getDb().collection(collectionName).doc(id).update(payload);
+      return { id, ...payload };
+    });
   },
 
   async delete(collectionName: string, id: string) {
-    await getDb().collection(collectionName).doc(id).delete();
-    return { id };
+    return withFirestoreErrorHandling(`delete(${collectionName}/${id})`, async () => {
+      await getDb().collection(collectionName).doc(id).delete();
+      return { id };
+    });
   },
 
   async set(collectionName: string, id: string, data: Record<string, any>) {
-    const payload = {
-      ...data,
-      created_date: data.created_date || new Date().toISOString(),
-      updated_date: new Date().toISOString(),
-    };
-    await getDb().collection(collectionName).doc(id).set(payload, { merge: true });
-    return { id, ...payload };
+    return withFirestoreErrorHandling(`set(${collectionName}/${id})`, async () => {
+      const payload = {
+        ...data,
+        created_date: data.created_date || new Date().toISOString(),
+        updated_date: new Date().toISOString(),
+      };
+      await getDb().collection(collectionName).doc(id).set(payload, { merge: true });
+      return { id, ...payload };
+    });
   },
 };
