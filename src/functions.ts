@@ -16,6 +16,10 @@ const app = createApp();
 export const api = onRequest(
   {
     region: "europe-west1",
+    // Mobile apps call this over plain HTTP with no Google-issued auth
+    // token — 2nd gen functions require IAM invoker permission by default,
+    // so without this every request gets a 403 before it ever reaches app.
+    invoker: "public",
     secrets: [
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
