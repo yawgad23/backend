@@ -15,8 +15,7 @@
     "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist-types",
     "start": "node dist/index.js",
     "check": "tsc --noEmit",
-    "test": "vitest run",
-    "prepare": "npm run build:types"
+    "test": "vitest run"
   },
   "dependencies": {
     "@trpc/server": "11.7.2",

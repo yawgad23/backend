@@ -32,15 +32,20 @@ dashboard UI performs before it loads, not by per-request auth.
 
 ```bash
 npm install
-cp .env.example .env   # fill in real values (do NOT set PORT — see note below)
-npm run dev            # tsx watch, listens on PORT (default 3000)
-npm run check          # tsc --noEmit
+cp .env.example .env.local   # NOT .env — see why below
+npm run dev                  # tsx watch, listens on PORT (default 3000)
+npm run check                # tsc --noEmit
 ```
 
-Don't set `PORT` in `.env` — it's a reserved variable name on both Cloud Run
-and Firebase Functions; `src/index.ts` already defaults to 3000 when it's
-unset, and setting it yourself breaks Firebase's env-file loading (see the
-`build:functions` section below).
+Use `.env.local`, not `.env`, for anything local-only. Firebase Functions
+deploys the contents of a bare `.env` as real production environment
+variables — it is not a local-dev-only file the way it would be in most
+other Node setups. `.env.local` is the Firebase-specific convention that's
+loaded for local dev/emulator runs but never uploaded on `firebase deploy`.
+
+Also don't set `PORT` in either file — it's a reserved variable name on both
+Cloud Run and Firebase Functions; `src/index.ts` already defaults to 3000
+when it's unset, and setting it yourself breaks Firebase's env-file loading.
 
 The actual routes/middleware live in `src/app.ts` (`createApp()`), shared by:
 - `src/index.ts` — plain Node server for local dev (`npm run dev`/`start`).
