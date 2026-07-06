@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "types": "src/routers.ts",
+  "types": "dist-types/routers.d.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "esbuild src/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
+    "build:types": "tsc --declaration --emitDeclarationOnly --outDir dist-types",
     "start": "node dist/index.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build:types"
   },
   "dependencies": {
     "@trpc/server": "11.7.2",
@@ -27,6 +30,7 @@
     "@types/nodemailer": "^8.0.1",
     "esbuild": "^0.25.12",
     "tsx": "^4.21.0",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vitest": "^2.1.9"
   }
 }
