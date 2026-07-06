@@ -67,12 +67,16 @@ Add this repo as a dependency so `AppRouter` stays type-safe across repos:
 import type { AppRouter } from "hy3n-backend";
 ```
 
-npm runs this package's `prepare` script (`build:types`) automatically on
-install, which compiles `src/*.ts` to `dist-types/*.d.ts` — consumers only
-ever type-check against those declarations, never the raw source. This
-matters: importing raw `.ts` source across repos would force the consumer's
-`tsc` to fully resolve this package's *entire* implementation (including
-internal-only dependencies like `nodemailer`) just to compute `AppRouter`,
-which would leak backend-only devDependencies into the mobile apps.
+`dist-types/*.d.ts` is committed to this repo (unlike `dist/`, which is
+build output) — consumers type-check against those declarations, never the
+raw `src/*.ts`. This matters: importing raw source across repos would force
+the consumer's `tsc` to fully resolve this package's *entire* implementation
+(including internal-only dependencies like `nodemailer`) just to compute
+`AppRouter`, leaking backend-only devDependencies into the mobile apps.
+
+**If you change anything under `src/`, run `npm run build:types` and commit
+the resulting `dist-types/` changes in the same commit** — there's no
+install-time hook regenerating it for consumers (git-dependency `prepare`
+scripts turned out not to run reliably here).
 
 Set `EXPO_PUBLIC_API_BASE_URL` to the deployed Cloud Run URL.
