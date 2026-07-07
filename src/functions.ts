@@ -20,6 +20,14 @@ export const api = onRequest(
     // token — 2nd gen functions require IAM invoker permission by default,
     // so without this every request gets a 403 before it ever reaches app.
     invoker: "public",
+    // Routes ALL outbound traffic (not just requests to private/internal IP
+    // ranges) through the hy3n-connector VPC connector -> hy3n-nat Cloud NAT
+    // gateway, which always egresses through the static IP 35.189.197.39.
+    // Needed so Hubtel can whitelist a single fixed IP for their Receive
+    // Money API — without this, outbound calls use Google's shared,
+    // unpredictable IP pool instead.
+    vpcConnector: "hy3n-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
     secrets: [
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
