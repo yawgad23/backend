@@ -62,6 +62,16 @@ function maskKey(key: string): string {
   return `${key.slice(0, 4)}${'*'.repeat(key.length - 8)}${key.slice(-4)}`;
 }
 
+function phoneNumberFormat(msisdn: string): string {
+  //check if msisdn starts with 233 if so remove it and leave the msisdn as it is
+  if (msisdn.startsWith('233')) {
+    msisdn = msisdn.substring(3);
+    return msisdn;
+  }
+  return msisdn;
+}
+
+
 /**
  * Initiate a direct MoMo charge via Hubtel.
  * The customer receives a USSD prompt on their phone to approve the payment.
@@ -75,7 +85,7 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
   const url = `https://rmp.hubtel.com/merchantaccount/merchants/${HUBTEL_POS_NUMBER}/receive/mobilemoney`;
 
   const body = {
-    CustomerMsisdn: req.customerMsisdn,
+    CustomerMsisdn: phoneNumberFormat(req.customerMsisdn),
     Amount: req.amount,
     CustomerName: req.customerName,
     Description: req.description,
