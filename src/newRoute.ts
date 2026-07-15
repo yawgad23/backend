@@ -24,6 +24,7 @@ router.all("*", async (req: Request, res: Response) => {
       }
     }
 
+    
     const options: RequestInit = {
       method,
       headers,
