@@ -235,6 +235,7 @@ export const appRouter = router({
       }),
   }),
 
+  
   // ─── Rider / Driver Wallet ────────────────────────────────────────────────────
   wallet: router({
     /**
