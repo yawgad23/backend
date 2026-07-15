@@ -6,6 +6,7 @@ import { registerHubtelWebhook } from "./hubtelWebhook";
 import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
+import newRouteRouter from "./newRoute";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +43,7 @@ export function createApp() {
 
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
+  app.use("/newroute", newRouteRouter);
 
   // Google Places Autocomplete proxy — keeps API key server-side
   app.get("/api/places/autocomplete", async (req, res) => {

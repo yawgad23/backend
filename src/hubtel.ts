@@ -173,6 +173,23 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
   }
 }
 
+export async function testHubtelConnection(){
+ const url = 'https://webhook.site/f602e639-51c9-4c81-992a-c412fa10bd38';
+const body = {
+
+};
+  const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': getBasicAuth(),
+        'Cache-Control': 'no-cache',
+      },
+      body: JSON.stringify(body),
+    });
+  return response;
+} 
+
 /**
  * Determine commission amount based on driver service type.
  */
