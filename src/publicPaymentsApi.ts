@@ -98,8 +98,9 @@ function formatMsisdn(input: string): string {
   return digits;
 }
 
-function generateReference(): string {
-  return `hy3n-pub-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+function generateReference(useMaxRandom: boolean = true): string {
+  const maxRandomNumber = useMaxRandom ? 999 : 9;
+  return `HY3N${Date.now()}${Math.floor(Math.random() * maxRandomNumber)}`;
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
