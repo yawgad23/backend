@@ -123,7 +123,7 @@ export function registerPublicPaymentsApi(app: Express) {
     }
 
     const input = parsed.data;
-    const clientReference = input.clientReference || generateReference();
+    const clientReference = generateReference();
 
     try {
       const existing = await adminFirestore.list(ADMIN_COLLECTIONS.PAYMENTS, { reference: clientReference });
