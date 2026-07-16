@@ -8,6 +8,7 @@ import {
   getCommissionReference,
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
+import { generateReference } from "./publicPaymentsApi";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ export const appRouter = router({
         const date = input.date || new Date().toISOString().split('T')[0];
         const amount = getCommissionAmount(input.serviceType);
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
-        const clientReference = getCommissionReference(input.driverId, date);
+        const clientReference = generateReference();
 
         // Format phone number: ensure it starts with country code
         let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
@@ -142,7 +143,7 @@ export const appRouter = router({
       }))
       .query(async ({ input }) => {
         const date = input.date || new Date().toISOString().split('T')[0];
-        const clientReference = getCommissionReference(input.driverId, date);
+        const clientReference = generateReference();
         return {
           driverId: input.driverId,
           date,
