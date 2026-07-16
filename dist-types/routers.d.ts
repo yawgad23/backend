@@ -33,6 +33,20 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             meta: object;
         }>;
     }>>;
+    transactionStatus: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        check: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                clientReference: string;
+            };
+            output: Response;
+            meta: object;
+        }>;
+    }>>;
     commission: import("@trpc/server").TRPCBuiltRouter<{
         ctx: import("./context").TrpcContext;
         meta: object;

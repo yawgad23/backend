@@ -6,6 +6,7 @@ import {
   getCommissionAmount,
   getMomoChannel,
   getCommissionReference,
+  transactionStatusCheck,
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
 import { generateReference } from "./publicPaymentsApi";
@@ -68,6 +69,17 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const sent = await sendTripReceiptEmail(input);
         return { success: sent };
+      }),
+  }),
+
+  transactionStatus: router({
+    check: publicProcedure
+      .input(z.object({
+        clientReference: z.string(),
+      }))
+      .query(async ({ input }) => {
+        const response = await transactionStatusCheck(input.clientReference);
+        return response;
       }),
   }),
 

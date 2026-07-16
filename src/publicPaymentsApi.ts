@@ -98,7 +98,7 @@ function formatMsisdn(input: string): string {
   return digits;
 }
 
-function generateReference(useMaxRandom: boolean = true): string {
+export function generateReference(useMaxRandom: boolean = true): string {
   const maxRandomNumber = useMaxRandom ? 999 : 9;
   return `HY3N${Date.now()}${Math.floor(Math.random() * maxRandomNumber)}`;
 }
@@ -112,7 +112,7 @@ export function registerPublicPaymentsApi(app: Express) {
    * a USSD prompt, so the response status is "pending" until Hubtel's webhook
    * (or a subsequent GET .../status poll) confirms the final outcome.
    */
-  app.post("/api/public/v1/payments/charges", requirePublicApiAuth, async (req: Request, res: Response) => {
+  app.post("/api/public/v1/payments/charge", requirePublicApiAuth, async (req: Request, res: Response) => {
     const parsed = chargeSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({

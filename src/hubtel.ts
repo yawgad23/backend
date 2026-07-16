@@ -84,6 +84,8 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
 
   const url = `https://rmp.hubtel.com/merchantaccount/merchants/${HUBTEL_POS_NUMBER}/receive/mobilemoney`;
 
+  const callbackUrl = process.env.PRIMARY_CALLBACK_URL || "https://api-yvurtipaxq-ew.a.run.app/api/hubtel/callback";
+
   const body = {
     CustomerMsisdn: phoneNumberFormat(req.customerMsisdn),
     Amount: req.amount,
@@ -91,6 +93,7 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
     Description: req.description,
     ClientReference: req.clientReference,
     Channel: req.channel,
+    PrimaryCallbackUrl: callbackUrl,
   };
 
   // Logged in full so this block can be copy-pasted into a Hubtel support ticket.
@@ -171,6 +174,19 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
       message: err?.message || 'Network error contacting Hubtel',
     };
   }
+}
+
+export async function transactionStatusCheck(clientReference: string){
+  const url = `https://api-txnstatus.hubtel.com/transactions/${HUBTEL_POS_NUMBER}/status?clientReference=${clientReference}`;
+  const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': getBasicAuth(),
+        'Cache-Control': 'no-cache',
+      },
+    });
+  return response;
 }
 
 export async function testHubtelConnection(){

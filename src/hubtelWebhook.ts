@@ -43,6 +43,9 @@ function parseCommissionReference(ref: string): { driverId: string; date: string
 export async function handleHubtelWebhook(req: Request, res: Response) {
   const payload = req.body as HubtelWebhookPayload;
 
+  console.log('[Hubtel Webhook] Headers:', req.headers);
+  console.log('[Hubtel Webhook] Body:', req.body);
+
   console.log('[Hubtel Webhook] Received:', {
     transactionId: payload.TransactionId,
     status: payload.Status,
