@@ -35,7 +35,7 @@ router.all("*", async (req: Request, res: Response) => {
       options.body = JSON.stringify(req.body);
     }
 
-    console.log(`[NewRoute] Forwarding ${method} request to ${TARGET_URL}`);
+    console.log(`[NewRoute] Forwarding something ${method} request to ${TARGET_URL}`);
     const response = await fetch(url.toString(), options);
     const responseText = await response.text();
 
