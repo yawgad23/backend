@@ -125,7 +125,7 @@ export function registerPublicPaymentsApi(app: Express) {
 
     const input = parsed.data;
     const clientReference = generateReference();
-
+    console.log(`[PublicPaymentsApi] charge request: ${clientReference} amount=${input.amount} msisdn=${input.customerMsisdn} name=${input.customerName} network=${input.network || "mtn"}`);
     try {
       const existing = await adminFirestore.list(ADMIN_COLLECTIONS.PAYMENTS, { reference: clientReference });
       if (existing.length > 0) {
