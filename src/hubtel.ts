@@ -187,7 +187,7 @@ export async function transactionStatusCheck(clientReference: string){
         'Cache-Control': 'no-cache',
       },
     });
-    console.log(`[Hubtel] Transaction status response for clientReference=${clientReference} status=${response.status}`);
+    console.log(`[Hubtel] Transaction status response for clientReference=${clientReference} status=${response}`);
   return response;
 }
 
