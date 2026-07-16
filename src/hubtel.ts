@@ -178,6 +178,7 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
 
 export async function transactionStatusCheck(clientReference: string){
   const url = `https://api-txnstatus.hubtel.com/transactions/${HUBTEL_POS_NUMBER}/status?clientReference=${clientReference}`;
+  console.log(`[Hubtel] Checking transaction status for clientReference=${clientReference} url=${url}`);
   const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -186,6 +187,7 @@ export async function transactionStatusCheck(clientReference: string){
         'Cache-Control': 'no-cache',
       },
     });
+    console.log(`[Hubtel] Transaction status response for clientReference=${clientReference} status=${response.status}`);
   return response;
 }
 
