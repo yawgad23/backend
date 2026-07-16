@@ -43,7 +43,19 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             input: {
                 clientReference: string;
             };
-            output: Response;
+            output: {
+                success: boolean;
+                status: string;
+                message: any;
+                raw: any;
+                clientReference?: undefined;
+            } | {
+                success: boolean;
+                clientReference: string;
+                status: string;
+                message: any;
+                raw: any;
+            };
             meta: object;
         }>;
     }>>;

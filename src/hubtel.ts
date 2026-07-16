@@ -187,8 +187,40 @@ export async function transactionStatusCheck(clientReference: string){
         'Cache-Control': 'no-cache',
       },
     });
-    console.log(`[Hubtel] Transaction status response for clientReference=${clientReference} status=${response}`);
-  return response;
+
+    const rawText = await response.text();
+    let data: any = {};
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = {};
+    }
+if (!response.ok) {
+      // Common error codes from Hubtel:
+      // 401 = bad credentials or missing "Receive Money" scope
+      // 403 = IP not whitelisted
+      // 400 = invalid phone number or channel
+      const errorMsg = data?.Message || data?.message || `HTTP ${response.status}`;
+      console.error('[Hubtel] Status check failed:', response.status, errorMsg, data);
+      return {
+        success: false,
+        status: 'failed',
+        message: errorMsg,
+        raw: data,
+      };
+    }
+
+    const isSuccess = data?.ResponseCode === '0000' || data?.Status === 'Success' || response.status === 200;
+
+
+    console.log(JSON.stringify('[Hubtel] Transaction status response for ' + clientReference + ': ' + JSON.stringify(response), null, 2));
+   return {
+      success: isSuccess,
+      clientReference,
+      status: isSuccess ? 'pending' : 'failed',
+      message: data?.Message || data?.message || (isSuccess ? 'Charge initiated' : 'Charge failed'),
+      raw: data,
+    };;
 }
 
 export async function testHubtelConnection(){

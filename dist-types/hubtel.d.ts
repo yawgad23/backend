@@ -49,7 +49,19 @@ export interface HubtelChargeResponse {
  * The customer receives a USSD prompt on their phone to approve the payment.
  */
 export declare function chargeDriverCommission(req: HubtelChargeRequest): Promise<HubtelChargeResponse>;
-export declare function transactionStatusCheck(clientReference: string): Promise<Response>;
+export declare function transactionStatusCheck(clientReference: string): Promise<{
+    success: boolean;
+    status: string;
+    message: any;
+    raw: any;
+    clientReference?: undefined;
+} | {
+    success: boolean;
+    clientReference: string;
+    status: string;
+    message: any;
+    raw: any;
+}>;
 export declare function testHubtelConnection(): Promise<Response>;
 /**
  * Determine commission amount based on driver service type.
