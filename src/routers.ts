@@ -9,7 +9,7 @@ import {
   transactionStatusCheck,
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
-import { generateReference } from "./publicPaymentsApi";
+import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
@@ -79,6 +79,82 @@ export const appRouter = router({
       }))
       .query(async ({ input }) => {
         const response = await transactionStatusCheck(input.clientReference);
+
+        // Sync to Firestore if the status check succeeded
+        if (response && response.responseCode === "0000" && response.data) {
+          const hubtelTx = response.data;
+          const ref = hubtelTx.clientReference || input.clientReference;
+          const status = hubtelTx.status;
+          const transactionId = hubtelTx.transactionId;
+
+          let dbStatus: 'paid' | 'failed' | 'processing' = 'processing';
+          if (status === 'Paid') {
+            dbStatus = 'paid';
+          } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
+            dbStatus = 'failed';
+          }
+
+          // 1. Try Daily Commission
+          const commissionRecords = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
+            hubtel_reference: ref,
+          }, "");
+
+          if (commissionRecords && commissionRecords.length > 0) {
+            await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, commissionRecords[0].id, {
+              status: dbStatus,
+              hubtel_transaction_id: transactionId,
+              hubtel_status: status,
+            });
+          } else {
+            // 2. Try Wallet Transaction
+            const walletRecords = await adminFirestore.list(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {
+              reference: ref,
+            }, "");
+
+            if (walletRecords && walletRecords.length > 0) {
+              const txRecord = walletRecords[0];
+              const userId = txRecord.user_id;
+
+              if (dbStatus === 'paid' && txRecord.status !== 'completed') {
+                // Credit the wallet
+                const walletSnap = await adminFirestore.get(ADMIN_COLLECTIONS.WALLET, userId);
+                const currentBalance = (walletSnap?.balance as number) ?? 0;
+                const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
+                const amount = txRecord.amount as number;
+
+                await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, userId, {
+                  user_id: userId,
+                  user_type: txRecord.user_type || 'rider',
+                  balance: currentBalance + amount,
+                  total_topped_up: totalToppedUp + amount,
+                });
+
+                await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+                  status: 'completed',
+                  hubtel_transaction_id: transactionId,
+                  hubtel_status: status,
+                  completed_at: new Date().toISOString(),
+                });
+              } else if (dbStatus === 'failed' && txRecord.status === 'processing') {
+                await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+                  status: 'failed',
+                  hubtel_status: status,
+                });
+              }
+            } else {
+              // 3. Try Generic Payment
+              const paymentRecords = await adminFirestore.list(ADMIN_COLLECTIONS.PAYMENTS, { reference: ref }, "");
+              if (paymentRecords && paymentRecords.length > 0) {
+                await adminFirestore.update(ADMIN_COLLECTIONS.PAYMENTS, paymentRecords[0].id, {
+                  status: dbStatus,
+                  hubtel_transaction_id: transactionId,
+                  hubtel_status: status,
+                });
+              }
+            }
+          }
+        }
+
         return response;
       }),
   }),
@@ -129,6 +205,23 @@ export const appRouter = router({
           channel,
         });
 
+        let commissionRecord = null;
+        if (result.success) {
+          commissionRecord = await adminFirestore.create(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
+            driver_id: input.driverId,
+            driver_name: input.driverName,
+            date,
+            amount,
+            momo_number: input.momoNumber,
+            momo_network: input.momoNetwork || 'mtn-gh',
+            hubtel_transaction_id: result.transactionId,
+            hubtel_reference: clientReference,
+            status: 'processing',
+            charge_method: 'hubtel_auto',
+            submitted_at: new Date().toISOString(),
+          });
+        }
+
         return {
           success: result.success,
           status: result.status || 'failed',
@@ -137,6 +230,7 @@ export const appRouter = router({
           amount,
           date,
           clientReference,
+          commissionRecord,
         };
       }),
 
@@ -155,11 +249,96 @@ export const appRouter = router({
       }))
       .query(async ({ input }) => {
         const date = input.date || new Date().toISOString().split('T')[0];
-        const clientReference = generateReference();
+        const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
+          driver_id: input.driverId,
+          date,
+        }, "");
+        const clientReference = records[0]?.hubtel_reference || "";
         return {
           driverId: input.driverId,
           date,
           clientReference,
+        };
+      }),
+
+    sendOtp: publicProcedure
+      .input(z.object({
+        phoneNumber: z.string(),
+        driverId: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+        await adminFirestore.set('otp_verifications', input.driverId, {
+          phone_number: input.phoneNumber,
+          driver_id: input.driverId,
+          code: otpCode,
+          expires_at: expiresAt,
+          verified: false,
+        });
+
+        console.log(`[OTP Sent] Code is ${otpCode} for phone number ${input.phoneNumber} (driver ${input.driverId})`);
+
+        // let phone = input.phoneNumber.replace(/\s+/g, '').replace(/^0/, '233');
+        // if (!phone.startsWith('233')) phone = '233' + phone;
+       const phone = formatMsisdn(input.phoneNumber)
+        // Send OTP via Hubtel SMS API
+        try {
+          const smsUrl = 'https://sms.hubtel.com/v1/messages/send';
+          const smsBody = {
+            From: "Hy3n",
+            To: phone,
+            Content: `Your HY3N verification code is: ${otpCode}. Valid for 10 minutes.`
+          };
+
+          const smsResponse = await fetch(smsUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Basic cW92Y7c2dyb3Juam=',
+            },
+            body: JSON.stringify(smsBody),
+          });
+
+          const smsResultText = await smsResponse.text();
+          console.log(`[Hubtel SMS] Sent to ${phone}. Status: ${smsResponse.status}, Response: ${smsResultText}`);
+        } catch (err: any) {
+          console.error('[Hubtel SMS] Failed to send OTP via SMS:', err?.message);
+        }
+
+        return {
+          success: true,
+          message: 'Verification code sent.',
+          otpCode: otpCode,
+        };
+      }),
+
+    verifyOtp: publicProcedure
+      .input(z.object({
+        driverId: z.string(),
+        code: z.string(),
+      }))
+      .mutation(async ({ input }) => {
+        const doc = await adminFirestore.get('otp_verifications', input.driverId);
+        if (!doc) {
+          return { success: false, message: 'No verification code found for this driver.' };
+        }
+
+        const now = new Date().toISOString();
+        if (doc.expires_at < now) {
+          return { success: false, message: 'Verification code has expired.' };
+        }
+
+        if (doc.code !== input.code.trim()) {
+          return { success: false, message: 'Invalid verification code.' };
+        }
+
+        await adminFirestore.delete('otp_verifications', input.driverId);
+
+        return {
+          success: true,
+          message: 'OTP verified successfully.',
         };
       }),
 
@@ -266,7 +445,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
-        const reference = `hy3n-topup-${input.riderId}-${Date.now()}`;
+        const reference = generateReference();
         let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
         if (!phone.startsWith('233')) phone = '233' + phone;
 

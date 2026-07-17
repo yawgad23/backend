@@ -49,19 +49,7 @@ export interface HubtelChargeResponse {
  * The customer receives a USSD prompt on their phone to approve the payment.
  */
 export declare function chargeDriverCommission(req: HubtelChargeRequest): Promise<HubtelChargeResponse>;
-export declare function transactionStatusCheck(clientReference: string): Promise<{
-    success: boolean;
-    status: string;
-    message: any;
-    raw: any;
-    clientReference?: undefined;
-} | {
-    success: boolean;
-    clientReference: string;
-    status: string;
-    message: any;
-    raw: any;
-}>;
+export declare function transactionStatusCheck(clientReference: string): Promise<any>;
 export declare function testHubtelConnection(): Promise<Response>;
 /**
  * Determine commission amount based on driver service type.
@@ -73,6 +61,6 @@ export declare function getCommissionAmount(serviceType: string): number;
 export declare function getMomoChannel(network: string): 'mtn-gh' | 'vodafone-gh' | 'tigo-gh';
 /**
  * Generate a unique idempotency reference for a driver's daily commission.
- * Format: hy3n-commission-{driverId}-{YYYY-MM-DD}
+ * Format: c-{driverId}-{YYYY-MM-DD}
  */
 export declare function getCommissionReference(driverId: string, date?: string): string;

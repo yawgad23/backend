@@ -31,90 +31,140 @@ export interface HubtelWebhookPayload {
   [key: string]: any;
 }
 
-function parseCommissionReference(ref: string): { driverId: string; date: string } | null {
-  const match = ref.match(/^hy3n-commission-(.+)-(\d{4}-\d{2}-\d{2})$/);
-  if (!match) return null;
-  return { driverId: match[1], date: match[2] };
-}
-
 /**
  * Handle driver daily-commission webhook callback.
  */
 export async function handleHubtelWebhook(req: Request, res: Response) {
-  const payload = req.body as HubtelWebhookPayload;
+  const rawPayload = req.body || {};
+  const dataPayload = rawPayload.Data || {};
+
+  const clientReference = dataPayload.ClientReference || rawPayload.ClientReference || "";
+  const transactionId = dataPayload.TransactionId || rawPayload.TransactionId || "";
+  const status = dataPayload.Status || rawPayload.Status || "";
+  const message = dataPayload.Description || rawPayload.Message || "";
+  const responseCode = rawPayload.ResponseCode || dataPayload.ResponseCode || "";
 
   console.log('[Hubtel Webhook] Headers:', req.headers);
   console.log('[Hubtel Webhook] Body:', req.body);
 
-  console.log('[Hubtel Webhook] Received:', {
-    transactionId: payload.TransactionId,
-    status: payload.Status,
-    clientReference: payload.ClientReference,
+  console.log('[Hubtel Webhook] Parsed:', {
+    transactionId,
+    status,
+    clientReference,
+    responseCode,
   });
 
-  if (!payload.ClientReference) {
+  if (!clientReference) {
     console.warn('[Hubtel Webhook] Missing ClientReference');
     res.status(400).json({ error: 'Missing ClientReference' });
     return;
   }
 
-  const parsed = parseCommissionReference(payload.ClientReference);
-  if (!parsed) {
-    if (payload.ClientReference.startsWith('hy3n-topup-')) {
-      await handleHubtelWalletWebhook(req, res);
-      return;
-    }
-    await handleGenericPaymentWebhook(payload, res);
-    return;
-  }
-
-  const { driverId, date } = parsed;
-
   try {
-    const records = await adminFirestore.list(COLLECTIONS.DAILY_COMMISSION, {
-      driver_id: driverId,
-      date,
-    });
+    // 1. Try to find a Daily Commission record
+    const commissionRecords = await adminFirestore.list(COLLECTIONS.DAILY_COMMISSION, {
+      hubtel_reference: clientReference,
+    }, "");
 
-    if (!records || records.length === 0) {
-      console.warn('[Hubtel Webhook] No commission record found for:', { driverId, date });
-      res.status(404).json({ error: 'Commission record not found' });
+    if (commissionRecords && commissionRecords.length > 0) {
+      const record = commissionRecords[0];
+      const driverId = record.driver_id;
+      const date = record.date;
+
+      let newStatus: 'paid' | 'failed' | 'processing' = 'processing';
+      if (responseCode === '0000' || status === 'Success' || rawPayload.Message === 'success') {
+        newStatus = 'paid';
+      } else if (responseCode !== '0000' && responseCode !== '0001' && responseCode !== '' || status === 'Failed' || rawPayload.Message === 'failed') {
+        newStatus = 'failed';
+      }
+
+      await adminFirestore.update(COLLECTIONS.DAILY_COMMISSION, record.id, {
+        status: newStatus,
+        hubtel_webhook_received_at: new Date().toISOString(),
+        hubtel_transaction_id: transactionId || record.hubtel_transaction_id,
+        hubtel_status: status || rawPayload.Message || (newStatus === 'paid' ? 'Success' : 'Failed'),
+        hubtel_message: message,
+      });
+
+      console.log('[Hubtel Webhook] Updated commission:', {
+        driverId,
+        date,
+        newStatus,
+        transactionId,
+      });
+
+      res.json({
+        success: true,
+        message: 'Commission updated',
+        status: newStatus,
+      });
       return;
     }
 
-    const record = records[0];
+    // 2. Try to find a Wallet Top-up record
+    const walletRecords = await adminFirestore.list(COLLECTIONS.WALLET_TRANSACTIONS, {
+      reference: clientReference,
+    }, "");
 
-    let newStatus: 'paid' | 'failed' | 'processing' = 'processing';
-    if (payload.Status === 'Success') {
-      newStatus = 'paid';
-    } else if (payload.Status === 'Failed') {
-      newStatus = 'failed';
+    if (walletRecords && walletRecords.length > 0) {
+      const txRecord = walletRecords[0];
+      const userId = txRecord.user_id;
+      const amount = txRecord.amount as number;
+
+      let isSuccess = false;
+      let isFailed = false;
+      if (responseCode === '0000' || status === 'Success' || rawPayload.Message === 'success') {
+        isSuccess = true;
+      } else if (responseCode !== '0000' && responseCode !== '0001' && responseCode !== '' || status === 'Failed' || rawPayload.Message === 'failed') {
+        isFailed = true;
+      }
+
+      if (isSuccess) {
+        const walletSnap = await adminFirestore.get(COLLECTIONS.WALLET, userId);
+        const currentBalance = (walletSnap?.balance as number) ?? 0;
+        const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
+
+        await adminFirestore.set(COLLECTIONS.WALLET, userId, {
+          user_id: userId,
+          user_type: txRecord.user_type || 'rider',
+          balance: currentBalance + amount,
+          total_topped_up: totalToppedUp + amount,
+        });
+
+        await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+          status: 'completed',
+          hubtel_transaction_id: transactionId,
+          hubtel_status: status || 'Success',
+          completed_at: new Date().toISOString(),
+        });
+
+        console.log('[Hubtel Wallet Webhook] Wallet credited:', { userId, amount, newBalance: currentBalance + amount });
+        res.json({ success: true, message: 'Wallet credited', newBalance: currentBalance + amount });
+      } else if (isFailed) {
+        await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+          status: 'failed',
+          hubtel_status: status || 'Failed',
+          hubtel_message: message,
+        });
+        res.json({ success: false, message: 'Payment failed' });
+      } else {
+        res.json({ success: true, message: 'Pending — no action taken' });
+      }
+      return;
     }
 
-    await adminFirestore.update(COLLECTIONS.DAILY_COMMISSION, record.id, {
-      status: newStatus,
-      hubtel_webhook_received_at: new Date().toISOString(),
-      hubtel_transaction_id: payload.TransactionId || record.hubtel_transaction_id,
-      hubtel_status: payload.Status,
-      hubtel_message: payload.Message,
-    });
+    // 3. Fall back to generic payment
+    await handleGenericPaymentWebhook({
+      ClientReference: clientReference,
+      TransactionId: transactionId,
+      Status: status,
+      Message: message,
+    }, res);
 
-    console.log('[Hubtel Webhook] Updated commission:', {
-      driverId,
-      date,
-      newStatus,
-      transactionId: payload.TransactionId,
-    });
-
-    res.json({
-      success: true,
-      message: 'Commission updated',
-      status: newStatus,
-    });
   } catch (err: any) {
-    console.error('[Hubtel Webhook] Error updating commission:', err?.message);
+    console.error('[Hubtel Webhook] Error processing callback:', err?.message);
     res.status(500).json({
-      error: 'Failed to update commission',
+      error: 'Failed to process callback',
       message: err?.message,
     });
   }
@@ -125,33 +175,30 @@ export async function handleHubtelWebhook(req: Request, res: Response) {
  * Credits the rider/driver wallet when Hubtel confirms payment.
  */
 export async function handleHubtelWalletWebhook(req: Request, res: Response) {
-  const payload = req.body as HubtelWebhookPayload;
+  const rawPayload = req.body || {};
+  const dataPayload = rawPayload.Data || {};
+
+  const clientReference = dataPayload.ClientReference || rawPayload.ClientReference || "";
+  const transactionId = dataPayload.TransactionId || rawPayload.TransactionId || "";
+  const status = dataPayload.Status || rawPayload.Status || "";
+  const message = dataPayload.Description || rawPayload.Message || "";
+  const responseCode = rawPayload.ResponseCode || dataPayload.ResponseCode || "";
 
   console.log('[Hubtel Wallet Webhook] Received:', {
-    transactionId: payload.TransactionId,
-    status: payload.Status,
-    clientReference: payload.ClientReference,
+    transactionId,
+    status,
+    clientReference,
   });
 
-  if (!payload.ClientReference) {
+  if (!clientReference) {
     res.status(400).json({ error: 'Missing ClientReference' });
     return;
   }
 
-  // Wallet top-up references: hy3n-topup-{userId}-{timestamp}
-  const match = payload.ClientReference.match(/^hy3n-topup-(.+)-(\d+)$/);
-  if (!match) {
-    res.status(400).json({ error: 'Invalid ClientReference format for wallet top-up' });
-    return;
-  }
-
-  const userId = match[1];
-
   try {
     const records = await adminFirestore.list(COLLECTIONS.WALLET_TRANSACTIONS, {
-      user_id: userId,
-      reference: payload.ClientReference,
-    });
+      reference: clientReference,
+    }, "");
 
     if (!records || records.length === 0) {
       res.status(404).json({ error: 'Wallet transaction record not found' });
@@ -159,9 +206,18 @@ export async function handleHubtelWalletWebhook(req: Request, res: Response) {
     }
 
     const txRecord = records[0];
+    const userId = txRecord.user_id;
     const amount = txRecord.amount as number;
 
-    if (payload.Status === 'Success') {
+    let isSuccess = false;
+    let isFailed = false;
+    if (responseCode === '0000' || status === 'Success' || rawPayload.Message === 'success') {
+      isSuccess = true;
+    } else if (responseCode !== '0000' && responseCode !== '0001' && responseCode !== '' || status === 'Failed' || rawPayload.Message === 'failed') {
+      isFailed = true;
+    }
+
+    if (isSuccess) {
       const walletSnap = await adminFirestore.get(COLLECTIONS.WALLET, userId);
       const currentBalance = (walletSnap?.balance as number) ?? 0;
       const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
@@ -175,18 +231,18 @@ export async function handleHubtelWalletWebhook(req: Request, res: Response) {
 
       await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
         status: 'completed',
-        hubtel_transaction_id: payload.TransactionId,
-        hubtel_status: payload.Status,
+        hubtel_transaction_id: transactionId,
+        hubtel_status: status || 'Success',
         completed_at: new Date().toISOString(),
       });
 
       console.log('[Hubtel Wallet Webhook] Wallet credited:', { userId, amount, newBalance: currentBalance + amount });
       res.json({ success: true, message: 'Wallet credited', newBalance: currentBalance + amount });
-    } else if (payload.Status === 'Failed') {
+    } else if (isFailed) {
       await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
         status: 'failed',
-        hubtel_status: payload.Status,
-        hubtel_message: payload.Message,
+        hubtel_status: status || 'Failed',
+        hubtel_message: message,
       });
       res.json({ success: false, message: 'Payment failed' });
     } else {
@@ -207,7 +263,7 @@ async function handleGenericPaymentWebhook(payload: HubtelWebhookPayload, res: R
   const clientReference = payload.ClientReference!;
 
   try {
-    const matches = await adminFirestore.list(COLLECTIONS.PAYMENTS, { reference: clientReference });
+    const matches = await adminFirestore.list(COLLECTIONS.PAYMENTS, { reference: clientReference }, "");
     const record = matches[0];
     if (!record) {
       console.warn('[Hubtel Webhook] No payment record found for ClientReference:', clientReference);

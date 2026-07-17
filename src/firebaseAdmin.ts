@@ -99,7 +99,7 @@ export const adminFirestore = {
   async list(
     collectionName: string,
     filters: Record<string, any> = {},
-    orderByField = 'created_date',
+    orderByField: string | null = 'created_date',
     orderDir: 'asc' | 'desc' = 'desc',
     limitNum?: number,
   ): Promise<Array<Record<string, any>>> {
@@ -110,10 +110,8 @@ export const adminFirestore = {
           q = q.where(field, '==', value);
         }
       }
-      try {
+      if (orderByField) {
         q = q.orderBy(orderByField, orderDir);
-      } catch {
-        // orderBy may fail if composite index not ready — skip silently
       }
       if (limitNum) q = q.limit(limitNum);
       const snap = await q.get();

@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Express } from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -15,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * server) and src/functions.ts (Firebase Cloud Functions) so the actual
  * routes/middleware are defined in exactly one place.
  */
-export function createApp() {
+export function createApp(): Express {
   const app = express();
 
   // Enable CORS for all routes - reflect the request origin to support credentials

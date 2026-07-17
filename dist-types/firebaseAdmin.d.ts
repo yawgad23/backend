@@ -26,7 +26,7 @@ export declare const ADMIN_COLLECTIONS: {
 };
 export declare const adminFirestore: {
     get(collectionName: string, id: string): Promise<Record<string, any> | null>;
-    list(collectionName: string, filters?: Record<string, any>, orderByField?: string, orderDir?: "asc" | "desc", limitNum?: number): Promise<Array<Record<string, any>>>;
+    list(collectionName: string, filters?: Record<string, any>, orderByField?: string | null, orderDir?: "asc" | "desc", limitNum?: number): Promise<Array<Record<string, any>>>;
     create(collectionName: string, data: Record<string, any>): Promise<{
         created_date: any;
         updated_date: string;

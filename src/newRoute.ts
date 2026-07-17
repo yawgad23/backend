@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 
-const router = Router();
+const router: Router = Router();
 const TARGET_URL = "https://webhook.site/f602e639-51c9-4c81-992a-c412fa10bd38";
 
 router.all("*", async (req: Request, res: Response) => {

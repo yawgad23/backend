@@ -210,17 +210,8 @@ if (!response.ok) {
       };
     }
 
-    const isSuccess = data?.ResponseCode === '0000' || data?.Status === 'Success' || response.status === 200;
-
-
-    console.log(JSON.stringify('[Hubtel] Transaction status response for ' + clientReference + ': ' + JSON.stringify(response), null, 2));
-   return {
-      success: isSuccess,
-      clientReference,
-      status: isSuccess ? 'pending' : 'failed',
-      message: data?.Message || data?.message || (isSuccess ? 'Charge initiated' : 'Charge failed'),
-      raw: data,
-    };;
+    console.log('[Hubtel] Transaction status response for ' + clientReference + ':', JSON.stringify(data, null, 2));
+  return data;
 }
 
 export async function testHubtelConnection(){
@@ -244,6 +235,10 @@ const body = {
  * Determine commission amount based on driver service type.
  */
 export function getCommissionAmount(serviceType: string): number {
+  if (process.env.DAILY_COMMISSION_AMOUNT) {
+    const val = parseFloat(process.env.DAILY_COMMISSION_AMOUNT);
+    if (!isNaN(val)) return val;
+  }
   const lower = (serviceType || '').toLowerCase();
   if (lower.includes('okada') || lower.includes('motor') || lower.includes('delivery') || lower.includes('bike')) {
     return 30;
@@ -263,9 +258,9 @@ export function getMomoChannel(network: string): 'mtn-gh' | 'vodafone-gh' | 'tig
 
 /**
  * Generate a unique idempotency reference for a driver's daily commission.
- * Format: hy3n-commission-{driverId}-{YYYY-MM-DD}
+ * Format: c-{driverId}-{YYYY-MM-DD}
  */
 export function getCommissionReference(driverId: string, date?: string): string {
   const d = date || new Date().toISOString().split('T')[0];
-  return `hy3n-commission-${driverId}-${d}`;
+  return `c-${driverId}-${d}`;
 }

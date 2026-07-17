@@ -15,5 +15,6 @@
  * checked against PUBLIC_PAYMENTS_API_USERNAME / PUBLIC_PAYMENTS_API_PASSWORD.
  */
 import type { Express } from "express";
+export declare function formatMsisdn(input: string): string;
 export declare function generateReference(useMaxRandom?: boolean): string;
 export declare function registerPublicPaymentsApi(app: Express): void;

@@ -43,19 +43,7 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             input: {
                 clientReference: string;
             };
-            output: {
-                success: boolean;
-                status: string;
-                message: any;
-                raw: any;
-                clientReference?: undefined;
-            } | {
-                success: boolean;
-                clientReference: string;
-                status: string;
-                message: any;
-                raw: any;
-            };
+            output: any;
             meta: object;
         }>;
     }>>;
@@ -92,6 +80,11 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
                 amount: number;
                 date: string;
                 clientReference: string;
+                commissionRecord: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                } | null;
             };
             meta: object;
         }>;
@@ -111,7 +104,30 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             output: {
                 driverId: string;
                 date: string;
-                clientReference: string;
+                clientReference: any;
+            };
+            meta: object;
+        }>;
+        sendOtp: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                phoneNumber: string;
+                driverId: string;
+            };
+            output: {
+                success: boolean;
+                message: string;
+                otpCode: string;
+            };
+            meta: object;
+        }>;
+        verifyOtp: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                code: string;
+            };
+            output: {
+                success: boolean;
+                message: string;
             };
             meta: object;
         }>;

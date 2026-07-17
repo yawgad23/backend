@@ -38,6 +38,7 @@ export const api = onRequest(
       "PUBLIC_PAYMENTS_API_USERNAME",
       "PUBLIC_PAYMENTS_API_PASSWORD",
       "GOOGLE_MAPS_API_KEY",
+      "DAILY_COMMISSION_AMOUNT",
     ],
   },
   app,
