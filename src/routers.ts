@@ -431,13 +431,38 @@ export const appRouter = router({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
-        const today = new Date().toISOString().split('T')[0];
+        // Fetch all commission records for this driver to process in memory
         const records = await adminFirestore.list(
           ADMIN_COLLECTIONS.DAILY_COMMISSION,
-          { driver_id: input.driverId, date: today },
+          { driver_id: input.driverId },
           null
         );
-        const isPaid = records.some((r: any) => r.status === 'paid' || r.status === 'confirmed');
+
+        // Filter for successful payments and sort by date descending
+        const successful = records
+          .filter((r: any) => r.status === 'paid' || r.status === 'confirmed')
+          .sort((a: any, b: any) => {
+            const timeA = new Date(a.submitted_at || a.admin_override_at || a.created_date || a.date || 0).getTime();
+            const timeB = new Date(b.submitted_at || b.admin_override_at || b.created_date || b.date || 0).getTime();
+            return timeB - timeA;
+          });
+
+        if (successful.length === 0) {
+          return { isPaid: false };
+        }
+
+        const latestPayment = successful[0];
+        const paymentDateStr = latestPayment.submitted_at || latestPayment.admin_override_at || latestPayment.created_date || latestPayment.date;
+        if (!paymentDateStr) {
+          return { isPaid: false };
+        }
+
+        const paymentTime = new Date(paymentDateStr).getTime();
+        const currentTime = Date.now();
+        const hoursElapsed = (currentTime - paymentTime) / (1000 * 60 * 60);
+
+        // Payment remains valid for exactly 24 hours after it was submitted
+        const isPaid = hoursElapsed < 24;
         return { isPaid };
       }),
   }),
