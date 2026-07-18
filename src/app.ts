@@ -41,6 +41,49 @@ export function createApp(): Express {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Request / Response Logger Middleware
+  app.use((req, res, next) => {
+    const start = Date.now();
+    const { method, originalUrl } = req;
+
+    const headers = { ...req.headers };
+    if (headers.authorization) {
+      headers.authorization = "[REDACTED]";
+    }
+
+    console.log(`[API Request] >>> ${method} ${originalUrl}`, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      headers,
+      query: req.query,
+      body: req.body,
+    }, null, 2));
+
+    const originalSend = res.send;
+    res.send = function (body) {
+      const responseHeaders = res.getHeaders();
+      let parsedBody = body;
+      if (Buffer.isBuffer(body)) {
+        parsedBody = "[BUFFER]";
+      } else if (typeof body === 'string') {
+        try {
+          parsedBody = JSON.parse(body);
+        } catch {
+          parsedBody = body.length > 2000 ? body.substring(0, 2000) + '... [TRUNCATED]' : body;
+        }
+      }
+
+      console.log(`[API Response] <<< ${method} ${originalUrl} | Status: ${res.statusCode} (Duration: ${Date.now() - start}ms)`, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        headers: responseHeaders,
+        body: parsedBody,
+      }, null, 2));
+
+      return originalSend.apply(this, arguments as any);
+    };
+
+    next();
+  });
+
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
   app.use("/newroute", newRouteRouter);
@@ -59,8 +102,11 @@ export function createApp(): Express {
     }
     try {
       const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(input)}&key=${apiKey}&components=country:gh&language=en&types=geocode|establishment`;
+      console.log("[External API Request] >>> GET Google Places Autocomplete:", { url: url.replace(apiKey, "[REDACTED]") });
       const response = await fetch(url);
       const data = await response.json() as { status: string; predictions: any[] };
+      console.log("[External API Response] <<< GET Google Places Autocomplete:", JSON.stringify(data, null, 2));
+
       if (data.status === "OK" || data.status === "ZERO_RESULTS") {
         res.json({ predictions: data.predictions || [] });
       } else {
@@ -79,8 +125,11 @@ export function createApp(): Express {
     if (!apiKey) { res.status(500).json({ error: "Maps API key not configured" }); return; }
     try {
       const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(place_id)}&fields=name,formatted_address,geometry&key=${apiKey}`;
+      console.log("[External API Request] >>> GET Google Place Details:", { url: url.replace(apiKey, "[REDACTED]") });
       const response = await fetch(url);
       const data = await response.json() as { status: string; result?: any };
+      console.log("[External API Response] <<< GET Google Place Details:", JSON.stringify(data, null, 2));
+
       res.json({ result: data.status === "OK" ? data.result : null });
     } catch {
       res.json({ result: null });
