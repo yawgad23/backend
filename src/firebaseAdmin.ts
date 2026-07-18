@@ -9,8 +9,13 @@
 
 import { initializeApp, getApps, cert, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 // ─── App singleton ────────────────────────────────────────────────────────────
+
+export function getAdminAuth() {
+  return getAuth(getAdminApp());
+}
 
 let _app: App | null = null;
 

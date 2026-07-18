@@ -171,3 +171,66 @@ export async function sendTripReceiptEmail(data: TripReceiptData): Promise<boole
     return false;
   }
 }
+
+export async function sendVerificationEmail(email: string, link: string): Promise<boolean> {
+  const from = process.env.EMAIL_FROM || '"HY3N Support" <hy3ntransportservices@gmail.com>';
+  const transporter = getTransporter();
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:32px 0">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;max-width:560px;width:100%">
+        <!-- Header -->
+        <tr><td style="background:#0A0A0A;padding:28px 32px;text-align:center">
+          <div style="font-size:28px;font-weight:900;color:#D4AF37;letter-spacing:2px">HY3N</div>
+          <div style="color:#9CA3AF;font-size:13px;margin-top:4px">Verify Your Email Address</div>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:28px 32px 28px">
+          <p style="margin:0;font-size:16px;color:#111827">Akwaaba!</p>
+          <p style="margin:12px 0 0;font-size:14px;color:#6B7280;line-height:20px">
+            Thanks for signing up to drive with HY3N. Please verify your email address to continue your application.
+          </p>
+          <div style="margin:24px 0;text-align:center">
+            <a href="${link}" style="display:inline-block;background:#D4AF37;color:#000000;text-decoration:none;padding:12px 32px;font-weight:700;font-size:15px;border-radius:8px">Verify Email Address</a>
+          </div>
+          <p style="margin:12px 0 0;font-size:12px;color:#9CA3AF;line-height:18px">
+            If you did not request this, you can safely ignore this email.
+          </p>
+          <p style="margin:16px 0 0;font-size:11px;color:#D1D5DB;word-break:break-all">
+            Link: <a href="${link}" style="color:#D4AF37">${link}</a>
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#F9FAFB;padding:20px 32px;text-align:center;border-top:1px solid #E5E7EB">
+          <p style="margin:0;font-size:12px;color:#9CA3AF">Questions? Contact us at <a href="mailto:hello@ridehy3n.com" style="color:#D4AF37">hello@ridehy3n.com</a></p>
+          <p style="margin:8px 0 0;font-size:11px;color:#D1D5DB">&copy; ${new Date().getFullYear()} HY3N Technologies. All rights reserved.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const text = `Verify Your Email Address\n\nPlease use the following link to verify your email address:\n\n${link}\n\nQuestions? Contact us at hello@ridehy3n.com`;
+
+  try {
+    await transporter.sendMail({
+      from,
+      to: email,
+      subject: "Verify your email address for HY3N",
+      text,
+      html,
+    });
+    return true;
+  } catch (err) {
+    console.error('[HY3N Email] Failed to send verification email:', err);
+    return false;
+  }
+}

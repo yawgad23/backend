@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { publicProcedure, router } from "./trpc";
-import { sendTripReceiptEmail } from "./email";
+import { sendTripReceiptEmail, sendVerificationEmail } from "./email";
 import {
   chargeDriverCommission,
   getCommissionAmount,
@@ -8,7 +8,7 @@ import {
   getCommissionReference,
   transactionStatusCheck,
 } from "./hubtel";
-import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
+import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
@@ -69,6 +69,28 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const sent = await sendTripReceiptEmail(input);
         return { success: sent };
+      }),
+  }),
+
+  auth: router({
+    sendVerification: publicProcedure
+      .input(z.object({
+        email: z.string().email(),
+      }))
+      .mutation(async ({ input }) => {
+        try {
+          const authAdmin = getAdminAuth();
+          const actionCodeSettings = {
+            url: 'https://hy3n26.firebaseapp.com', 
+            handleCodeInApp: false
+          };
+          const link = await authAdmin.generateEmailVerificationLink(input.email, actionCodeSettings);
+          const sent = await sendVerificationEmail(input.email, link);
+          return { success: sent };
+        } catch (err: any) {
+          console.error('[auth.sendVerification] Error generating or sending link:', err.message);
+          return { success: false, error: err.message };
+        }
       }),
   }),
 
