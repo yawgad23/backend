@@ -167,6 +167,15 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             };
             meta: object;
         }>;
+        checkPaidToday: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                isPaid: boolean;
+            };
+            meta: object;
+        }>;
     }>>;
     wallet: import("@trpc/server").TRPCBuiltRouter<{
         ctx: import("./context").TrpcContext;

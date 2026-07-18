@@ -425,6 +425,21 @@ export const appRouter = router({
         );
         return { success: true, commission: updated };
       }),
+
+    checkPaidToday: publicProcedure
+      .input(z.object({
+        driverId: z.string(),
+      }))
+      .query(async ({ input }) => {
+        const today = new Date().toISOString().split('T')[0];
+        const records = await adminFirestore.list(
+          ADMIN_COLLECTIONS.DAILY_COMMISSION,
+          { driver_id: input.driverId, date: today },
+          null
+        );
+        const isPaid = records.some((r: any) => r.status === 'paid' || r.status === 'confirmed');
+        return { isPaid };
+      }),
   }),
 
   
