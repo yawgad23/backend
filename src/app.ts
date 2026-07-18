@@ -7,6 +7,7 @@ import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
+import { registerCronRoutes } from "./cron";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,6 +88,7 @@ export function createApp(): Express {
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
   app.use("/newroute", newRouteRouter);
+  registerCronRoutes(app);
 
   // Google Places Autocomplete proxy — keeps API key server-side
   app.get("/api/places/autocomplete", async (req, res) => {
