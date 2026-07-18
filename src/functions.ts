@@ -1,7 +1,7 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { createApp } from "./app";
 
-// Force deploy: 2026-07-18T16:50:00Z
+// Force deploy: 2026-07-18T16:58:00Z
 // Same unhandledRejection/uncaughtException risk as src/index.ts applies here
 // too — a detached credential-retry rejection would otherwise take down the
 // whole function instance, not just the request that triggered it.
