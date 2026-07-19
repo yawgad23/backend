@@ -37,6 +37,8 @@ export function registerCronRoutes(app: Express) {
       paymentsChecked: 0,
       paymentsFailed: 0,
       paymentsUpdated: 0,
+      ridesChecked: 0,
+      ridesCancelled: 0,
     };
 
     try {
@@ -207,6 +209,32 @@ export function registerCronRoutes(app: Express) {
               console.error(`[Cron] Error checking status for payment ${record.id}:`, err.message);
             }
           }
+        }
+      }
+
+      // ─── 4. Stale Rides Checks ─────────────────────────────────────────────
+      const requestedRides = await adminFirestore.list(
+        ADMIN_COLLECTIONS.RIDES,
+        { status: "requested" },
+        null
+      );
+
+      for (const ride of requestedRides) {
+        const createdDate = ride.created_date || ride.date;
+        if (!createdDate) continue;
+
+        stats.ridesChecked++;
+        const ageMs = Date.now() - new Date(createdDate).getTime();
+        const ageHours = ageMs / (1000 * 60 * 60);
+
+        // Auto-cancel if waiting for a driver for more than 2 hours
+        if (ageHours >= 2) {
+          await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, ride.id, {
+            status: "cancelled",
+            cancellation_reason: "Auto-cancelled: No driver accepted within 2 hours",
+            updated_date: new Date().toISOString()
+          });
+          stats.ridesCancelled++;
         }
       }
 
