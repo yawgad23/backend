@@ -17,8 +17,7 @@
  * Email retail@hubtel.com to request this scope. Also provide your server IP for whitelisting.
  *
  * Commission rates:
- *   - Car drivers (Standard/Comfort/Kantanka/Executive): GH₵50/day
- *   - Okada / Delivery drivers: GH₵30/day
+ *   - All drivers: GH₵1/day
  */
 
 export interface HubtelChargeRequest {
@@ -239,11 +238,7 @@ export function getCommissionAmount(serviceType: string): number {
     const val = parseFloat(process.env.DAILY_COMMISSION_AMOUNT);
     if (!isNaN(val)) return val;
   }
-  const lower = (serviceType || '').toLowerCase();
-  if (lower.includes('okada') || lower.includes('motor') || lower.includes('delivery') || lower.includes('bike')) {
-    return 30;
-  }
-  return 50; // All car types: standard, comfort, kantanka, executive
+  return 1; // Default to 1 for all service types
 }
 
 /**

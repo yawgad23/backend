@@ -140,3 +140,8 @@ install-time hook regenerating it for consumers (git-dependency `prepare`
 scripts turned out not to run reliably here).
 
 Set `EXPO_PUBLIC_API_BASE_URL` to the deployed Cloud Run URL.
+
+
+npm run build:types 
+
+firebase deploy --only functions
