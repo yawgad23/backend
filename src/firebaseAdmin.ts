@@ -48,8 +48,12 @@ function getAdminApp(): App {
   return _app;
 }
 
-function getDb(): Firestore {
+export function getAdminDb(): Firestore {
   return getFirestore(getAdminApp());
+}
+
+function getDb(): Firestore {
+  return getAdminDb();
 }
 
 // ─── Collection constants ─────────────────────────────────────────────────────

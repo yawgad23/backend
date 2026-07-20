@@ -193,8 +193,8 @@ export const appRouter = router({
         const clientReference = generateReference();
 
         // Format phone number: ensure it starts with country code
-        let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
-        if (!phone.startsWith('233')) phone = '233' + phone;
+        let phone = formatMsisdn(input.momoNumber);
+        // if (!phone.startsWith('233')) phone = '233' + phone;
 
         const result = await chargeDriverCommission({
           customerMsisdn: phone,
@@ -486,8 +486,8 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const reference = generateReference();
-        let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
-        if (!phone.startsWith('233')) phone = '233' + phone;
+        let phone = formatMsisdn(input.momoNumber);
+        // if (!phone.startsWith('233')) phone = '233' + phone;
 
         // Create a pending wallet transaction record first (for idempotency)
         const txRecord = await adminFirestore.create(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {

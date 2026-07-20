@@ -215,7 +215,7 @@ export function registerCronRoutes(app: Express) {
       // ─── 4. Stale Rides Checks ─────────────────────────────────────────────
       const requestedRides = await adminFirestore.list(
         ADMIN_COLLECTIONS.RIDES,
-        { status: "requested" },
+        { status: "searching" },
         null
       );
 

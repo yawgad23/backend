@@ -8,6 +8,8 @@ import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
+import { Expo } from "expo-server-sdk";
+import ridesRouter from "./ridesApi";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -89,6 +91,7 @@ export function createApp(): Express {
   registerPublicPaymentsApi(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
+  app.use("/api/rides", ridesRouter);
 
   // Google Places Autocomplete proxy — keeps API key server-side
   app.get("/api/places/autocomplete", async (req, res) => {
@@ -140,6 +143,38 @@ export function createApp(): Express {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, timestamp: Date.now() });
+  });
+
+  app.post("/api/test-push", async (req, res) => {
+    try {
+      const { token, title, body, data } = req.body;
+      
+      if (!token || !Expo.isExpoPushToken(token)) {
+        res.status(400).json({ ok: false, error: "Valid Expo Push Token is required." });
+        return;
+      }
+      
+      const expo = new Expo();
+      const messages = [{
+        to: token,
+        sound: "default" as any,
+        title: title || "Test Notification",
+        body: body || "This is a test push notification from the backend!",
+        data: data || { test: true },
+      }];
+      
+      const chunks = expo.chunkPushNotifications(messages);
+      const tickets = [];
+      for (const chunk of chunks) {
+        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+        tickets.push(...ticketChunk);
+      }
+      
+      res.json({ ok: true, tickets });
+    } catch (error: any) {
+      console.error("[Test Push] Error:", error);
+      res.status(500).json({ ok: false, error: error.message });
+    }
   });
 
   app.get("/api/hubtel/status", (_req, res) => {

@@ -93,8 +93,8 @@ const chargeSchema = z.object({
 export function formatMsisdn(input: string): string {
   const digits = input.replace(/[\s-]/g, "");
   if (digits.startsWith("+233")) return digits;
-  if (digits.startsWith("233")) return digits;
-  if (digits.startsWith("0")) return "233" + digits.slice(1);
+  if (digits.startsWith("233")) return "+233"+digits;
+  if (digits.startsWith("0")) return "+233" + digits.slice(1);
   return digits;
 }
 
