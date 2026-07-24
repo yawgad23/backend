@@ -141,6 +141,57 @@ export function createApp(): Express {
     }
   });
 
+  // Google Directions proxy — get route polyline
+  app.get("/api/directions", async (req, res) => {
+    const { origin, destination } = req.query as { origin?: string; destination?: string };
+    if (!origin || !destination) { res.status(400).json({ error: "Missing origin or destination" }); return; }
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+    if (!apiKey) { res.status(500).json({ error: "Maps API key not configured" }); return; }
+    try {
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(destination)}&key=${apiKey}`;
+      console.log("[External API Request] >>> GET Google Directions");
+      const response = await fetch(url);
+      const data = await response.json() as { status: string; routes: any[] };
+
+      if (data.status === "OK" && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const leg = route.legs[0];
+        res.json({
+          points: route.overview_polyline.points,
+          distance: leg.distance, // { text, value }
+          duration: leg.duration, // { text, value }
+        });
+      } else {
+        res.json({ points: null });
+      }
+    } catch {
+      res.status(500).json({ error: "Failed to fetch directions" });
+    }
+  });
+
+  // Google Reverse Geocoding proxy — get address from lat/lng
+  app.get("/api/places/geocode", async (req, res) => {
+    const { latlng } = req.query as { latlng?: string };
+    if (!latlng) { res.json({ result: null }); return; }
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+    if (!apiKey) { res.status(500).json({ error: "Maps API key not configured" }); return; }
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${encodeURIComponent(latlng)}&key=${apiKey}`;
+      console.log("[External API Request] >>> GET Google Reverse Geocode:", { url: url.replace(apiKey, "[REDACTED]") });
+      const response = await fetch(url);
+      const data = await response.json() as { status: string; results?: any[] };
+      // console.log("[External API Response] <<< GET Google Reverse Geocode:", JSON.stringify(data, null, 2)); // Too noisy
+
+      if (data.status === "OK" && data.results && data.results.length > 0) {
+        res.json({ result: data.results[0] });
+      } else {
+        res.json({ result: null });
+      }
+    } catch {
+      res.json({ result: null });
+    }
+  });
+
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, timestamp: Date.now() });
   });

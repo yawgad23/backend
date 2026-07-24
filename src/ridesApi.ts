@@ -11,6 +11,18 @@ router.use((req, res, next) => {
   next();
 });
 
+// Helper to calculate distance in km between two coordinates
+function getDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
 /**
  * POST /api/rides/request
  * Creates a new ride request from the Rider app.
@@ -161,11 +173,33 @@ router.post("/:id/status", async (req: Request, res: Response) => {
       updateData.driver_location = driverLocation;
     }
     
+    const db = getAdminDb();
+    
     if (status === 'completed') {
       updateData.completed_at = FieldValue.serverTimestamp();
+      
+      // Prevent full fare charge if trip was ended without moving
+      const rideDoc = await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).get();
+      if (rideDoc.exists) {
+        const ride = rideDoc.data();
+        const currentLoc = driverLocation || ride?.driver_location;
+        const pickupLoc = ride?.pickup;
+        
+        if (currentLoc && pickupLoc) {
+          const distKm = getDistanceKm(pickupLoc.lat, pickupLoc.lng, currentLoc.lat, currentLoc.lng);
+          
+          if (distKm < 0.2) {
+            // Driver barely moved from pickup (less than 200m). Charge minimum base fare.
+            updateData.final_fare = 15; 
+          } else {
+            updateData.final_fare = req.body.final_fare || ride?.fare_estimate || 0;
+          }
+        } else {
+          updateData.final_fare = req.body.final_fare || ride?.fare_estimate || 0;
+        }
+      }
     }
     
-    const db = getAdminDb();
     await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).update(updateData);
     
     console.log(`[Rides API] Ride ${id} status updated to ${status}`);

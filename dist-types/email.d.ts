@@ -15,3 +15,4 @@ export interface TripReceiptData {
     completedAt: string;
 }
 export declare function sendTripReceiptEmail(data: TripReceiptData): Promise<boolean>;
+export declare function sendVerificationEmail(email: string, link: string): Promise<boolean>;

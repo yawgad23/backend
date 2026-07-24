@@ -45,6 +45,7 @@ export const notifyDriversOnRideCreated = onDocumentCreated(
     };
     
     const messages: any[] = [];
+    const seenTokens = new Set<string>();
     const rideLat = ride.ridePin?.latitude || ride.ridePin?.lat;
     const rideLng = ride.ridePin?.longitude || ride.ridePin?.lng;
     
@@ -69,7 +70,8 @@ export const notifyDriversOnRideCreated = onDocumentCreated(
         }
       }
       
-      if (driver.push_token && Expo.isExpoPushToken(driver.push_token)) {
+      if (driver.push_token && Expo.isExpoPushToken(driver.push_token) && !seenTokens.has(driver.push_token)) {
+        seenTokens.add(driver.push_token);
         messages.push({
           to: driver.push_token,
           sound: 'default',
