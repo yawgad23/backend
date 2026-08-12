@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Live Trip Tracker - HY3N</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f4f4f4;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #header {
+      background-color: #111;
+      color: #D4AF37;
+      padding: 16px;
+      text-align: center;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      z-index: 1000;
+    }
+    #map {
+      flex: 1;
+      width: 100%;
+      z-index: 1;
+    }
+    #info-panel {
+      background-color: white;
+      padding: 16px 20px;
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+      z-index: 1000;
+    }
+    .status-text {
+      font-weight: bold;
+      color: #333;
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+    .driver-info {
+      color: #666;
+      font-size: 14px;
+    }
+    .driver-info span {
+      font-weight: 600;
+      color: #111;
+    }
+    .loader-container {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: white;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+    }
+    .loader {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #D4AF37;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+</head>
+<body>
+
+  <div id="loader" class="loader-container">
+    <div class="loader"></div>
+    <div style="color: #666; font-weight: 500;">Loading Trip Details...</div>
+  </div>
+
+  <div id="header">HY3N TRACKER</div>
+  <div id="map"></div>
+  <div id="info-panel">
+    <div id="status" class="status-text">Connecting...</div>
+    <div id="driver-details" class="driver-info">
+      Vehicle: <span id="vehicle">-</span> &bull; Plate: <span id="plate">-</span>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  
+  <!-- Firebase JS SDK (compat modules for simplicity in plain HTML) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+  <script>
+    // 1. Initialize Firebase
+    const firebaseConfig = {
+      apiKey: "AIzaSyDYUm2xv_8er3oGwk6qVXzAT51hoS4N4dE",
+      authDomain: "hy3n26.firebaseapp.com",
+      projectId: "hy3n26",
+      storageBucket: "hy3n26.firebasestorage.app",
+      messagingSenderId: "362594902321",
+      appId: "1:362594902321:web:9387b08590e7660216d010"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // 2. Setup Leaflet Map
+    const map = L.map('map', { zoomControl: false }).setView([5.6037, -0.1870], 13);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19
+    }).addTo(map);
+
+    // Custom Icons
+    const createIcon = (color, inner) => L.divIcon({
+      className: 'custom-icon',
+      html: `<div style="background-color: ${color}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px;">${inner}</div>`,
+      iconSize: [30, 30],
+      iconAnchor: [15, 15]
+    });
+
+    const driverIcon = createIcon('#000000', '🚗');
+    const riderIcon = createIcon('#2563EB', '👤');
+    const pickupIcon = createIcon('#10B981', 'A');
+    const destinationIcon = createIcon('#D4AF37', 'B');
+
+    const markers = {
+      driver: null,
+      rider: null,
+      pickup: null,
+      destination: null
+    };
+
+    // 3. Get Trip ID from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const tripId = urlParams.get('id');
+
+    if (!tripId) {
+      document.getElementById('status').innerText = 'Error: Invalid Trip Link';
+      document.getElementById('loader').style.display = 'none';
+    } else {
+      // 4. Listen to Firestore Trip
+      db.collection('rides').doc(tripId).onSnapshot((doc) => {
+        if (!doc.exists) {
+          document.getElementById('status').innerText = 'Trip not found or cancelled.';
+          document.getElementById('loader').style.display = 'none';
+          return;
+        }
+
+        const data = doc.data();
+        document.getElementById('loader').style.display = 'none';
+
+        // Update Info Panel
+        document.getElementById('vehicle').innerText = data.vehicle_type || 'Unknown';
+        document.getElementById('plate').innerText = data.vehicle_plate || 'Unknown';
+        
+        let statusMsg = 'Connecting...';
+        if (data.status === 'searching') statusMsg = 'Searching for a driver...';
+        else if (data.status === 'matched') statusMsg = 'Driver is on the way to pickup.';
+        else if (data.status === 'driver_arriving') statusMsg = 'Driver is arriving soon!';
+        else if (data.status === 'driver_arrived') statusMsg = 'Driver has arrived at pickup.';
+        else if (data.status === 'in_progress') statusMsg = 'Trip in progress! Heading to destination.';
+        else if (data.status === 'completed') statusMsg = 'Trip completed. Thanks for riding!';
+        else if (data.status === 'cancelled') statusMsg = 'This trip was cancelled.';
+        document.getElementById('status').innerText = statusMsg;
+
+        const bounds = [];
+
+        // Update Markers
+        if (data.pickupLat && data.pickupLng) {
+          if (!markers.pickup) markers.pickup = L.marker([data.pickupLat, data.pickupLng], {icon: pickupIcon}).addTo(map);
+          bounds.push([data.pickupLat, data.pickupLng]);
+        }
+
+        if (data.destinationLat && data.destinationLng) {
+          if (!markers.destination) markers.destination = L.marker([data.destinationLat, data.destinationLng], {icon: destinationIcon}).addTo(map);
+          bounds.push([data.destinationLat, data.destinationLng]);
+        }
+
+        if (data.driverCurrentLat && data.driverCurrentLng && ['matched', 'driver_arriving', 'driver_arrived', 'in_progress'].includes(data.status)) {
+          if (!markers.driver) {
+            markers.driver = L.marker([data.driverCurrentLat, data.driverCurrentLng], {icon: driverIcon, zIndexOffset: 1000}).addTo(map);
+          } else {
+            markers.driver.setLatLng([data.driverCurrentLat, data.driverCurrentLng]);
+          }
+          bounds.push([data.driverCurrentLat, data.driverCurrentLng]);
+        } else if (markers.driver && !['matched', 'driver_arriving', 'driver_arrived', 'in_progress'].includes(data.status)) {
+          map.removeLayer(markers.driver);
+          markers.driver = null;
+        }
+        
+        // Auto-fit map to show all relevant pins
+        if (bounds.length > 0) {
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+        }
+      }, (error) => {
+        console.error("Error listening to trip:", error);
+        document.getElementById('status').innerText = 'Connection error.';
+      });
+    }
+  </script>
+</body>
+</html>

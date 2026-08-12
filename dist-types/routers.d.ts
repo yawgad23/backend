@@ -53,6 +53,15 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
         errorShape: import("@trpc/server").TRPCDefaultErrorShape;
         transformer: true;
     }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        getAmount: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                serviceType?: string | undefined;
+            };
+            output: {
+                amount: number;
+            };
+            meta: object;
+        }>;
         /**
          * Charge a driver's daily commission via Hubtel Direct Receive Money.
          * The driver receives a USSD prompt on their phone to approve the payment.
@@ -173,6 +182,14 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             };
             output: {
                 isPaid: boolean;
+                validUntil: null;
+                amount: null;
+                date: null;
+            } | {
+                isPaid: boolean;
+                validUntil: string;
+                amount: any;
+                date: any;
             };
             meta: object;
         }>;

@@ -75,6 +75,7 @@ export const ADMIN_COLLECTIONS = {
   RIDE_REPORTS: 'ride_reports',
   DRIVER_PROFILES: 'driver_profiles',
   DAILY_COMMISSION: 'daily_commissions',
+  FARE_CONFIGS: 'fare_configs',
 };
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────

@@ -253,6 +253,11 @@ export function createApp(): Express {
     res.json({ ok: true });
   });
 
+  // Serve the tracking page
+  app.get("/track", (req, res) => {
+    res.sendFile(path.join(__dirname, "../public/track.html"));
+  });
+
   app.use(
     "/api/trpc",
     createExpressMiddleware({

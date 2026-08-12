@@ -35,10 +35,12 @@ export function registerCronRoutes(app: Express) {
       walletsFailed: 0,
       walletsUpdated: 0,
       paymentsChecked: 0,
-      paymentsFailed: 0,
       paymentsUpdated: 0,
+      paymentsFailed: 0,
       ridesChecked: 0,
       ridesCancelled: 0,
+      driversChecked: 0,
+      driversSetOffline: 0,
     };
 
     try {
@@ -225,16 +227,73 @@ export function registerCronRoutes(app: Express) {
 
         stats.ridesChecked++;
         const ageMs = Date.now() - new Date(createdDate).getTime();
-        const ageHours = ageMs / (1000 * 60 * 60);
+        const ageMinutes = ageMs / (1000 * 60);
 
-        // Auto-cancel if waiting for a driver for more than 2 hours
-        if (ageHours >= 2) {
+        // Auto-cancel if waiting for a driver for more than 5 minutes
+        if (ageMinutes >= 5) {
           await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, ride.id, {
             status: "cancelled",
-            cancellation_reason: "Auto-cancelled: No driver accepted within 2 hours",
+            cancellation_reason: "Auto-cancelled: No driver accepted within 5 minutes",
             updated_date: new Date().toISOString()
           });
           stats.ridesCancelled++;
+        }
+      }
+
+      // ─── 5. Driver Online Status / Commission Expiry Checks ─────────────────
+      const onlineDrivers = await adminFirestore.list(
+        ADMIN_COLLECTIONS.DRIVER_PROFILES,
+        { is_online: true },
+        null
+      );
+
+      for (const driver of onlineDrivers) {
+        stats.driversChecked++;
+        try {
+          const idsToCheck = new Set<string>();
+          if (driver.id) idsToCheck.add(driver.id);
+          if (driver.user_id) idsToCheck.add(driver.user_id);
+
+          let records: any[] = [];
+          for (const id of idsToCheck) {
+            try {
+              const recs = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: id }, null);
+              if (recs) records = [...records, ...recs];
+            } catch (e) {}
+          }
+
+          const successful = records
+            .filter((r: any) => r.status === 'paid' || r.status === 'confirmed')
+            .sort((a: any, b: any) => {
+              const timeA = new Date(a.submitted_at || a.admin_override_at || a.created_date || a.date || 0).getTime();
+              const timeB = new Date(b.submitted_at || b.admin_override_at || b.created_date || b.date || 0).getTime();
+              return timeB - timeA;
+            });
+
+          let isPaid = false;
+          if (successful.length > 0) {
+            const latestPayment = successful[0];
+            let paymentDateStr = latestPayment.submitted_at || latestPayment.admin_override_at || latestPayment.created_date;
+            if (!paymentDateStr && latestPayment.date) {
+              paymentDateStr = latestPayment.date + 'T23:59:59Z';
+            }
+            if (paymentDateStr) {
+              const hoursElapsed = (Date.now() - new Date(paymentDateStr).getTime()) / (1000 * 60 * 60);
+              if (hoursElapsed < 24) {
+                isPaid = true;
+              }
+            }
+          }
+
+          if (!isPaid) {
+            await adminFirestore.update(ADMIN_COLLECTIONS.DRIVER_PROFILES, driver.id, {
+              is_online: false,
+              commission_paid_today: false,
+            });
+            stats.driversSetOffline++;
+          }
+        } catch (err: any) {
+          console.error(`[Cron] Error checking online status for driver ${driver.id}:`, err.message);
         }
       }
 

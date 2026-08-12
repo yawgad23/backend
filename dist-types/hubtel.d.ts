@@ -43,6 +43,8 @@ export interface HubtelChargeResponse {
     /** Raw response from Hubtel for debugging */
     raw?: any;
 }
+export declare function getBasicAuth(): string;
+export declare function phoneNumberFormat(msisdn: string): string;
 /**
  * Initiate a direct MoMo charge via Hubtel.
  * The customer receives a USSD prompt on their phone to approve the payment.
@@ -51,9 +53,9 @@ export declare function chargeDriverCommission(req: HubtelChargeRequest): Promis
 export declare function transactionStatusCheck(clientReference: string): Promise<any>;
 export declare function testHubtelConnection(): Promise<Response>;
 /**
- * Determine commission amount based on driver service type.
+ * Determine commission amount based on driver service type from admin dashboard.
  */
-export declare function getCommissionAmount(serviceType: string): number;
+export declare function getCommissionAmount(serviceType: string): Promise<number>;
 /**
  * Determine Hubtel channel from MoMo network name.
  */

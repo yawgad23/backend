@@ -45,4 +45,4 @@ export const api = onRequest(
   app,
 );
 
-export { notifyDriversOnRideCreated, notifyRiderOnRideAccepted } from './pushNotifications';
+export { notifyDriversOnRideCreated, notifyRiderOnRideAccepted, notifyDriverOnApprovalStatusChange, notifyOnNewChatMessage, notifyOnRideCancelled } from './pushNotifications';

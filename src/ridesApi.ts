@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { getAdminDb, ADMIN_COLLECTIONS } from "./firebaseAdmin";
 import { FieldValue } from "firebase-admin/firestore";
+import { sendTripReceiptEmail } from "./email";
 
 const router: Router = Router();
 
@@ -162,7 +163,7 @@ router.post("/:id/decline", async (req: Request, res: Response) => {
 router.post("/:id/status", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { status, driverLocation } = req.body;
+    const { status, driverLocation, pin } = req.body;
     
     const updateData: any = {
       status,
@@ -174,6 +175,18 @@ router.post("/:id/status", async (req: Request, res: Response) => {
     }
     
     const db = getAdminDb();
+    
+    if (status === 'in_progress') {
+      const rideDoc = await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).get();
+      if (rideDoc.exists) {
+        const ride = rideDoc.data();
+        const expectedPin = ride?.ride_pin || ride?.ridePin;
+        if (expectedPin && pin && String(expectedPin).trim() !== String(pin).trim()) {
+          return res.status(400).json({ success: false, error: "Invalid ride PIN. Please check the 4-digit PIN with the rider." });
+        }
+      }
+      updateData.started_at = FieldValue.serverTimestamp();
+    }
     
     if (status === 'completed') {
       updateData.completed_at = FieldValue.serverTimestamp();
@@ -192,20 +205,162 @@ router.post("/:id/status", async (req: Request, res: Response) => {
             // Driver barely moved from pickup (less than 200m). Charge minimum base fare.
             updateData.final_fare = 15; 
           } else {
-            updateData.final_fare = req.body.final_fare || ride?.fare_estimate || 0;
+            // Recalculate based on fraction of total distance covered
+            const estimatedDistanceKm = ride?.distance || 1; // Fallback to 1 to avoid div by zero
+            const originalFare = req.body.final_fare || ride?.fare_estimate || ride?.fare || 0;
+            
+            // If the calculated distKm is near or exceeds estimated distance, use full fare
+            if (distKm >= estimatedDistanceKm * 0.9) {
+               updateData.final_fare = originalFare;
+            } else {
+               const fraction = distKm / estimatedDistanceKm;
+               // Never charge less than the minimum fare of 15 for a started ride
+               updateData.final_fare = Math.max(15, originalFare * fraction);
+            }
           }
         } else {
-          updateData.final_fare = req.body.final_fare || ride?.fare_estimate || 0;
+          updateData.final_fare = req.body.final_fare || ride?.fare_estimate || ride?.fare || 0;
         }
       }
     }
     
     await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).update(updateData);
     
+    // If completed, send receipt
+    if (status === 'completed') {
+      try {
+        const updatedRideDoc = await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).get();
+        const rideData = updatedRideDoc.data();
+        if (rideData && rideData.rider_id) {
+          const riderDoc = await db.collection(ADMIN_COLLECTIONS.RIDER_PROFILES).doc(rideData.rider_id).get();
+          const riderData = riderDoc.data();
+          if (riderData && riderData.email) {
+            const distKm = rideData.distance ? rideData.distance.toFixed(1) : 'Unknown';
+            let durationMins = 'Unknown';
+            if (rideData.started_at && rideData.completed_at) {
+              const start = rideData.started_at.toDate ? rideData.started_at.toDate() : new Date(rideData.started_at);
+              const end = rideData.completed_at.toDate ? rideData.completed_at.toDate() : new Date();
+              durationMins = Math.round((end.getTime() - start.getTime()) / 60000).toString();
+            }
+
+            await sendTripReceiptEmail({
+              riderEmail: riderData.email,
+              riderName: riderData.full_name || 'Rider',
+              driverName: rideData.driver_name || 'Driver',
+              driverVehicle: rideData.vehicle_type || 'Vehicle',
+              driverPlate: rideData.vehicle_plate || '',
+              pickup: typeof rideData.pickup === 'string' ? rideData.pickup : rideData.pickup?.address || 'Pickup Location',
+              destination: typeof rideData.destination === 'string' ? rideData.destination : rideData.destination?.address || 'Dropoff Location',
+              distance: parseFloat(distKm) || 0,
+              duration: parseInt(durationMins) || 0,
+              fare: rideData.final_fare ? rideData.final_fare : (rideData.fare || 0),
+              paymentMethod: rideData.payment_method || 'cash',
+              tripId: id,
+              completedAt: rideData.completed_at ? 
+                (rideData.completed_at.toDate ? rideData.completed_at.toDate().toISOString() : new Date(rideData.completed_at).toISOString()) 
+                : new Date().toISOString(),
+              category: rideData.category || 'Standard'
+            });
+            console.log(`[Rides API] Receipt sent to ${riderData.email} for ride ${id}`);
+          }
+        }
+      } catch (err: any) {
+        console.error(`[Rides API] Error sending receipt for ride ${id}:`, err);
+      }
+    }
+    
     console.log(`[Rides API] Ride ${id} status updated to ${status}`);
-    res.json({ success: true });
+    res.json({ success: true, updatedData: updateData });
   } catch (error: any) {
     console.error(`[Rides API] Error updating ride status ${req.params.id}:`, error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/rides/history/:riderId
+ * Returns ride history for a specific rider, guaranteed server-side filtered by rider_id.
+ * Uses Admin SDK so it bypasses client security rules entirely.
+ */
+router.get("/history/:riderId", async (req: Request, res: Response) => {
+  try {
+    const { riderId } = req.params;
+    const limitNum = parseInt(req.query.limit as string) || 50;
+
+    if (!riderId || riderId.length < 10) {
+      res.status(400).json({ success: false, error: "Invalid riderId" });
+      return;
+    }
+
+    const db = getAdminDb();
+    const snap = await db
+      .collection(ADMIN_COLLECTIONS.RIDES)
+      .where("rider_id", "==", riderId)
+      .orderBy("created_at", "desc")
+      .limit(limitNum)
+      .get();
+
+    const rides = snap.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        // Normalize Firestore Timestamps to ISO strings for the client
+        created_date: data.created_date?.toDate?.() ? data.created_date.toDate().toISOString() : data.created_date,
+        created_at: data.created_at?.toDate?.() ? data.created_at.toDate().toISOString() : data.created_at,
+        updated_date: data.updated_date?.toDate?.() ? data.updated_date.toDate().toISOString() : data.updated_date,
+        completed_at: data.completed_at?.toDate?.() ? data.completed_at.toDate().toISOString() : data.completed_at,
+      };
+    });
+
+    console.log(`[Rides API] Fetched ${rides.length} rides for rider ${riderId}`);
+    res.json({ success: true, rides });
+  } catch (error: any) {
+    console.error(`[Rides API] Error fetching ride history for ${req.params.riderId}:`, error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/rides/driver-history/:driverId
+ * Returns ride history for a specific driver, guaranteed server-side filtered by driver_id.
+ * Uses Admin SDK so it bypasses client security rules entirely.
+ */
+router.get("/driver-history/:driverId", async (req: Request, res: Response) => {
+  try {
+    const { driverId } = req.params;
+    const limitNum = parseInt(req.query.limit as string) || 50;
+
+    if (!driverId || driverId.length < 10) {
+      res.status(400).json({ success: false, error: "Invalid driverId" });
+      return;
+    }
+
+    const db = getAdminDb();
+    const snap = await db
+      .collection(ADMIN_COLLECTIONS.RIDES)
+      .where("driver_id", "==", driverId)
+      .orderBy("created_at", "desc")
+      .limit(limitNum)
+      .get();
+
+    const rides = snap.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        // Normalize Firestore Timestamps to ISO strings for the client
+        created_date: data.created_date?.toDate?.() ? data.created_date.toDate().toISOString() : data.created_date,
+        created_at: data.created_at?.toDate?.() ? data.created_at.toDate().toISOString() : data.created_at,
+        updated_date: data.updated_date?.toDate?.() ? data.updated_date.toDate().toISOString() : data.updated_date,
+        completed_at: data.completed_at?.toDate?.() ? data.completed_at.toDate().toISOString() : data.completed_at,
+      };
+    });
+
+    console.log(`[Rides API] Fetched ${rides.length} rides for driver ${driverId}`);
+    res.json({ success: true, rides });
+  } catch (error: any) {
+    console.error(`[Rides API] Error fetching ride history for driver ${req.params.driverId}:`, error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

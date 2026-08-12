@@ -1,3 +1,5 @@
+import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
+
 /**
  * HY3N Hubtel Payment Service
  *
@@ -50,7 +52,7 @@ const HUBTEL_POS_NUMBER = process.env.HUBTEL_POS_NUMBER || '';
 const HUBTEL_API_ID = process.env.HUBTEL_API_ID || '';
 const HUBTEL_API_KEY = process.env.HUBTEL_API_KEY || '';
 
-function getBasicAuth(): string {
+export function getBasicAuth(): string {
   const credentials = `${HUBTEL_API_ID}:${HUBTEL_API_KEY}`;
   return 'Basic ' + Buffer.from(credentials).toString('base64');
 }
@@ -61,13 +63,15 @@ function maskKey(key: string): string {
   return `${key.slice(0, 4)}${'*'.repeat(key.length - 8)}${key.slice(-4)}`;
 }
 
-function phoneNumberFormat(msisdn: string): string {
-  //check if msisdn starts with 233 if so remove it and leave the msisdn as it is
-  if (msisdn.startsWith('233')) {
-    msisdn = msisdn.substring(3);
-    return msisdn;
+export function phoneNumberFormat(msisdn: string): string {
+  let clean = msisdn.replace(/\D/g, '');
+  while (clean.startsWith('233') && clean.length > 9) {
+    clean = clean.substring(3);
   }
-  return msisdn;
+  if (!clean.startsWith('0') && clean.length === 9) {
+    clean = '0' + clean;
+  }
+  return clean;
 }
 
 
@@ -115,6 +119,7 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
         'Content-Type': 'application/json',
         'Authorization': getBasicAuth(),
         'Cache-Control': 'no-cache',
+        'User-Agent': 'HY3N-Backend/1.0',
       },
       body: JSON.stringify(body),
     });
@@ -231,14 +236,26 @@ const body = {
 } 
 
 /**
- * Determine commission amount based on driver service type.
+ * Determine commission amount based on driver service type from admin dashboard.
  */
-export function getCommissionAmount(serviceType: string): number {
+export async function getCommissionAmount(serviceType: string): Promise<number> {
+  try {
+    const data = await adminFirestore.get('settings', 'platform_fee');
+    if (data) {
+      if (data && typeof data.daily_fee === 'number') {
+        return Number(data.daily_fee);
+      }
+    }
+  } catch (err) {
+    console.error(`[Commission] Failed to fetch global platform fee:`, err);
+  }
+
+  // Fallback to environment variable or default
   if (process.env.DAILY_COMMISSION_AMOUNT) {
     const val = parseFloat(process.env.DAILY_COMMISSION_AMOUNT);
     if (!isNaN(val)) return val;
   }
-  return 1; // Default to 1 for all service types
+  return 15; // Default to GH₵15 if no configuration exists
 }
 
 /**

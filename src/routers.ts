@@ -7,6 +7,8 @@ import {
   getMomoChannel,
   getCommissionReference,
   transactionStatusCheck,
+  getBasicAuth,
+  phoneNumberFormat,
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
@@ -161,6 +163,17 @@ export const appRouter = router({
 
   // ─── Hubtel Daily Commission ──────────────────────────────────────────────────
   commission: router({
+    getAmount: publicProcedure
+      .input(
+        z.object({
+          serviceType: z.string().default("car"),
+        })
+      )
+      .query(async ({ input }) => {
+        const amount = await getCommissionAmount(input.serviceType);
+        return { amount };
+      }),
+    
     /**
      * Charge a driver's daily commission via Hubtel Direct Receive Money.
      * The driver receives a USSD prompt on their phone to approve the payment.
@@ -188,7 +201,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const date = input.date || new Date().toISOString().split('T')[0];
-        const amount = getCommissionAmount(input.serviceType);
+        const amount = await getCommissionAmount(input.serviceType);
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const clientReference = generateReference();
 
@@ -282,7 +295,7 @@ export const appRouter = router({
 
         // let phone = input.phoneNumber.replace(/\s+/g, '').replace(/^0/, '233');
         // if (!phone.startsWith('233')) phone = '233' + phone;
-       const phone = formatMsisdn(input.phoneNumber)
+        const phone = phoneNumberFormat(input.phoneNumber);
         // Send OTP via Hubtel SMS API
         try {
           const smsUrl = 'https://sms.hubtel.com/v1/messages/send';
@@ -296,7 +309,7 @@ export const appRouter = router({
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Basic cW92Y7c2dyb3Juam=',
+              'Authorization': getBasicAuth(),
             },
             body: JSON.stringify(smsBody),
           });
@@ -431,12 +444,41 @@ export const appRouter = router({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
-        // Fetch all commission records for this driver to process in memory
-        const records = await adminFirestore.list(
-          ADMIN_COLLECTIONS.DAILY_COMMISSION,
-          { driver_id: input.driverId },
-          null
-        );
+        const today = new Date().toISOString().split('T')[0];
+
+        // 1. Check if profile has commission_paid_today set by admin or system
+        let profile: any = null;
+        try {
+          const byId = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId);
+          if (byId) profile = byId;
+        } catch (e) {}
+        if (!profile) {
+          try {
+            const byUser = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: input.driverId }, null);
+            if (byUser && byUser.length > 0) profile = byUser[0];
+          } catch (e) {}
+        }
+
+        if (profile && profile.commission_paid_today && profile.commission_paid_date === today) {
+          // Calculate validUntil assuming it was set at midnight today
+          const validUntil = new Date(today + 'T23:59:59Z').toISOString();
+          return { isPaid: true, validUntil, amount: null, date: today };
+        }
+
+        const idsToCheck = new Set<string>([input.driverId]);
+        if (profile) {
+          if (profile.id) idsToCheck.add(profile.id);
+          if (profile.user_id) idsToCheck.add(profile.user_id);
+        }
+
+        // Fetch commission records for all candidate IDs
+        let records: any[] = [];
+        for (const id of idsToCheck) {
+          try {
+            const recs = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: id }, null);
+            if (recs) records = [...records, ...recs];
+          } catch (e) {}
+        }
 
         // Filter for successful payments and sort by date descending
         const successful = records
@@ -448,13 +490,19 @@ export const appRouter = router({
           });
 
         if (successful.length === 0) {
-          return { isPaid: false };
+          return { isPaid: false, validUntil: null, amount: null, date: null };
         }
 
         const latestPayment = successful[0];
-        const paymentDateStr = latestPayment.submitted_at || latestPayment.admin_override_at || latestPayment.created_date || latestPayment.date;
+        
+        // If it's a manual admin entry without a specific time, default to the very end of the date so they get their full day
+        let paymentDateStr = latestPayment.submitted_at || latestPayment.admin_override_at || latestPayment.created_date;
+        if (!paymentDateStr && latestPayment.date) {
+          paymentDateStr = latestPayment.date + 'T23:59:59Z';
+        }
+
         if (!paymentDateStr) {
-          return { isPaid: false };
+          return { isPaid: false, validUntil: null, amount: null, date: null };
         }
 
         const paymentTime = new Date(paymentDateStr).getTime();
@@ -463,7 +511,14 @@ export const appRouter = router({
 
         // Payment remains valid for exactly 24 hours after it was submitted
         const isPaid = hoursElapsed < 24;
-        return { isPaid };
+        const validUntil = new Date(paymentTime + (24 * 60 * 60 * 1000)).toISOString();
+        
+        return { 
+          isPaid, 
+          validUntil, 
+          amount: latestPayment.amount || null, 
+          date: latestPayment.date || null 
+        };
       }),
   }),
 

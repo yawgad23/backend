@@ -26,6 +26,7 @@ export declare const ADMIN_COLLECTIONS: {
     RIDE_REPORTS: string;
     DRIVER_PROFILES: string;
     DAILY_COMMISSION: string;
+    FARE_CONFIGS: string;
 };
 export declare const adminFirestore: {
     get(collectionName: string, id: string): Promise<Record<string, any> | null>;
