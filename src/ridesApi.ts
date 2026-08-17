@@ -79,7 +79,7 @@ router.post("/:id/cancel", async (req: Request, res: Response) => {
 router.post("/:id/accept", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { driverId, driverName, driverPhone, driverLocation, driverPlate } = req.body;
+    const { driverId, driverName, driverPhone, driverLocation, driverPlate, isQueued } = req.body;
     
     const db = getAdminDb();
     
@@ -116,13 +116,19 @@ router.post("/:id/accept", async (req: Request, res: Response) => {
         location: driverLocation || null
       };
       
-      transaction.update(rideRef, {
+      const updateData: any = {
         status: 'matched',
         driver_id: driverId,
         driver: driverObj,
         accepted_at: FieldValue.serverTimestamp(),
         updated_at: FieldValue.serverTimestamp()
-      });
+      };
+      
+      if (isQueued) {
+        updateData.is_queued = true;
+      }
+      
+      transaction.update(rideRef, updateData);
     });
     
     console.log(`[Rides API] Driver ${driverId} successfully accepted ride ${id}`);
@@ -226,11 +232,19 @@ router.post("/:id/status", async (req: Request, res: Response) => {
     
     await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).update(updateData);
     
-    // If completed, send receipt
+    // If completed, send receipt and update driver stats
     if (status === 'completed') {
       try {
         const updatedRideDoc = await db.collection(ADMIN_COLLECTIONS.RIDES).doc(id).get();
         const rideData = updatedRideDoc.data();
+
+        // Increment driver total trips
+        if (rideData && rideData.driver_id) {
+          await db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(rideData.driver_id).update({
+            total_trips: FieldValue.increment(1)
+          }).catch(e => console.error("[Rides API] Failed to increment driver trips:", e));
+        }
+
         if (rideData && rideData.rider_id) {
           const riderDoc = await db.collection(ADMIN_COLLECTIONS.RIDER_PROFILES).doc(rideData.rider_id).get();
           const riderData = riderDoc.data();
