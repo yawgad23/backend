@@ -10,6 +10,7 @@ import {
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
+import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
@@ -465,9 +466,17 @@ export const appRouter = router({
         const isPaid = hoursElapsed < 24;
         return { isPaid };
       }),
+
   }),
 
-  
+  driverOperations,
+  driverTrips,
+  driverSafety,
+  driverFinance,
+  driverPerformance,
+  driverScheduling,
+  driverSupport,
+
   // ─── Rider / Driver Wallet ────────────────────────────────────────────────────
   wallet: router({
     /**

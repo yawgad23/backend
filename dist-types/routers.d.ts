@@ -177,6 +177,475 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             meta: object;
         }>;
     }>>;
+    driverOperations: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        getPreferences: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                preferences: {
+                    rideCategories: any;
+                    pickupRadiusKm: any;
+                    autoAccept: boolean;
+                    longTripsOnly: boolean;
+                    preferHighRated: boolean;
+                    destination: any;
+                    destinationUsesRemaining: number;
+                };
+            };
+            meta: object;
+        }>;
+        savePreferences: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideCategories: string[];
+                pickupRadiusKm: number;
+                autoAccept: boolean;
+                destination?: {
+                    label: string;
+                    latitude: number;
+                    longitude: number;
+                } | undefined;
+            };
+            output: {
+                preferences: any;
+                destinationUsesRemaining: number;
+            };
+            meta: object;
+        }>;
+        clearDestinationFilter: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                success: boolean;
+                preferences: any;
+            };
+            meta: object;
+        }>;
+        setAvailability: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                status: "online" | "offline" | "busy";
+            };
+            output: {
+                success: boolean;
+                status: "online" | "offline" | "busy";
+            };
+            meta: object;
+        }>;
+        updateLocation: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                latitude: number;
+                longitude: number;
+                heading?: number | undefined;
+                speedKmh?: number | undefined;
+            };
+            output: {
+                success: boolean;
+                location: {
+                    latitude: number;
+                    longitude: number;
+                    heading: number | null;
+                    speedKmh: number | null;
+                    recorded_at: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverTrips: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        activateQueued: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                completedRideId?: string | undefined;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+        respondToOffer: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                decision: "accept" | "decline";
+                driverName?: string | undefined;
+                queueAfterRideId?: string | undefined;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+                decision: "decline";
+            } | {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+                decision: "accept";
+            };
+            meta: object;
+        }>;
+        arrive: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+        verifyPickup: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                pickupCode: string;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+        start: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                waitingTimeMinutes?: number | undefined;
+                waitingFee?: number | undefined;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+        complete: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                finalFare: number;
+                tipAmount?: number | undefined;
+                actualDistanceKm?: number | undefined;
+                actualDurationMinutes?: number | undefined;
+                fareBreakdown?: any;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+                driverEarnings: number;
+            };
+            meta: object;
+        }>;
+        cancel: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                reason: string;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverSafety: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        createSos: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                driverName?: string | undefined;
+                rideId?: string | undefined;
+                message?: string | undefined;
+                location?: {
+                    latitude: number;
+                    longitude: number;
+                } | undefined;
+            };
+            output: {
+                success: boolean;
+                incident: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+        recordDrivingEvent: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                type: string;
+                rideId?: string | undefined;
+                previousSpeedKmh?: number | undefined;
+                currentSpeedKmh?: number | undefined;
+                location?: {
+                    latitude: number;
+                    longitude: number;
+                } | undefined;
+            };
+            output: {
+                success: boolean;
+                event: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+        reportRoadHazard: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                type: string;
+                latitude: number;
+                longitude: number;
+                description?: string | undefined;
+            };
+            output: {
+                success: boolean;
+                hazard: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverFinance: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        getOverview: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+                period?: "month" | "today" | "week" | undefined;
+            };
+            output: {
+                totals: {
+                    gross: number;
+                    net: number;
+                    tips: number;
+                    dailyPlatformFee: number;
+                    dailyFeeDays: number;
+                    tripCount: number;
+                    averagePerTrip: number;
+                    availableBalance: number;
+                };
+                dailyFee: {
+                    amount: number;
+                    status: string;
+                    date: string;
+                };
+                trend: {
+                    date: string;
+                    amount: number;
+                }[];
+                goals: never[];
+                goal: {
+                    amount: number;
+                    progress: number;
+                    percent: number;
+                } | null;
+                payoutMethod: any;
+            };
+            meta: object;
+        }>;
+        listIncentives: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                incentives: Record<string, any>[];
+            };
+            meta: object;
+        }>;
+        saveGoal: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                period: "month" | "today" | "week";
+                targetAmount: number;
+            };
+            output: {
+                success: boolean;
+                goal: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+        savePayoutMethod: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                provider: string;
+                accountNumber: string;
+                accountHolder: string;
+            };
+            output: {
+                success: boolean;
+                payoutMethod: {
+                    provider: string;
+                    accountHolder: string;
+                    accountNumberMasked: string;
+                    updatedAt: string;
+                };
+            };
+            meta: object;
+        }>;
+        requestPayout: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                amount: number;
+            };
+            output: {
+                success: boolean;
+                request: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverPerformance: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        getOverview: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                metrics: {
+                    acceptanceRate: number;
+                    cancellationRate: number;
+                    rating: number;
+                    ratingsCount: number;
+                    completedTrips: number;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverScheduling: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        listAvailable: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+                limit?: number | undefined;
+            };
+            output: {
+                rides: Record<string, any>[];
+            };
+            meta: object;
+        }>;
+        reserve: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+                driverName?: string | undefined;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+        release: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                rideId: string;
+            };
+            output: {
+                success: boolean;
+                ride: {
+                    updated_date: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
+    driverSupport: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        listTickets: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                tickets: Record<string, any>[];
+            };
+            meta: object;
+        }>;
+        createTicket: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                driverId: string;
+                category: string;
+                message: string;
+                subject?: string | undefined;
+            };
+            output: {
+                success: boolean;
+                ticket: {
+                    created_date: any;
+                    updated_date: string;
+                    id: string;
+                };
+            };
+            meta: object;
+        }>;
+    }>>;
     wallet: import("@trpc/server").TRPCBuiltRouter<{
         ctx: import("./context").TrpcContext;
         meta: object;

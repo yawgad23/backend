@@ -6,6 +6,7 @@
  * Default Credentials (works on Cloud Run automatically when the runtime
  * service account has Firestore access).
  */
+export declare function getAdminAuth(): import("firebase-admin/auth").Auth;
 export declare const ADMIN_COLLECTIONS: {
     RIDER_PROFILES: string;
     RIDES: string;

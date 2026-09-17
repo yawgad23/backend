@@ -17,8 +17,7 @@
  * Email retail@hubtel.com to request this scope. Also provide your server IP for whitelisting.
  *
  * Commission rates:
- *   - Car drivers (Standard/Comfort/Kantanka/Executive): GH₵50/day
- *   - Okada / Delivery drivers: GH₵30/day
+ *   - All drivers: GH₵1/day
  */
 export interface HubtelChargeRequest {
     /** Customer's MoMo phone number (e.g. "0244123456") */
