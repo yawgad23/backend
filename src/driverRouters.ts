@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { publicProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
+import { sendTripReceiptEmail } from './email';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -81,7 +82,41 @@ export const driverTrips = router({
   arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', driver_arrived_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
   verifyPickup: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.'); const updated = withRide(ride, { pickup_verified_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
   start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
-  complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const tip = input.tipAmount || 0; const updated = withRide(ride, { driver_id: input.driverId, status: 'completed', final_fare: input.finalFare, fare: input.finalFare, tip_amount: tip, driver_earnings: input.finalFare + tip, actual_distance_km: input.actualDistanceKm, actual_duration_minutes: input.actualDurationMinutes, fare_breakdown: input.fareBreakdown, completed_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated, driverEarnings: input.finalFare + tip }; }),
+  complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    const tip = input.tipAmount || 0;
+    const completedAt = now();
+    const updated = withRide(ride, { driver_id: input.driverId, status: 'completed', final_fare: input.finalFare, fare: input.finalFare, tip_amount: tip, driver_earnings: input.finalFare + tip, actual_distance_km: input.actualDistanceKm, actual_duration_minutes: input.actualDurationMinutes, fare_breakdown: input.fareBreakdown, completed_at: completedAt });
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+
+    // Send the receipt from the backend so it works even when the rider closes
+    // the app immediately after the driver completes the trip. The rider app
+    // keeps its local request as a fallback for older deployments.
+    const riderEmail = String(ride.rider_email || ride.riderEmail || '').trim();
+    if (riderEmail && !ride.receipt_email_sent) {
+      const pickup = typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.name || ride.pickup_address || 'Pickup location';
+      const destination = typeof ride.destination === 'string' ? ride.destination : ride.destination?.name || ride.destination_address || 'Destination';
+      const sent = await sendTripReceiptEmail({
+        riderEmail,
+        riderName: ride.rider_name || ride.riderName || 'HY3N Rider',
+        driverName: ride.driver_name || ride.driverName || 'Driver',
+        driverVehicle: ride.driver_vehicle || ride.driverVehicle || 'HY3N vehicle',
+        driverPlate: ride.driver_plate || ride.driverPlate || 'Not available',
+        pickup,
+        destination,
+        fare: input.finalFare + tip,
+        paymentMethod: ride.payment_method || ride.payment || 'Cash',
+        distance: input.actualDistanceKm,
+        duration: input.actualDurationMinutes,
+        category: ride.category,
+        tripId: input.rideId,
+        completedAt,
+      });
+      if (sent) await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { receipt_email_sent: true, receipt_email_sent_at: now() });
+    }
+
+    return { success: true, ride: updated, driverEarnings: input.finalFare + tip };
+  }),
   cancel: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { status: 'cancelled', cancelled_by: 'driver', cancellation_reason: input.reason, cancelled_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
 });
 
