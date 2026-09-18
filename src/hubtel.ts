@@ -16,8 +16,8 @@
  * IMPORTANT: The "Receive Money" scope must be enabled on the API key by Hubtel.
  * Email retail@hubtel.com to request this scope. Also provide your server IP for whitelisting.
  *
- * Commission rates:
- *   - All drivers: GH₵1/day
+ * Platform fee:
+ *   - All drivers: GH₵50/day
  */
 
 export interface HubtelChargeRequest {
@@ -234,11 +234,9 @@ const body = {
  * Determine commission amount based on driver service type.
  */
 export function getCommissionAmount(serviceType: string): number {
-  if (process.env.DAILY_COMMISSION_AMOUNT) {
-    const val = parseFloat(process.env.DAILY_COMMISSION_AMOUNT);
-    if (!isNaN(val)) return val;
-  }
-  return 1; // Default to 1 for all service types
+  // HY3N uses one fixed daily platform fee for every driver and service type.
+  // Do not allow service type or a legacy percentage/amount setting to change it.
+  return 50;
 }
 
 /**

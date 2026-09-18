@@ -16,8 +16,8 @@
  * IMPORTANT: The "Receive Money" scope must be enabled on the API key by Hubtel.
  * Email retail@hubtel.com to request this scope. Also provide your server IP for whitelisting.
  *
- * Commission rates:
- *   - All drivers: GH₵1/day
+ * Platform fee:
+ *   - All drivers: GH₵50/day
  */
 export interface HubtelChargeRequest {
     /** Customer's MoMo phone number (e.g. "0244123456") */
