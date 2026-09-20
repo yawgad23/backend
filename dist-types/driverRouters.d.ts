@@ -107,6 +107,14 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
             rideId: string;
             decision: "accept" | "decline";
             driverName?: string | undefined;
+            vehicle_make?: string | undefined;
+            vehicle_model?: string | undefined;
+            vehicle_plate?: string | undefined;
+            license_plate?: string | undefined;
+            vehicle_color?: string | undefined;
+            vehicle_colour?: string | undefined;
+            vehicle_colour_hex?: string | undefined;
+            vehicle_full_model?: string | undefined;
             queueAfterRideId?: string | undefined;
         };
         output: {

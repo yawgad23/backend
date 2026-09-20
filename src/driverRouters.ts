@@ -71,11 +71,17 @@ export const driverTrips = router({
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     return { success: true, ride: updated };
   }),
-  respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
+  respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     if (input.decision === 'decline') { const updated = withRide(ride, { status: 'requested', driver_id: null, declined_by_driver_id: input.driverId }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated, decision: input.decision }; }
     const status = input.queueAfterRideId ? 'driver_queued' : 'driver_arriving';
-    const updated = withRide(ride, { driver_id: input.driverId, driver_name: input.driverName || ride.driver_name, status, accepted_at: now(), queued_after_ride_id: input.queueAfterRideId || null });
+    const driverProfile = await profile(input.driverId);
+    const vehicleMake = input.vehicle_make || driverProfile?.vehicle_make || '';
+    const vehicleModel = input.vehicle_model || driverProfile?.vehicle_model || '';
+    const vehiclePlate = input.vehicle_plate || input.license_plate || driverProfile?.vehicle_plate || driverProfile?.license_plate || '';
+    const vehicleColour = input.vehicle_colour || input.vehicle_color || driverProfile?.vehicle_colour || driverProfile?.vehicle_color || '';
+    const vehicleColourHex = input.vehicle_colour_hex || driverProfile?.vehicle_colour_hex || '';
+    const updated = withRide(ride, { driver_id: input.driverId, driver_name: input.driverName || driverProfile?.full_name || ride.driver_name, driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(), driver_vehicle_make: vehicleMake, driver_vehicle_model: vehicleModel, driver_plate: vehiclePlate, driver_colour: vehicleColour, driver_colour_hex: vehicleColourHex, status, accepted_at: now(), queued_after_ride_id: input.queueAfterRideId || null });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     return { success: true, ride: updated, decision: input.decision };
   }),
