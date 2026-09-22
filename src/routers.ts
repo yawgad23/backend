@@ -188,9 +188,10 @@ export const appRouter = router({
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const clientReference = generateReference();
 
-        // Format phone number: ensure it starts with country code
-        let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
-        if (!phone.startsWith('233')) phone = '233' + phone;
+        // `chargeDriverCommission` applies one consistent Ghana MSISDN
+        // normalization. Passing the original input here prevents a +233
+        // value from becoming the invalid string "233+233...".
+        const phone = input.momoNumber;
 
         const result = await chargeDriverCommission({
           customerMsisdn: phone,

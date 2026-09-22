@@ -65,10 +65,11 @@ function phoneNumberFormat(msisdn: string): string {
   // Hubtel Receive Money accepts Ghana's local MSISDN form (for example,
   // 0557278990). Accept the app's common local, 233, and +233 variants and
   // pass one predictable format to Hubtel.
-  const digits = msisdn.replace(/[\s-]/g, '').replace(/^\+/, '');
+  const digits = String(msisdn || '').replace(/\D/g, '');
   if (digits.startsWith('233') && digits.length === 12) {
     return `0${digits.slice(3)}`;
   }
+  if (digits.length === 9) return `0${digits}`;
   return digits;
 }
 
