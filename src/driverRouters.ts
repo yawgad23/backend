@@ -75,6 +75,22 @@ export const driverTrips = router({
   respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     if (input.decision === 'decline') { const updated = withRide(ride, { status: 'requested', driver_id: null, declined_by_driver_id: input.driverId }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated, decision: input.decision }; }
+    if (input.queueAfterRideId) {
+      const currentRide = await rideFor(input.driverId, input.queueAfterRideId);
+      if (currentRide.status !== 'in_progress') {
+        throw new Error('A next ride can only be queued while the current trip is in progress.');
+      }
+      const alreadyQueued = await adminFirestore.list(
+        ADMIN_COLLECTIONS.RIDES,
+        { driver_id: input.driverId, status: 'driver_queued' },
+        'accepted_at',
+        'desc',
+        2,
+      );
+      if (alreadyQueued.some((queued) => queued.id !== input.rideId)) {
+        throw new Error('This driver already has a queued next ride.');
+      }
+    }
     const status = input.queueAfterRideId ? 'driver_queued' : 'driver_arriving';
     const driverProfile = await profile(input.driverId);
     const vehicleMake = input.vehicle_make || driverProfile?.vehicle_make || '';
