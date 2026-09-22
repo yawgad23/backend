@@ -116,25 +116,13 @@ export const appRouter = router({
               const txRecord = walletRecords[0];
               const userId = txRecord.user_id;
 
-              if (dbStatus === 'paid' && txRecord.status !== 'completed') {
-                // Credit the wallet
-                const walletSnap = await adminFirestore.get(ADMIN_COLLECTIONS.WALLET, userId);
-                const currentBalance = (walletSnap?.balance as number) ?? 0;
-                const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
-                const amount = txRecord.amount as number;
-
-                await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, userId, {
-                  user_id: userId,
-                  user_type: txRecord.user_type || 'rider',
-                  balance: currentBalance + amount,
-                  total_topped_up: totalToppedUp + amount,
-                });
-
-                await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
-                  status: 'completed',
-                  hubtel_transaction_id: transactionId,
-                  hubtel_status: status,
-                  completed_at: new Date().toISOString(),
+              if (dbStatus === 'paid') {
+                // Hubtel can retry callbacks while the mobile app also polls.
+                // Credit and mark completion together so the same payment is
+                // never applied to the wallet twice.
+                await adminFirestore.settleWalletTopUp(ref, {
+                  transactionId,
+                  status,
                 });
               } else if (dbStatus === 'failed' && txRecord.status === 'processing') {
                 await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {

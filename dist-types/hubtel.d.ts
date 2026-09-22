@@ -49,7 +49,6 @@ export interface HubtelChargeResponse {
  */
 export declare function chargeDriverCommission(req: HubtelChargeRequest): Promise<HubtelChargeResponse>;
 export declare function transactionStatusCheck(clientReference: string): Promise<any>;
-export declare function testHubtelConnection(): Promise<Response>;
 /**
  * Determine commission amount based on driver service type.
  */

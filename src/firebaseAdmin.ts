@@ -162,4 +162,79 @@ export const adminFirestore = {
       return { id, ...payload };
     });
   },
+
+  /**
+   * Settles a successful Hubtel wallet top-up exactly once. Hubtel can retry
+   * callbacks and the status-reconciliation route can run concurrently, so
+   * the wallet credit and transaction state change must share one Firestore
+   * transaction.
+   */
+  async settleWalletTopUp(reference: string, hubtel: {
+    transactionId?: string;
+    status?: string;
+    message?: string;
+  }) {
+    return withFirestoreErrorHandling(`settleWalletTopUp(${reference})`, async () => {
+      const db = getDb();
+      return db.runTransaction(async (transaction) => {
+        const topupQuery = db
+          .collection(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS)
+          .where('reference', '==', reference)
+          .limit(1);
+        const topupSnapshot = await transaction.get(topupQuery);
+
+        if (topupSnapshot.empty) {
+          return { found: false, settled: false, alreadyCompleted: false, newBalance: null as number | null };
+        }
+
+        const topupDoc = topupSnapshot.docs[0];
+        const topup = topupDoc.data() as Record<string, any>;
+        const userId = String(topup.user_id || '');
+        if (!userId) {
+          throw new Error('Wallet transaction is missing its user_id.');
+        }
+
+        const walletRef = db.collection(ADMIN_COLLECTIONS.WALLET).doc(userId);
+        const walletSnapshot = await transaction.get(walletRef);
+        const wallet = walletSnapshot.exists ? (walletSnapshot.data() || {}) : {};
+        const currentBalance = Number(wallet.balance || 0);
+
+        if (topup.status === 'completed') {
+          return { found: true, settled: false, alreadyCompleted: true, newBalance: currentBalance };
+        }
+
+        if (topup.status !== 'processing') {
+          return { found: true, settled: false, alreadyCompleted: false, newBalance: currentBalance };
+        }
+
+        const amount = Number(topup.amount || 0);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          throw new Error('Wallet transaction has an invalid top-up amount.');
+        }
+
+        const totalToppedUp = Number(wallet.total_topped_up || 0);
+        const now = new Date().toISOString();
+        const newBalance = currentBalance + amount;
+
+        transaction.set(walletRef, {
+          user_id: userId,
+          user_type: topup.user_type || wallet.user_type || 'rider',
+          balance: newBalance,
+          total_topped_up: totalToppedUp + amount,
+          created_date: wallet.created_date || now,
+          updated_date: now,
+        }, { merge: true });
+        transaction.update(topupDoc.ref, {
+          status: 'completed',
+          hubtel_transaction_id: hubtel.transactionId || topup.hubtel_transaction_id || null,
+          hubtel_status: hubtel.status || 'Success',
+          hubtel_message: hubtel.message || topup.hubtel_message || null,
+          completed_at: now,
+          updated_date: now,
+        });
+
+        return { found: true, settled: true, alreadyCompleted: false, newBalance };
+      });
+    });
+  },
 };

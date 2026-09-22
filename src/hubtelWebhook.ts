@@ -120,26 +120,29 @@ export async function handleHubtelWebhook(req: Request, res: Response) {
       }
 
       if (isSuccess) {
-        const walletSnap = await adminFirestore.get(COLLECTIONS.WALLET, userId);
-        const currentBalance = (walletSnap?.balance as number) ?? 0;
-        const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
-
-        await adminFirestore.set(COLLECTIONS.WALLET, userId, {
-          user_id: userId,
-          user_type: txRecord.user_type || 'rider',
-          balance: currentBalance + amount,
-          total_topped_up: totalToppedUp + amount,
+        const settlement = await adminFirestore.settleWalletTopUp(clientReference, {
+          transactionId,
+          status: status || 'Success',
+          message,
         });
 
-        await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
-          status: 'completed',
-          hubtel_transaction_id: transactionId,
-          hubtel_status: status || 'Success',
-          completed_at: new Date().toISOString(),
-        });
+        if (!settlement.found) {
+          res.status(404).json({ error: 'Wallet transaction record not found' });
+          return;
+        }
 
-        console.log('[Hubtel Wallet Webhook] Wallet credited:', { userId, amount, newBalance: currentBalance + amount });
-        res.json({ success: true, message: 'Wallet credited', newBalance: currentBalance + amount });
+        console.log('[Hubtel Wallet Webhook] Wallet settlement:', {
+          userId,
+          amount,
+          settled: settlement.settled,
+          alreadyCompleted: settlement.alreadyCompleted,
+          newBalance: settlement.newBalance,
+        });
+        res.json({
+          success: true,
+          message: settlement.settled ? 'Wallet credited' : 'Wallet top-up already settled',
+          newBalance: settlement.newBalance,
+        });
       } else if (isFailed) {
         await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
           status: 'failed',
@@ -218,26 +221,24 @@ export async function handleHubtelWalletWebhook(req: Request, res: Response) {
     }
 
     if (isSuccess) {
-      const walletSnap = await adminFirestore.get(COLLECTIONS.WALLET, userId);
-      const currentBalance = (walletSnap?.balance as number) ?? 0;
-      const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
-
-      await adminFirestore.set(COLLECTIONS.WALLET, userId, {
-        user_id: userId,
-        user_type: txRecord.user_type || 'rider',
-        balance: currentBalance + amount,
-        total_topped_up: totalToppedUp + amount,
+      const settlement = await adminFirestore.settleWalletTopUp(clientReference, {
+        transactionId,
+        status: status || 'Success',
+        message,
       });
 
-      await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
-        status: 'completed',
-        hubtel_transaction_id: transactionId,
-        hubtel_status: status || 'Success',
-        completed_at: new Date().toISOString(),
+      console.log('[Hubtel Wallet Webhook] Wallet settlement:', {
+        userId,
+        amount,
+        settled: settlement.settled,
+        alreadyCompleted: settlement.alreadyCompleted,
+        newBalance: settlement.newBalance,
       });
-
-      console.log('[Hubtel Wallet Webhook] Wallet credited:', { userId, amount, newBalance: currentBalance + amount });
-      res.json({ success: true, message: 'Wallet credited', newBalance: currentBalance + amount });
+      res.json({
+        success: true,
+        message: settlement.settled ? 'Wallet credited' : 'Wallet top-up already settled',
+        newBalance: settlement.newBalance,
+      });
     } else if (isFailed) {
       await adminFirestore.update(COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
         status: 'failed',

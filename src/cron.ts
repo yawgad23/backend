@@ -125,26 +125,11 @@ export function registerCronRoutes(app: Express) {
                 const status = response.data.status;
                 const transactionId = response.data.transactionId;
                 if (status === 'Paid') {
-                  const userId = record.user_id;
-                  const walletSnap = await adminFirestore.get(ADMIN_COLLECTIONS.WALLET, userId);
-                  const currentBalance = (walletSnap?.balance as number) ?? 0;
-                  const totalToppedUp = (walletSnap?.total_topped_up as number) ?? 0;
-                  const amount = record.amount as number;
-
-                  await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, userId, {
-                    user_id: userId,
-                    user_type: record.user_type || 'rider',
-                    balance: currentBalance + amount,
-                    total_topped_up: totalToppedUp + amount,
+                  const settlement = await adminFirestore.settleWalletTopUp(ref, {
+                    transactionId,
+                    status,
                   });
-
-                  await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, record.id, {
-                    status: 'completed',
-                    hubtel_transaction_id: transactionId,
-                    hubtel_status: status,
-                    completed_at: new Date().toISOString(),
-                  });
-                  stats.walletsUpdated++;
+                  if (settlement.settled) stats.walletsUpdated++;
                 } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, record.id, {
                     status: 'failed',

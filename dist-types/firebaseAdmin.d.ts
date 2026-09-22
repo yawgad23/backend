@@ -45,4 +45,20 @@ export declare const adminFirestore: {
         updated_date: string;
         id: string;
     }>;
+    /**
+     * Settles a successful Hubtel wallet top-up exactly once. Hubtel can retry
+     * callbacks and the status-reconciliation route can run concurrently, so
+     * the wallet credit and transaction state change must share one Firestore
+     * transaction.
+     */
+    settleWalletTopUp(reference: string, hubtel: {
+        transactionId?: string;
+        status?: string;
+        message?: string;
+    }): Promise<{
+        found: boolean;
+        settled: boolean;
+        alreadyCompleted: boolean;
+        newBalance: number | null;
+    }>;
 };

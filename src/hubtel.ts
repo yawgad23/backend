@@ -62,12 +62,14 @@ function maskKey(key: string): string {
 }
 
 function phoneNumberFormat(msisdn: string): string {
-  //check if msisdn starts with 233 if so remove it and leave the msisdn as it is
-  if (msisdn.startsWith('233')) {
-    msisdn = msisdn.substring(3);
-    return msisdn;
+  // Hubtel Receive Money accepts Ghana's local MSISDN form (for example,
+  // 0557278990). Accept the app's common local, 233, and +233 variants and
+  // pass one predictable format to Hubtel.
+  const digits = msisdn.replace(/[\s-]/g, '').replace(/^\+/, '');
+  if (digits.startsWith('233') && digits.length === 12) {
+    return `0${digits.slice(3)}`;
   }
-  return msisdn;
+  return digits;
 }
 
 
@@ -76,14 +78,13 @@ function phoneNumberFormat(msisdn: string): string {
  * The customer receives a USSD prompt on their phone to approve the payment.
  */
 export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<HubtelChargeResponse> {
-  if (!HUBTEL_POS_NUMBER || !HUBTEL_API_ID || !HUBTEL_API_KEY) {
-    console.error('[Hubtel] Missing HUBTEL_POS_NUMBER / HUBTEL_API_ID / HUBTEL_API_KEY in .env');
+  const callbackUrl = process.env.PRIMARY_CALLBACK_URL || '';
+  if (!HUBTEL_POS_NUMBER || !HUBTEL_API_ID || !HUBTEL_API_KEY || !callbackUrl) {
+    console.error('[Hubtel] Missing HUBTEL_POS_NUMBER, HUBTEL_API_ID, HUBTEL_API_KEY, or PRIMARY_CALLBACK_URL.');
     return { success: false, status: 'failed', message: 'Payment provider is not configured.' };
   }
 
   const url = `https://rmp.hubtel.com/merchantaccount/merchants/${HUBTEL_POS_NUMBER}/receive/mobilemoney`;
-
-  const callbackUrl = process.env.PRIMARY_CALLBACK_URL || "https://api-yvurtipaxq-ew.a.run.app/api/hubtel/callback";
 
   const body = {
     CustomerMsisdn: phoneNumberFormat(req.customerMsisdn),
@@ -154,8 +155,10 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
       };
     }
 
-    // Hubtel returns ResponseCode "0000" for success
-    const isSuccess = data?.ResponseCode === '0000' || data?.Status === 'Success' || response.status === 200;
+    // Hubtel returns ResponseCode "0000" (or Status "Success") after it
+    // accepts a charge request. A bare HTTP 200 is not enough to mark it as
+    // pending because it can still contain a provider-side validation error.
+    const isSuccess = data?.ResponseCode === '0000' || data?.Status === 'Success';
     const transactionId = data?.Data?.TransactionId || data?.TransactionId || data?.ClientReference;
 
     return {
@@ -176,9 +179,15 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
 }
 
 export async function transactionStatusCheck(clientReference: string){
+  if (!HUBTEL_POS_NUMBER || !HUBTEL_API_ID || !HUBTEL_API_KEY) {
+    console.error('[Hubtel] Cannot check transaction status: Hubtel credentials are not configured.');
+    return { success: false, status: 'failed', message: 'Payment provider is not configured.' };
+  }
+
   const url = `https://api-txnstatus.hubtel.com/transactions/${HUBTEL_POS_NUMBER}/status?clientReference=${clientReference}`;
   console.log(`[Hubtel] Checking transaction status for clientReference=${clientReference} url=${url}`);
-  const response = await fetch(url, {
+  try {
+    const response = await fetch(url, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -210,25 +219,12 @@ if (!response.ok) {
     }
 
     console.log('[Hubtel] Transaction status response for ' + clientReference + ':', JSON.stringify(data, null, 2));
-  return data;
+    return data;
+  } catch (err: any) {
+    console.error('[Hubtel] Transaction status network error:', err?.message);
+    return { success: false, status: 'failed', message: err?.message || 'Network error contacting Hubtel' };
+  }
 }
-
-export async function testHubtelConnection(){
- const url = 'https://webhook.site/f602e639-51c9-4c81-992a-c412fa10bd38';
-const body = {
-
-};
-  const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': getBasicAuth(),
-        'Cache-Control': 'no-cache',
-      },
-      body: JSON.stringify(body),
-    });
-  return response;
-} 
 
 /**
  * Determine commission amount based on driver service type.

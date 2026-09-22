@@ -33,6 +33,7 @@ export const api = onRequest(
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
       "HUBTEL_POS_NUMBER",
+      "PRIMARY_CALLBACK_URL",
       "EMAIL_USER",
       "EMAIL_PASS",
       "ADMIN_DASHBOARD_PIN",
