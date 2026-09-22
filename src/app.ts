@@ -45,34 +45,6 @@ const riderRideRequestInput = z.object({
   }).optional(),
 });
 
-function onlineDriverLocation(profile: Record<string, any>) {
-  const location = profile.current_location || profile.location || {};
-  const lat = Number(location.latitude ?? location.lat ?? profile.latitude ?? profile.current_lat);
-  const lng = Number(location.longitude ?? location.lng ?? profile.longitude ?? profile.current_lng);
-  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
-}
-
-function isApprovedDriver(profile: Record<string, any>) {
-  const status = String(profile.approval_status ?? profile.application_status ?? profile.status ?? '').toLowerCase();
-  return profile.approved === true || profile.is_approved === true || status === 'approved';
-}
-
-function acceptsRideCategory(profile: Record<string, any>, category: string) {
-  const requested = category.toLowerCase();
-  const categories = Array.isArray(profile.accepted_categories)
-    ? profile.accepted_categories.map((value: unknown) => String(value).toLowerCase())
-    : Array.isArray(profile.ride_categories)
-      ? profile.ride_categories.map((value: unknown) => String(value).toLowerCase())
-      : [];
-  if (categories.length > 0) return categories.includes(requested);
-
-  const serviceType = String(profile.service_type || profile.category || '').toLowerCase();
-  if (['standard', 'comfort', 'kantanka', 'executive'].includes(requested)) return !serviceType || serviceType === 'car';
-  if (requested === 'okada') return serviceType === 'okada';
-  if (requested === 'express_delivery') return serviceType === 'delivery';
-  return false;
-}
-
 /**
  * Builds the Express app. Shared by src/index.ts (local dev / a plain Node
  * server) and src/functions.ts (Firebase Cloud Functions) so the actual
@@ -153,10 +125,10 @@ export function createApp(): Express {
   registerCronRoutes(app);
 
   /**
-   * Creates a Rider request with Firebase ID-token authentication and assigns
-   * an eligible online driver before writing the ride. The Driver app listens
-   * only for driver-assigned `matched` records, so this avoids the old client
-   * Firestore write path that could create a request no driver could receive.
+   * Creates a Rider request with Firebase ID-token authentication. A request
+   * always remains unassigned until a real logged-in Driver explicitly accepts
+   * it; the server must never assign a profile merely because it was last seen
+   * as online.
    */
   app.post("/api/rides/request", async (req, res) => {
     const authHeader = String(req.headers.authorization || "");
@@ -187,42 +159,8 @@ export function createApp(): Express {
     }
 
     try {
-      const allDrivers = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, {}, null);
-      const candidates = allDrivers
-        .filter((profile) => {
-          const online = profile.is_online === true || profile.is_available === true || profile.availability_status === 'online';
-          return online && isApprovedDriver(profile) && acceptsRideCategory(profile, input.category) && Boolean(onlineDriverLocation(profile));
-        })
-        .map((profile) => ({ profile, location: onlineDriverLocation(profile)! }));
-
-      const distanceToPickup = (location: { lat: number; lng: number }) => {
-        const latKm = (location.lat - input.pickup.lat) * 111;
-        const lngKm = (location.lng - input.pickup.lng) * 111 * Math.cos(input.pickup.lat * Math.PI / 180);
-        return Math.hypot(latKm, lngKm);
-      };
-      candidates.sort((a, b) => distanceToPickup(a.location) - distanceToPickup(b.location));
-      const selected = candidates[0];
       const now = new Date().toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
-      const driver = selected
-        ? {
-            id: String(selected.profile.user_id || selected.profile.id),
-            name: String(selected.profile.full_name || selected.profile.name || 'HY3N Driver'),
-            phone: String(selected.profile.phone || ''),
-            photo_url: selected.profile.avatar_url || selected.profile.photo_url || '',
-            rating: Number(selected.profile.rating ?? 5),
-            total_trips: Number(selected.profile.total_trips ?? 0),
-            vehicle_make: String(selected.profile.vehicle_make || ''),
-            vehicle_model: String(selected.profile.vehicle_model || ''),
-            vehicle_colour: String(selected.profile.vehicle_colour || selected.profile.vehicle_color || ''),
-            vehicle_colour_hex: String(selected.profile.vehicle_colour_hex || ''),
-            plate: String(selected.profile.vehicle_plate || selected.profile.license_plate || ''),
-            category: input.category,
-            is_available: true,
-            location: selected.location,
-            last_seen: String(selected.profile.last_seen_at || selected.profile.updated_date || now),
-          }
-        : null;
 
       const ride = await adminFirestore.create(ADMIN_COLLECTIONS.RIDES, {
         rider_id: input.riderId,
@@ -251,22 +189,22 @@ export function createApp(): Express {
         ride_options: input.rideOptions || { ac: true, pet_friendly: false, extra_luggage: false, wheelchair_accessible: false },
         pickup_code: pickupCode,
         ride_pin: pickupCode,
-        status: driver ? 'matched' : 'searching',
-        driver_id: driver?.id || null,
-        driver,
-        driver_name: driver?.name || null,
-        driver_vehicle: driver ? `${driver.vehicle_make} ${driver.vehicle_model}`.trim() : null,
-        driver_plate: driver?.plate || null,
-        driver_colour: driver?.vehicle_colour || null,
-        driver_colour_hex: driver?.vehicle_colour_hex || null,
-        matched_at: driver ? now : null,
+        status: 'searching',
+        driver_id: null,
+        driver: null,
+        driver_name: null,
+        driver_vehicle: null,
+        driver_plate: null,
+        driver_colour: null,
+        driver_colour_hex: null,
+        matched_at: null,
         created_at: now,
       });
 
       res.status(201).json({
         success: true,
         ride,
-        message: driver ? 'A driver has been found for your trip.' : 'Your request is searching for an available driver.',
+        message: 'Your request is now waiting for a driver to accept it.',
       });
     } catch (error) {
       console.error('[Ride Dispatch] Failed to create rider request:', error);
