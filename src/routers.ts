@@ -490,6 +490,51 @@ export const appRouter = router({
 
   }),
 
+  // ─── Rider Surge Pricing ─────────────────────────────────────────────────────
+  surge: router({
+    /**
+     * Returns the single live surge setting. Surge is deliberately off unless
+     * an administrator enables a temporary override; time of day never causes
+     * a price increase by itself.
+     */
+    get: publicProcedure.query(async () => {
+      const setting = await adminFirestore.get('platform_settings', 'surge_pricing');
+      const enabled = setting?.manual_enabled === true;
+      const configured = Number(setting?.manual_multiplier);
+      const multiplier = enabled && Number.isFinite(configured)
+        ? Math.min(2, Math.max(1, Math.round(configured * 100) / 100))
+        : 1;
+      return {
+        active: multiplier > 1,
+        multiplier,
+        reason: multiplier > 1 ? 'Temporary administrator-approved high demand pricing' : null,
+        updatedAt: typeof setting?.updated_at === 'string' ? setting.updated_at : null,
+      };
+    }),
+
+    /** Administrator-only manual surge override, protected by the dashboard PIN. */
+    update: publicProcedure
+      .input(z.object({
+        enabled: z.boolean(),
+        multiplier: z.number().min(1).max(2),
+        adminPin: z.string().min(1),
+      }))
+      .mutation(async ({ input }) => {
+        const expectedPin = process.env.ADMIN_DASHBOARD_PIN;
+        if (!expectedPin || input.adminPin !== expectedPin) {
+          throw new Error('Administrator authorization is required to change surge pricing.');
+        }
+        const updatedAt = new Date().toISOString();
+        await adminFirestore.set('platform_settings', 'surge_pricing', {
+          manual_enabled: input.enabled,
+          manual_multiplier: input.enabled ? Math.round(input.multiplier * 100) / 100 : 1,
+          updated_at: updatedAt,
+          updated_by: 'admin_dashboard',
+        });
+        return { success: true, active: input.enabled && input.multiplier > 1, multiplier: input.enabled ? input.multiplier : 1, updatedAt };
+      }),
+  }),
+
   driverOperations,
   driverTrips,
   driverSafety,

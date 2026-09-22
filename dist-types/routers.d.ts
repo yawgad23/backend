@@ -202,6 +202,43 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             meta: object;
         }>;
     }>>;
+    surge: import("@trpc/server").TRPCBuiltRouter<{
+        ctx: import("./context").TrpcContext;
+        meta: object;
+        errorShape: import("@trpc/server").TRPCDefaultErrorShape;
+        transformer: true;
+    }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        /**
+         * Returns the single live surge setting. Surge is deliberately off unless
+         * an administrator enables a temporary override; time of day never causes
+         * a price increase by itself.
+         */
+        get: import("@trpc/server").TRPCQueryProcedure<{
+            input: void;
+            output: {
+                active: boolean;
+                multiplier: number;
+                reason: string | null;
+                updatedAt: string | null;
+            };
+            meta: object;
+        }>;
+        /** Administrator-only manual surge override, protected by the dashboard PIN. */
+        update: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                enabled: boolean;
+                multiplier: number;
+                adminPin: string;
+            };
+            output: {
+                success: boolean;
+                active: boolean;
+                multiplier: number;
+                updatedAt: string;
+            };
+            meta: object;
+        }>;
+    }>>;
     driverOperations: import("@trpc/server").TRPCBuiltRouter<{
         ctx: import("./context").TrpcContext;
         meta: object;

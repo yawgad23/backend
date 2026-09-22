@@ -344,6 +344,15 @@
       <span class="fee-control-note" id="platformFeeStatus">Loading current fee…</span>
     </div>
 
+    <div class="fee-control">
+      <span class="fee-control-title">Temporary rider surge</span>
+      <label class="fee-control-note"><input type="checkbox" id="surgeEnabled"> Enable only for verified high demand</label>
+      <span class="fee-control-note">Multiplier</span>
+      <input type="number" id="surgeMultiplier" min="1" max="2" step="0.05" value="1.00" inputmode="decimal" aria-label="Temporary surge multiplier">
+      <button class="refresh-btn" id="saveSurgeBtn" onclick="saveSurge()">Save surge</button>
+      <span class="fee-control-note" id="surgeStatus">Loading surge setting…</span>
+    </div>
+
     <div class="section-title">Driver Commissions</div>
 
     <div id="loadingRow" class="loading-row">Loading commissions...</div>
@@ -459,6 +468,7 @@
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('dateFilter').value = today;
     loadPlatformFee();
+    loadSurge();
     loadCommissions();
   }
 
@@ -508,6 +518,40 @@
       btn.disabled = false;
       btn.textContent = 'Save fee';
     }
+  }
+
+  async function loadSurge() {
+    const enabled = document.getElementById('surgeEnabled');
+    const multiplier = document.getElementById('surgeMultiplier');
+    const status = document.getElementById('surgeStatus');
+    try {
+      const surge = await trpcQuery('surge.get');
+      enabled.checked = surge?.active === true;
+      multiplier.value = Number(surge?.multiplier || 1).toFixed(2);
+      status.textContent = surge?.active ? `Active at ${multiplier.value}× — disable it when demand normalizes.` : 'Off — normal fares are active.';
+    } catch (err) {
+      status.textContent = 'Could not load surge setting.';
+    }
+  }
+
+  async function saveSurge() {
+    const enabled = document.getElementById('surgeEnabled').checked;
+    const multiplier = Number(document.getElementById('surgeMultiplier').value);
+    const status = document.getElementById('surgeStatus');
+    const btn = document.getElementById('saveSurgeBtn');
+    const adminPin = sessionStorage.getItem(PIN_KEY) || '';
+    if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > 2) {
+      status.textContent = 'Enter a multiplier from 1.00× to 2.00×.';
+      return;
+    }
+    if (!adminPin) { status.textContent = 'Your admin session has expired. Please sign in again.'; return; }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const result = await trpcMutation('surge.update', { enabled, multiplier, adminPin });
+      status.textContent = result.active ? `Active at ${Number(result.multiplier).toFixed(2)}×.` : 'Off — normal fares are active.';
+    } catch (err) {
+      status.textContent = err.message || 'Could not save surge setting.';
+    } finally { btn.disabled = false; btn.textContent = 'Save surge'; }
   }
 
   async function loadCommissions() {
