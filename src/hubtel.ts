@@ -33,6 +33,8 @@ export interface HubtelChargeRequest {
   clientReference: string;
   /** MoMo network channel: "mtn-gh" | "vodafone-gh" | "tigo-gh" */
   channel: 'mtn-gh' | 'vodafone-gh' | 'tigo-gh';
+  /** Optional callback destination for payment-type-specific settlement. */
+  callbackUrl?: string;
 }
 
 export interface HubtelChargeResponse {
@@ -79,7 +81,7 @@ function phoneNumberFormat(msisdn: string): string {
  * The customer receives a USSD prompt on their phone to approve the payment.
  */
 export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<HubtelChargeResponse> {
-  const callbackUrl = process.env.PRIMARY_CALLBACK_URL || '';
+  const callbackUrl = req.callbackUrl || process.env.PRIMARY_CALLBACK_URL || '';
   if (!HUBTEL_POS_NUMBER || !HUBTEL_API_ID || !HUBTEL_API_KEY || !callbackUrl) {
     console.error('[Hubtel] Missing HUBTEL_POS_NUMBER, HUBTEL_API_ID, HUBTEL_API_KEY, or PRIMARY_CALLBACK_URL.');
     return { success: false, status: 'failed', message: 'Payment provider is not configured.' };

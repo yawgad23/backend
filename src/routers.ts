@@ -562,8 +562,12 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const reference = generateReference();
-        let phone = input.momoNumber.replace(/\s+/g, '').replace(/^0/, '233');
-        if (!phone.startsWith('233')) phone = '233' + phone;
+        const walletCallbackUrl = process.env.HUBTEL_WALLET_CALLBACK_URL || '';
+
+        if (!walletCallbackUrl) {
+          console.error('[Hubtel Wallet] HUBTEL_WALLET_CALLBACK_URL is not configured.');
+          return { success: false, message: 'Wallet top-up is temporarily unavailable. Please try again later.' };
+        }
 
         // Create a pending wallet transaction record first (for idempotency)
         const txRecord = await adminFirestore.create(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {
@@ -574,16 +578,20 @@ export const appRouter = router({
           description: `Wallet top-up via MoMo`,
           reference,
           status: 'processing',
+          callback_url: walletCallbackUrl,
           date: new Date().toISOString(),
         });
 
         const result = await chargeDriverCommission({
-          customerMsisdn: phone,
+          // chargeDriverCommission normalizes Ghana's local, 233, and +233
+          // formats once. Passing the original entry prevents "233+233...".
+          customerMsisdn: input.momoNumber,
           amount: input.amount,
           customerName: input.riderName,
           description: `HY3N wallet top-up GH₵${input.amount}`,
           clientReference: reference,
           channel,
+          callbackUrl: walletCallbackUrl,
         });
 
         if (!result.success) {
