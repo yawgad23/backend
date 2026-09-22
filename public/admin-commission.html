@@ -333,6 +333,11 @@
 
     <div class="fee-control">
       <span class="fee-control-title">Daily driver platform fee</span>
+      <select id="platformFeeService" onchange="loadPlatformFee()" aria-label="Driver service type">
+        <option value="car">Car</option>
+        <option value="okada">Okada</option>
+        <option value="delivery">Delivery</option>
+      </select>
       <span class="fee-control-note">GH₵</span>
       <input type="number" id="platformFeeInput" min="0.01" max="1000" step="0.01" inputmode="decimal" aria-label="Daily driver platform fee">
       <button class="refresh-btn" id="saveFeeBtn" onclick="savePlatformFee()">Save fee</button>
@@ -465,7 +470,8 @@
     const input = document.getElementById('platformFeeInput');
     const status = document.getElementById('platformFeeStatus');
     try {
-      const fee = await trpcQuery('commission.getPlatformFee');
+      const serviceType = document.getElementById('platformFeeService').value;
+      const fee = await trpcQuery('commission.getPlatformFee', { serviceType });
       input.value = Number(fee?.amount || 0).toFixed(2);
       status.textContent = fee?.source === 'firestore'
         ? `Current live fee · updated ${fee.updatedAt ? new Date(fee.updatedAt).toLocaleString() : 'recently'}`
@@ -480,6 +486,7 @@
     const status = document.getElementById('platformFeeStatus');
     const btn = document.getElementById('saveFeeBtn');
     const amount = Number(input.value);
+    const serviceType = document.getElementById('platformFeeService').value;
     const adminPin = sessionStorage.getItem(PIN_KEY) || '';
     if (!Number.isFinite(amount) || amount < 0.01 || amount > 1000) {
       status.textContent = 'Enter a fee from GH₵0.01 to GH₵1,000.00.';
@@ -492,7 +499,7 @@
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-      const result = await trpcMutation('commission.updatePlatformFee', { amount, adminPin });
+      const result = await trpcMutation('commission.updatePlatformFee', { amount, serviceType, adminPin });
       input.value = Number(result?.fee?.amount || amount).toFixed(2);
       status.textContent = `Live fee saved: GH₵${input.value} per day.`;
     } catch (err) {
