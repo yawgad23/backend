@@ -91,7 +91,9 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
         }>;
         /** Current global fee, used by Driver screens before a payment is made. */
         getPlatformFee: import("@trpc/server").TRPCQueryProcedure<{
-            input: void;
+            input: {
+                serviceType?: string | undefined;
+            } | undefined;
             output: import("./platformFee").PlatformFeeSetting;
             meta: object;
         }>;
@@ -103,6 +105,7 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             input: {
                 amount: number;
                 adminPin: string;
+                serviceType?: string | undefined;
             };
             output: {
                 success: boolean;

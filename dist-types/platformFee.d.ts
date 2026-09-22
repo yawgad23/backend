@@ -1,17 +1,16 @@
-export declare const DEFAULT_DAILY_PLATFORM_FEE = 50;
+export type DriverServiceType = 'car' | 'okada' | 'delivery';
 export type PlatformFeeSetting = {
     amount: number;
+    serviceType: DriverServiceType;
     updatedAt: string | null;
     updatedBy: string | null;
     source: 'firestore' | 'default';
 };
+export declare function normalizeDriverServiceType(value: unknown): DriverServiceType;
 /**
- * Loads the platform fee at charge time. This must not be cached in process
- * memory: multiple Railway replicas must always use the same admin setting.
+ * Loads a service-specific fee at charge time. The value is intentionally not
+ * cached: every Railway replica reads the same administrator-controlled value.
  */
-export declare function getDailyPlatformFee(): Promise<PlatformFeeSetting>;
-/**
- * Persists a single global fee so all driver service types receive the same
- * fixed daily charge. Validation occurs again on the server before any write.
- */
-export declare function setDailyPlatformFee(amountInput: number, updatedBy: string): Promise<PlatformFeeSetting>;
+export declare function getDailyPlatformFee(serviceTypeInput?: unknown): Promise<PlatformFeeSetting>;
+/** Persists one global daily fee per approved driver service type. */
+export declare function setDailyPlatformFee(serviceTypeInput: unknown, amountInput: number, updatedBy: string): Promise<PlatformFeeSetting>;

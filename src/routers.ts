@@ -10,7 +10,7 @@ import {
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
-import { getDailyPlatformFee, setDailyPlatformFee } from "./platformFee";
+import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
@@ -179,7 +179,11 @@ export const appRouter = router({
         const date = input.date || new Date().toISOString().split('T')[0];
         // Read the global setting at charge time so an administrator can
         // safely change the test fee without rebuilding the Driver app.
-        const feeSetting = await getDailyPlatformFee();
+        const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId);
+        const serviceType = normalizeDriverServiceType(
+          driverProfile?.service_type || driverProfile?.serviceType || input.serviceType,
+        );
+        const feeSetting = await getDailyPlatformFee(serviceType);
         const amount = feeSetting.amount;
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const clientReference = generateReference();
@@ -204,6 +208,7 @@ export const appRouter = router({
             driver_name: input.driverName,
             date,
             amount,
+            service_type: serviceType,
             momo_number: input.momoNumber,
             momo_network: input.momoNetwork || 'mtn-gh',
             hubtel_transaction_id: result.transactionId,
@@ -229,7 +234,8 @@ export const appRouter = router({
 
     /** Current global fee, used by Driver screens before a payment is made. */
     getPlatformFee: publicProcedure
-      .query(async () => getDailyPlatformFee()),
+      .input(z.object({ serviceType: z.string().optional() }).optional())
+      .query(async ({ input }) => getDailyPlatformFee(input?.serviceType)),
 
     /**
      * Updates the global daily driver charge. The administrator PIN is checked
@@ -238,6 +244,7 @@ export const appRouter = router({
     updatePlatformFee: publicProcedure
       .input(z.object({
         amount: z.number().min(0.01).max(1000),
+        serviceType: z.string().optional(),
         adminPin: z.string().min(1),
       }))
       .mutation(async ({ input }) => {
@@ -245,7 +252,7 @@ export const appRouter = router({
         if (!expectedPin || input.adminPin !== expectedPin) {
           throw new Error('Administrator authorization is required to change the platform fee.');
         }
-        const fee = await setDailyPlatformFee(input.amount, 'admin_dashboard');
+        const fee = await setDailyPlatformFee(input.serviceType, input.amount, 'admin_dashboard');
         return { success: true, fee };
       }),
 
