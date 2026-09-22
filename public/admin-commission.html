@@ -108,7 +108,7 @@
       flex-wrap: wrap;
       align-items: center;
     }
-    input[type="date"], input[type="text"], select {
+    input[type="date"], input[type="text"], input[type="number"], select {
       padding: 10px 12px;
       border: 1px solid #2a2a2a;
       background: #1a1a1a;
@@ -129,6 +129,19 @@
     }
     .refresh-btn:hover { background: #e5c158; }
     .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .fee-control {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 14px;
+      border: 1px solid #3f3414;
+      background: #d4af370d;
+      border-radius: 10px;
+    }
+    .fee-control-title { font-size: 13px; font-weight: 700; color: #d4af37; margin-right: 4px; }
+    .fee-control-note { font-size: 12px; color: #9ca3af; }
 
     .section-title {
       font-size: 14px;
@@ -318,6 +331,14 @@
       <button class="refresh-btn" id="refreshBtn" onclick="loadCommissions()">↻ Refresh</button>
     </div>
 
+    <div class="fee-control">
+      <span class="fee-control-title">Daily driver platform fee</span>
+      <span class="fee-control-note">GH₵</span>
+      <input type="number" id="platformFeeInput" min="0.01" max="1000" step="0.01" inputmode="decimal" aria-label="Daily driver platform fee">
+      <button class="refresh-btn" id="saveFeeBtn" onclick="savePlatformFee()">Save fee</button>
+      <span class="fee-control-note" id="platformFeeStatus">Loading current fee…</span>
+    </div>
+
     <div class="section-title">Driver Commissions</div>
 
     <div id="loadingRow" class="loading-row">Loading commissions...</div>
@@ -358,6 +379,7 @@
 <script>
   // ── Config ──────────────────────────────────────────────────────────────────
   const SESSION_KEY = 'hy3n_admin_session';
+  const PIN_KEY = 'hy3n_admin_pin';
 
   // Derive API base URL: admin page is served from 3000-xxx, so same origin
   function getApiBase() {
@@ -402,6 +424,7 @@
       const data = await res.json();
       if (data.ok) {
         sessionStorage.setItem(SESSION_KEY, '1');
+        sessionStorage.setItem(PIN_KEY, pin);
         showDashboard();
       } else {
         document.getElementById('loginError').textContent = 'Incorrect PIN. Please try again.';
@@ -417,6 +440,7 @@
 
   function logout() {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(PIN_KEY);
     document.getElementById('dashboard').style.display = 'none';
     document.getElementById('loginGate').style.display = 'flex';
     document.getElementById('adminPin').value = '';
@@ -429,12 +453,55 @@
     // Set today's date as default filter
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('dateFilter').value = today;
+    loadPlatformFee();
     loadCommissions();
   }
 
   // ── Data ─────────────────────────────────────────────────────────────────────
   let allCommissions = [];
   let currentOverride = null;
+
+  async function loadPlatformFee() {
+    const input = document.getElementById('platformFeeInput');
+    const status = document.getElementById('platformFeeStatus');
+    try {
+      const fee = await trpcQuery('commission.getPlatformFee');
+      input.value = Number(fee?.amount || 0).toFixed(2);
+      status.textContent = fee?.source === 'firestore'
+        ? `Current live fee · updated ${fee.updatedAt ? new Date(fee.updatedAt).toLocaleString() : 'recently'}`
+        : 'Using the GH₵50.00 production default';
+    } catch (err) {
+      status.textContent = 'Could not load the current fee.';
+    }
+  }
+
+  async function savePlatformFee() {
+    const input = document.getElementById('platformFeeInput');
+    const status = document.getElementById('platformFeeStatus');
+    const btn = document.getElementById('saveFeeBtn');
+    const amount = Number(input.value);
+    const adminPin = sessionStorage.getItem(PIN_KEY) || '';
+    if (!Number.isFinite(amount) || amount < 0.01 || amount > 1000) {
+      status.textContent = 'Enter a fee from GH₵0.01 to GH₵1,000.00.';
+      return;
+    }
+    if (!adminPin) {
+      status.textContent = 'Your admin session has expired. Please sign in again.';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      const result = await trpcMutation('commission.updatePlatformFee', { amount, adminPin });
+      input.value = Number(result?.fee?.amount || amount).toFixed(2);
+      status.textContent = `Live fee saved: GH₵${input.value} per day.`;
+    } catch (err) {
+      status.textContent = err.message || 'Could not save the platform fee.';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save fee';
+    }
+  }
 
   async function loadCommissions() {
     const dateFilter = document.getElementById('dateFilter').value;

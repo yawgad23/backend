@@ -3,7 +3,6 @@ import { publicProcedure, router } from "./trpc";
 import { sendTripReceiptEmail, sendVerificationEmail } from "./email";
 import {
   chargeDriverCommission,
-  getCommissionAmount,
   getMomoChannel,
   getCommissionReference,
   transactionStatusCheck,
@@ -11,6 +10,7 @@ import {
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
+import { getDailyPlatformFee, setDailyPlatformFee } from "./platformFee";
 
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
@@ -177,7 +177,10 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const date = input.date || new Date().toISOString().split('T')[0];
-        const amount = getCommissionAmount(input.serviceType);
+        // Read the global setting at charge time so an administrator can
+        // safely change the test fee without rebuilding the Driver app.
+        const feeSetting = await getDailyPlatformFee();
+        const amount = feeSetting.amount;
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const clientReference = generateReference();
 
@@ -218,9 +221,32 @@ export const appRouter = router({
           message: result.message || '',
           amount,
           date,
+          feeSource: feeSetting.source,
           clientReference,
           commissionRecord,
         };
+      }),
+
+    /** Current global fee, used by Driver screens before a payment is made. */
+    getPlatformFee: publicProcedure
+      .query(async () => getDailyPlatformFee()),
+
+    /**
+     * Updates the global daily driver charge. The administrator PIN is checked
+     * again here rather than trusting a browser-only dashboard session.
+     */
+    updatePlatformFee: publicProcedure
+      .input(z.object({
+        amount: z.number().min(0.01).max(1000),
+        adminPin: z.string().min(1),
+      }))
+      .mutation(async ({ input }) => {
+        const expectedPin = process.env.ADMIN_DASHBOARD_PIN;
+        if (!expectedPin || input.adminPin !== expectedPin) {
+          throw new Error('Administrator authorization is required to change the platform fee.');
+        }
+        const fee = await setDailyPlatformFee(input.amount, 'admin_dashboard');
+        return { success: true, fee };
       }),
 
     /**

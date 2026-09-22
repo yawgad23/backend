@@ -79,12 +79,34 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
                 message: string;
                 amount: number;
                 date: string;
+                feeSource: "default" | "firestore";
                 clientReference: string;
                 commissionRecord: {
                     created_date: any;
                     updated_date: string;
                     id: string;
                 } | null;
+            };
+            meta: object;
+        }>;
+        /** Current global fee, used by Driver screens before a payment is made. */
+        getPlatformFee: import("@trpc/server").TRPCQueryProcedure<{
+            input: void;
+            output: import("./platformFee").PlatformFeeSetting;
+            meta: object;
+        }>;
+        /**
+         * Updates the global daily driver charge. The administrator PIN is checked
+         * again here rather than trusting a browser-only dashboard session.
+         */
+        updatePlatformFee: import("@trpc/server").TRPCMutationProcedure<{
+            input: {
+                amount: number;
+                adminPin: string;
+            };
+            output: {
+                success: boolean;
+                fee: import("./platformFee").PlatformFeeSetting;
             };
             meta: object;
         }>;

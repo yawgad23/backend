@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { publicProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
+import { getDailyPlatformFee } from './platformFee';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -133,7 +134,60 @@ export const driverSafety = router({
 });
 
 export const driverFinance = router({
-  getOverview: publicProcedure.input(z.object({ driverId: z.string(), period: z.enum(['today', 'week', 'month']).optional() })).query(async ({ input }) => { const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: input.driverId, status: 'completed' }, 'completed_at', 'desc', 500); const gross = rides.reduce((s, r) => s + Number(r.final_fare ?? r.fare ?? r.fare_estimate ?? 0), 0); const tips = rides.reduce((s, r) => s + Number(r.tip_amount || 0), 0); const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, 'date', 'desc', 100); const dailyPlatformFee = fees.filter(f => f.status === 'paid' || f.status === 'completed').reduce((s, f) => s + Number(f.amount || 50), 0); const today = dateKey(); const todayFee = fees.find(f => f.date === today && ['paid', 'completed', 'processing'].includes(f.status)); const total = gross + tips; const savedGoal = await adminFirestore.get('driver_goals', `${input.driverId}_${input.period || 'week'}`); const goal = savedGoal?.targetAmount ? { amount: Number(savedGoal.targetAmount), progress: total, percent: Math.min(100, Number((total / Number(savedGoal.targetAmount) * 100).toFixed(1))) } : null; return { totals: { gross, net: total - dailyPlatformFee, tips, dailyPlatformFee, dailyFeeDays: fees.length, tripCount: rides.length, averagePerTrip: rides.length ? total / rides.length : 0, availableBalance: total - dailyPlatformFee }, dailyFee: { amount: 50, status: todayFee?.status === 'paid' || todayFee?.status === 'completed' ? 'paid' : 'unpaid', date: today }, trend: rides.slice(0, 14).map(r => ({ date: String(r.completed_at || r.created_date).slice(0, 10), amount: Number(r.final_fare ?? r.fare ?? 0) })), goals: [], goal, payoutMethod: (await profile(input.driverId))?.payout_method || null }; }),
+  getOverview: publicProcedure
+    .input(z.object({ driverId: z.string(), period: z.enum(['today', 'week', 'month']).optional() }))
+    .query(async ({ input }) => {
+      const rides = await adminFirestore.list(
+        ADMIN_COLLECTIONS.RIDES,
+        { driver_id: input.driverId, status: 'completed' },
+        'completed_at',
+        'desc',
+        500,
+      );
+      const gross = rides.reduce((sum, ride) => sum + Number(ride.final_fare ?? ride.fare ?? ride.fare_estimate ?? 0), 0);
+      const tips = rides.reduce((sum, ride) => sum + Number(ride.tip_amount || 0), 0);
+      const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, 'date', 'desc', 100);
+      const currentFee = await getDailyPlatformFee();
+      const dailyPlatformFee = fees
+        .filter((fee) => fee.status === 'paid' || fee.status === 'completed')
+        .reduce((sum, fee) => sum + Number(fee.amount ?? currentFee.amount), 0);
+      const today = dateKey();
+      const todayFee = fees.find((fee) => fee.date === today && ['paid', 'completed', 'processing'].includes(fee.status));
+      const total = gross + tips;
+      const savedGoal = await adminFirestore.get('driver_goals', `${input.driverId}_${input.period || 'week'}`);
+      const goal = savedGoal?.targetAmount
+        ? {
+            amount: Number(savedGoal.targetAmount),
+            progress: total,
+            percent: Math.min(100, Number((total / Number(savedGoal.targetAmount) * 100).toFixed(1))),
+          }
+        : null;
+
+      return {
+        totals: {
+          gross,
+          net: total - dailyPlatformFee,
+          tips,
+          dailyPlatformFee,
+          dailyFeeDays: fees.length,
+          tripCount: rides.length,
+          averagePerTrip: rides.length ? total / rides.length : 0,
+          availableBalance: total - dailyPlatformFee,
+        },
+        dailyFee: {
+          amount: currentFee.amount,
+          status: todayFee?.status === 'paid' || todayFee?.status === 'completed' ? 'paid' : 'unpaid',
+          date: today,
+        },
+        trend: rides.slice(0, 14).map((ride) => ({
+          date: String(ride.completed_at || ride.created_date).slice(0, 10),
+          amount: Number(ride.final_fare ?? ride.fare ?? 0),
+        })),
+        goals: [],
+        goal,
+        payoutMethod: (await profile(input.driverId))?.payout_method || null,
+      };
+    }),
   listIncentives: publicProcedure.input(driverIdInput).query(async () => ({ incentives: await adminFirestore.list('driver_incentives', { status: 'active' }, 'created_date', 'desc', 50) })),
   saveGoal: publicProcedure.input(z.object({ driverId: z.string(), period: z.enum(['today', 'week', 'month']), targetAmount: z.number().min(0) })).mutation(async ({ input }) => ({ success: true, goal: await adminFirestore.set('driver_goals', `${input.driverId}_${input.period}`, input) })),
   savePayoutMethod: publicProcedure.input(z.object({ driverId: z.string(), provider: z.string(), accountNumber: z.string(), accountHolder: z.string() })).mutation(async ({ input }) => { const digits = input.accountNumber.replace(/\D/g, ''); const method = { provider: input.provider, accountHolder: input.accountHolder, accountNumberMasked: `${digits.slice(0, 3)}****${digits.slice(-2)}`, updatedAt: now() }; await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, { payout_method: method, momo_provider: input.provider, momo_account_holder: input.accountHolder, momo_number_masked: method.accountNumberMasked }); return { success: true, payoutMethod: method }; }),
@@ -153,4 +207,10 @@ export const driverSupport = router({
   createTicket: publicProcedure.input(z.object({ driverId: z.string(), category: z.string(), subject: z.string().optional(), message: z.string().min(1) })).mutation(async ({ input }) => ({ success: true, ticket: await adminFirestore.create(ADMIN_COLLECTIONS.SUPPORT_TICKETS, { ...input, user_type: 'driver', status: 'open' }) })),
 });
 
-export const checkPaidToday = publicProcedure.input(driverIdInput).query(async ({ input }) => { const date = dateKey(); const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId, date }, '', 'desc', 20); const paid = records.some(r => r.status === 'paid' || r.status === 'completed'); return { paid, isPaid: paid, status: paid ? 'paid' : 'unpaid', amount: 50, date, record: records[0] || null }; });
+export const checkPaidToday = publicProcedure.input(driverIdInput).query(async ({ input }) => {
+  const date = dateKey();
+  const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId, date }, '', 'desc', 20);
+  const paid = records.some((record) => record.status === 'paid' || record.status === 'completed');
+  const fee = await getDailyPlatformFee();
+  return { paid, isPaid: paid, status: paid ? 'paid' : 'unpaid', amount: fee.amount, date, record: records[0] || null };
+});
