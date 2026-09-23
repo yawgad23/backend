@@ -10,7 +10,6 @@ import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
-import { transactionStatusCheck } from "./hubtel";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -267,30 +266,6 @@ export function createApp(): Express {
 
   app.get("/api/hubtel/status", (_req, res) => {
     res.json({ status: "ready", webhook: "/api/hubtel/callback" });
-  });
-
-  // Temporary, non-financial diagnostic: Hubtel's transaction-status API only
-  // reads a past transaction and cannot initiate, debit, or reverse a payment.
-  // It is protected by the existing admin PIN and removed after the credential
-  // and outbound-IP check is complete.
-  app.get("/api/internal/hubtel-credential-check", async (req, res) => {
-    const adminPin = process.env.ADMIN_DASHBOARD_PIN;
-    const authHeader = String(req.headers.authorization || "");
-    const providedPin = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
-    if (!adminPin || providedPin !== adminPin) {
-      res.status(401).json({ ok: false, message: "Unauthorized diagnostic request." });
-      return;
-    }
-
-    const reference = String(req.query.clientReference || "").trim();
-    if (!reference || reference.length > 160) {
-      res.status(400).json({ ok: false, message: "A valid clientReference is required." });
-      return;
-    }
-
-    const result = await transactionStatusCheck(reference);
-    const failure = result?.success === false || result?.status === "failed";
-    res.status(failure ? 502 : 200).json({ ok: !failure, result });
   });
 
   // Admin commission dashboard (served as static HTML)
