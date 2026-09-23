@@ -29,6 +29,9 @@ export const api = onRequest(
     // unpredictable IP pool instead.
     vpcConnector: "hy3n-connector",
     vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    // Keep the payment and dispatch API available while the newly restored
+    // billing account settles, avoiding Cloud Run's no-instance 429 response.
+    minInstances: 1,
     secrets: [
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
