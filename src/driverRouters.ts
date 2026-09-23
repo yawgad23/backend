@@ -140,7 +140,14 @@ export const driverOperations = router({
   updateLocation: publicProcedure.input(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
     const location = { latitude: input.latitude, longitude: input.longitude, heading: input.heading ?? null, speedKmh: input.speedKmh ?? null, recorded_at: now() };
     const driverProfile = await profile(input.driverId);
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() });
+    const patch = { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() };
+    // Legacy approved profiles use an auto-ID, while Rider tracking subscribes
+    // by Firebase UID. Keep both documents in sync so movement and heading are
+    // visible live without exposing a broad collection query to the Rider.
+    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, patch);
+    if (driverProfile?.id && driverProfile.id !== input.driverId) {
+      await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, patch);
+    }
     return { success: true, location };
   }),
 });
