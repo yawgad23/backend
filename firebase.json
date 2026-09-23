@@ -5,5 +5,8 @@
     "predeploy": [
       "npm --prefix \"$RESOURCE_DIR\" run build:functions"
     ]
+  },
+  "firestore": {
+    "indexes": "firestore.indexes.json"
   }
 }
