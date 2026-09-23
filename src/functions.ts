@@ -34,6 +34,8 @@ export const api = onRequest(
       "HUBTEL_API_KEY",
       "HUBTEL_POS_NUMBER",
       "PRIMARY_CALLBACK_URL",
+      "HUBTEL_WALLET_CALLBACK_URL",
+      "DRIVER_PLATFORM_FEE_GATE_ENABLED",
       "EMAIL_USER",
       "EMAIL_PASS",
       "ADMIN_DASHBOARD_PIN",
