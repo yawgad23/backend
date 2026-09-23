@@ -39,6 +39,26 @@ function isOnline(profileData: Record<string, any> | null) {
   return profileData?.is_online === true || profileData?.availability_status === 'online';
 }
 
+async function hasCurrentPlatformFee(driverId: string) {
+  // Keep the offer listener aligned with the app's payment gate. When a test
+  // environment explicitly disables the gate, offers are still allowed; in
+  // production, a paid commission remains valid for 24 hours.
+  if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') return true;
+  const records = await adminFirestore.list(
+    ADMIN_COLLECTIONS.DAILY_COMMISSION,
+    { driver_id: driverId },
+    null,
+    'desc',
+    100,
+  );
+  return records.some((record: any) => {
+    if (record.status !== 'paid' && record.status !== 'confirmed' && record.status !== 'completed') return false;
+    const paidAt = record.submitted_at || record.admin_override_at || record.created_date || record.date;
+    const paidTime = new Date(paidAt || 0).getTime();
+    return Number.isFinite(paidTime) && Date.now() - paidTime < 24 * 60 * 60 * 1000;
+  });
+}
+
 function hasCategory(profileData: Record<string, any>, category: unknown) {
   const requested = String(category || '').toLowerCase();
   const categories = Array.isArray(profileData.ride_categories)
@@ -120,6 +140,7 @@ export const driverTrips = router({
   availableOffers: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
     if (!driverProfile || !isOnline(driverProfile)) return { offers: [] };
+    if (!(await hasCurrentPlatformFee(input.driverId))) return { offers: [] };
 
     const preferences = driverProfile.driver_preferences || {};
     const radiusKm = Number(preferences.pickupRadiusKm ?? driverProfile.pickup_radius_km ?? 10);
@@ -146,6 +167,9 @@ export const driverTrips = router({
   respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
     if (!driverProfile || !isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
+    if (input.decision === 'accept' && !(await hasCurrentPlatformFee(input.driverId))) {
+      throw new Error('Pay today’s platform fee before accepting ride requests.');
+    }
     const ride = await rideFor(input.driverId, input.rideId);
     if (input.decision === 'decline') {
       const declined = Array.isArray(ride.declined_by_driver_ids) ? ride.declined_by_driver_ids : [];
