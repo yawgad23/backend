@@ -158,10 +158,13 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
       };
     }
 
-    // Hubtel returns ResponseCode "0000" (or Status "Success") after it
-    // accepts a charge request. A bare HTTP 200 is not enough to mark it as
-    // pending because it can still contain a provider-side validation error.
-    const isSuccess = data?.ResponseCode === '0000' || data?.Status === 'Success';
+    // Hubtel returns "0001" when it has accepted a direct-receive request
+    // and the payer must still approve it on their phone. "0000"/"Success"
+    // is the completed success state returned by some endpoints. A bare HTTP
+    // 200 is not enough because it can still contain a provider-side error.
+    const isSuccess = data?.ResponseCode === '0000'
+      || data?.ResponseCode === '0001'
+      || data?.Status === 'Success';
     const transactionId = data?.Data?.TransactionId || data?.TransactionId || data?.ClientReference;
 
     return {
