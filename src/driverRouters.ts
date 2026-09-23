@@ -146,6 +146,27 @@ export const driverOperations = router({
 });
 
 export const driverTrips = router({
+  rateRider: publicProcedure.input(z.object({
+    driverId: z.string().min(1),
+    rideId: z.string().min(1),
+    riderId: z.string().min(1),
+    rating: z.number().int().min(1).max(5),
+    feedback: z.string().max(2000).optional(),
+    foundItem: z.string().max(2000).optional(),
+    safetyReport: z.string().max(2000).optional(),
+  })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    if (ride.driver_id !== input.driverId || ride.rider_id !== input.riderId) throw new Error('This ride is not eligible for rating.');
+    if (ride.status !== 'completed') throw new Error('Complete the ride before submitting a rating.');
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { driver_rating: input.rating, driver_feedback: input.feedback || '', driver_rated_at: now() });
+    const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: input.riderId }, 'completed_at', 'desc', 500);
+    const rated = riderRides.map((item) => Number(item.driver_rating || 0)).filter((value) => value > 0);
+    const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: input.riderId }, '', 'desc', 5);
+    if (riderProfiles[0] && rated.length) await adminFirestore.update(ADMIN_COLLECTIONS.RIDER_PROFILES, riderProfiles[0].id, { rating: Number((rated.reduce((sum, value) => sum + value, 0) / rated.length).toFixed(2)) });
+    if (input.foundItem?.trim()) await adminFirestore.create('found_items', { driver_id: input.driverId, ride_id: input.rideId, rider_id: input.riderId, description: input.foundItem.trim(), status: 'reported', reported_at: now() });
+    if (input.safetyReport?.trim()) await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_REPORTS, { reporter_id: input.driverId, reporter_role: 'driver', ride_id: input.rideId, type: 'safety', description: input.safetyReport.trim(), status: 'open', created_at: now() });
+    return { success: true };
+  }),
   availableOffers: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
     if (!driverProfile || !isOnline(driverProfile)) return { offers: [] };
