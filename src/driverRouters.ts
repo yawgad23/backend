@@ -39,11 +39,20 @@ function isOnline(profileData: Record<string, any> | null) {
   return profileData?.is_online === true || profileData?.availability_status === 'online';
 }
 
+function hasDriverFeeTestBypass(driverId: string) {
+  return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(driverId);
+}
+
 async function hasCurrentPlatformFee(driverId: string) {
   // Keep the offer listener aligned with the app's payment gate. When a test
   // environment explicitly disables the gate, offers are still allowed; in
   // production, a paid commission remains valid for 24 hours.
   if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') return true;
+  if (hasDriverFeeTestBypass(driverId)) return true;
   const records = await adminFirestore.list(
     ADMIN_COLLECTIONS.DAILY_COMMISSION,
     { driver_id: driverId },

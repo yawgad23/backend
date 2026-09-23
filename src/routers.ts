@@ -12,6 +12,14 @@ import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
 import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
 
+function hasDriverFeeTestBypass(driverId: string) {
+  return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(driverId);
+}
+
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
 async function getOrCreateWallet(userId: string, userType: 'rider' | 'driver' = 'rider') {
@@ -465,6 +473,9 @@ export const appRouter = router({
         // sets DRIVER_PLATFORM_FEE_GATE_ENABLED=false.
         if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') {
           return { isPaid: true, feeGateDisabled: true };
+        }
+        if (hasDriverFeeTestBypass(input.driverId)) {
+          return { isPaid: true, testAccessGranted: true };
         }
 
         // Fetch all commission records for this driver to process in memory
