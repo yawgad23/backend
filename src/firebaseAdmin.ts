@@ -164,6 +164,28 @@ export const adminFirestore = {
   },
 
   /**
+   * Assigns a searching ride once. The Firestore transaction prevents two
+   * online drivers from accepting the same offer at the same time.
+   */
+  async claimSearchingRide(rideId: string, driverId: string, data: Record<string, any>) {
+    return withFirestoreErrorHandling(`claimSearchingRide(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (ride.status !== 'searching' || ride.driver_id) {
+          throw new Error('This ride has already been accepted by another driver.');
+        }
+        const payload = { ...data, driver_id: driverId, updated_date: new Date().toISOString() };
+        transaction.update(ref, payload);
+        return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
    * Settles a successful Hubtel wallet top-up exactly once. Hubtel can retry
    * callbacks and the status-reconciliation route can run concurrently, so
    * the wallet credit and transaction state change must share one Firestore

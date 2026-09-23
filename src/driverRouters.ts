@@ -23,6 +23,43 @@ function withRide(ride: Record<string, any>, patch: Record<string, any>) {
   return { ...ride, ...patch, updated_date: now() };
 }
 
+function isOnline(profileData: Record<string, any> | null) {
+  return profileData?.is_online === true || profileData?.availability_status === 'online';
+}
+
+function hasCategory(profileData: Record<string, any>, category: unknown) {
+  const requested = String(category || '').toLowerCase();
+  const categories = Array.isArray(profileData.ride_categories)
+    ? profileData.ride_categories.map((value: unknown) => String(value).toLowerCase())
+    : [];
+  if (categories.length > 0) return categories.includes(requested);
+  const serviceType = String(profileData.service_type || '').toLowerCase();
+  return ['standard', 'comfort', 'kantanka', 'executive'].includes(requested)
+    ? (!serviceType || serviceType === 'car')
+    : requested === 'okada'
+      ? serviceType === 'okada'
+      : requested === 'express_delivery'
+        ? serviceType === 'delivery'
+        : false;
+}
+
+function locationOf(profileData: Record<string, any>) {
+  const value = profileData.current_location || profileData.location || {};
+  const lat = Number(value.latitude ?? value.lat ?? profileData.latitude);
+  const lng = Number(value.longitude ?? value.lng ?? profileData.longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+function pickupDistanceKm(ride: Record<string, any>, driverLocation: { lat: number; lng: number } | null) {
+  const pickup = ride.pickup || {};
+  const lat = Number(pickup.lat ?? pickup.latitude);
+  const lng = Number(pickup.lng ?? pickup.longitude);
+  if (!driverLocation || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const latKm = (driverLocation.lat - lat) * 111;
+  const lngKm = (driverLocation.lng - lng) * 111 * Math.cos(lat * Math.PI / 180);
+  return Math.hypot(latKm, lngKm);
+}
+
 export const driverOperations = router({
   getPreferences: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const p = await profile(input.driverId);
@@ -66,6 +103,25 @@ export const driverOperations = router({
 });
 
 export const driverTrips = router({
+  availableOffers: publicProcedure.input(driverIdInput).query(async ({ input }) => {
+    const driverProfile = await profile(input.driverId);
+    if (!driverProfile || !isOnline(driverProfile)) return { offers: [] };
+
+    const preferences = driverProfile.driver_preferences || {};
+    const radiusKm = Number(preferences.pickupRadiusKm ?? driverProfile.pickup_radius_km ?? 10);
+    const driverLocation = locationOf(driverProfile);
+    if (!driverLocation) return { offers: [] };
+
+    const recentRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
+    const offers = recentRides
+      .filter((ride) => ride.status === 'searching' && !ride.driver_id)
+      .filter((ride) => hasCategory(driverProfile, ride.category))
+      .map((ride) => ({ ...ride, pickup_distance_km: pickupDistanceKm(ride, driverLocation) }))
+      .filter((ride) => ride.pickup_distance_km !== null && ride.pickup_distance_km <= radiusKm)
+      .sort((left, right) => Number(left.pickup_distance_km) - Number(right.pickup_distance_km))
+      .slice(0, 5);
+    return { offers };
+  }),
   activateQueued: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), completedRideId: z.string().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', queued_after_ride_id: null, activated_at: now() });
@@ -73,8 +129,19 @@ export const driverTrips = router({
     return { success: true, ride: updated };
   }),
   respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
+    const driverProfile = await profile(input.driverId);
+    if (!driverProfile || !isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
     const ride = await rideFor(input.driverId, input.rideId);
-    if (input.decision === 'decline') { const updated = withRide(ride, { status: 'requested', driver_id: null, declined_by_driver_id: input.driverId }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated, decision: input.decision }; }
+    if (input.decision === 'decline') {
+      const declined = Array.isArray(ride.declined_by_driver_ids) ? ride.declined_by_driver_ids : [];
+      const updated = withRide(ride, {
+        status: 'searching',
+        driver_id: null,
+        declined_by_driver_ids: [...new Set([...declined, input.driverId])],
+      });
+      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+      return { success: true, ride: updated, decision: input.decision };
+    }
     if (input.queueAfterRideId) {
       const currentRide = await rideFor(input.driverId, input.queueAfterRideId);
       if (currentRide.status !== 'in_progress') {
@@ -92,14 +159,28 @@ export const driverTrips = router({
       }
     }
     const status = input.queueAfterRideId ? 'driver_queued' : 'driver_arriving';
-    const driverProfile = await profile(input.driverId);
     const vehicleMake = input.vehicle_make || driverProfile?.vehicle_make || '';
     const vehicleModel = input.vehicle_model || driverProfile?.vehicle_model || '';
     const vehiclePlate = input.vehicle_plate || input.license_plate || driverProfile?.vehicle_plate || driverProfile?.license_plate || '';
     const vehicleColour = input.vehicle_colour || input.vehicle_color || driverProfile?.vehicle_colour || driverProfile?.vehicle_color || '';
     const vehicleColourHex = input.vehicle_colour_hex || driverProfile?.vehicle_colour_hex || '';
-    const updated = withRide(ride, { driver_id: input.driverId, driver_name: input.driverName || driverProfile?.full_name || ride.driver_name, driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(), driver_vehicle_make: vehicleMake, driver_vehicle_model: vehicleModel, driver_plate: vehiclePlate, driver_colour: vehicleColour, driver_colour_hex: vehicleColourHex, status, accepted_at: now(), queued_after_ride_id: input.queueAfterRideId || null });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    const acceptedAt = now();
+    const driver = {
+      id: input.driverId,
+      name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
+      phone: driverProfile.phone || driverProfile.phone_number || '',
+      photo_url: driverProfile.avatar_url || driverProfile.photo_url || '',
+      rating: Number(driverProfile.rating ?? 5),
+      total_trips: Number(driverProfile.total_trips ?? 0),
+      vehicle_make: vehicleMake,
+      vehicle_model: vehicleModel,
+      vehicle_colour: vehicleColour,
+      vehicle_colour_hex: vehicleColourHex,
+      plate: vehiclePlate,
+      location: locationOf(driverProfile),
+    };
+    const patch = { driver, driver_name: driver.name, driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(), driver_vehicle_make: vehicleMake, driver_vehicle_model: vehicleModel, driver_plate: vehiclePlate, driver_colour: vehicleColour, driver_colour_hex: vehicleColourHex, status, accepted_at: acceptedAt, matched_at: acceptedAt, queued_after_ride_id: input.queueAfterRideId || null };
+    const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
     return { success: true, ride: updated, decision: input.decision };
   }),
   arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', driver_arrived_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),

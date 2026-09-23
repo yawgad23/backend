@@ -454,6 +454,13 @@ export const appRouter = router({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
+        // The mobile app can be opened for supervised dispatch testing without
+        // charging a driver. Production remains gated unless Railway explicitly
+        // sets DRIVER_PLATFORM_FEE_GATE_ENABLED=false.
+        if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') {
+          return { isPaid: true, feeGateDisabled: true };
+        }
+
         // Fetch all commission records for this driver to process in memory
         const records = await adminFirestore.list(
           ADMIN_COLLECTIONS.DAILY_COMMISSION,
