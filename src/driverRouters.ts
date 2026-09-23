@@ -9,6 +9,18 @@ const dateKey = () => now().slice(0, 10);
 const driverIdInput = z.object({ driverId: z.string().min(1) });
 
 async function profile(driverId: string) {
+  // Driver profiles created by the original admin workflow use auto IDs while
+  // mobile authentication uses Firebase UIDs. Always prefer the approved
+  // profile whose `user_id` matches the signed-in user, then fall back to a
+  // UID-keyed document only for new registrations.
+  const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null);
+  if (matches.length > 0) {
+    return matches.sort((a: any, b: any) => {
+      const approved = (item: any) => item.approval_status === 'approved' || item.approved === true || item.is_approved === true;
+      if (approved(a) !== approved(b)) return approved(a) ? -1 : 1;
+      return String(b.updated_date || b.created_date || '').localeCompare(String(a.updated_date || a.created_date || ''));
+    })[0];
+  }
   return adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
 }
 
@@ -92,12 +104,14 @@ export const driverOperations = router({
     return { success: true, preferences };
   }),
   setAvailability: publicProcedure.input(z.object({ driverId: z.string().min(1), status: z.enum(['online', 'offline', 'busy']) })).mutation(async ({ input }) => {
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, { availability_status: input.status, is_online: input.status === 'online', last_seen_at: now() });
+    const driverProfile = await profile(input.driverId);
+    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, { user_id: input.driverId, availability_status: input.status, is_online: input.status === 'online', last_seen_at: now() });
     return { success: true, status: input.status };
   }),
   updateLocation: publicProcedure.input(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
     const location = { latitude: input.latitude, longitude: input.longitude, heading: input.heading ?? null, speedKmh: input.speedKmh ?? null, recorded_at: now() };
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, { current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() });
+    const driverProfile = await profile(input.driverId);
+    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() });
     return { success: true, location };
   }),
 });
@@ -115,6 +129,7 @@ export const driverTrips = router({
     const recentRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
     const offers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
+      .filter((ride) => !Array.isArray(ride.declined_by_driver_ids) || !ride.declined_by_driver_ids.includes(input.driverId))
       .filter((ride) => hasCategory(driverProfile, ride.category))
       .map((ride) => ({ ...ride, pickup_distance_km: pickupDistanceKm(ride, driverLocation) }))
       .filter((ride) => ride.pickup_distance_km !== null && ride.pickup_distance_km <= radiusKm)

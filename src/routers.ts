@@ -293,24 +293,19 @@ export const appRouter = router({
         const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-        await adminFirestore.set('otp_verifications', input.driverId, {
-          phone_number: input.phoneNumber,
-          driver_id: input.driverId,
-          code: otpCode,
-          expires_at: expiresAt,
-          verified: false,
-        });
+        const smsClientId = process.env.HUBTEL_SMS_CLIENT_ID;
+        const smsClientSecret = process.env.HUBTEL_SMS_CLIENT_SECRET;
+        const senderId = process.env.HUBTEL_SMS_SENDER_ID || 'HY3N';
+        if (!smsClientId || !smsClientSecret) {
+          console.error('[Hubtel SMS] OTP not sent: SMS credentials are not configured.');
+          return { success: false, message: 'SMS verification is temporarily unavailable. Please contact support.' };
+        }
 
-        console.log(`[OTP Sent] Code is ${otpCode} for phone number ${input.phoneNumber} (driver ${input.driverId})`);
-
-        // let phone = input.phoneNumber.replace(/\s+/g, '').replace(/^0/, '233');
-        // if (!phone.startsWith('233')) phone = '233' + phone;
-       const phone = formatMsisdn(input.phoneNumber)
-        // Send OTP via Hubtel SMS API
+        const phone = formatMsisdn(input.phoneNumber);
         try {
           const smsUrl = 'https://sms.hubtel.com/v1/messages/send';
           const smsBody = {
-            From: "Hy3n",
+            From: senderId,
             To: phone,
             Content: `Your HY3N verification code is: ${otpCode}. Valid for 10 minutes.`
           };
@@ -319,21 +314,32 @@ export const appRouter = router({
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Basic cW92Y7c2dyb3Juam=',
+              'Authorization': `Basic ${Buffer.from(`${smsClientId}:${smsClientSecret}`).toString('base64')}`,
             },
             body: JSON.stringify(smsBody),
           });
 
           const smsResultText = await smsResponse.text();
-          console.log(`[Hubtel SMS] Sent to ${phone}. Status: ${smsResponse.status}, Response: ${smsResultText}`);
+          if (!smsResponse.ok) {
+            console.error(`[Hubtel SMS] OTP delivery failed. Status: ${smsResponse.status}, Response: ${smsResultText.slice(0, 500)}`);
+            return { success: false, message: 'We could not send the verification SMS. Please check your number and try again.' };
+          }
         } catch (err: any) {
           console.error('[Hubtel SMS] Failed to send OTP via SMS:', err?.message);
+          return { success: false, message: 'We could not send the verification SMS. Please try again shortly.' };
         }
+
+        await adminFirestore.set('otp_verifications', input.driverId, {
+          phone_number: input.phoneNumber,
+          driver_id: input.driverId,
+          code: otpCode,
+          expires_at: expiresAt,
+          verified: false,
+        });
 
         return {
           success: true,
           message: 'Verification code sent.',
-          otpCode: otpCode,
         };
       }),
 
