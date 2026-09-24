@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
+import { sendDriverLocationLiveActivityUpdates } from './liveActivities';
 
 const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
@@ -72,6 +73,11 @@ export function registerDriverLocationRoutes(app: Express) {
     } else {
       await Promise.all(targets.map((profile) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, patch)));
     }
+
+    void sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
+      // Location persistence remains successful even if Apple/FCM is delayed.
+      console.error('[LiveActivity] Background Driver location push failed:', error);
+    });
 
     res.json({ success: true, location });
   });

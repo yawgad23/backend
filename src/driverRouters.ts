@@ -5,6 +5,7 @@ import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
 import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
+import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -35,6 +36,13 @@ async function rideFor(driverId: string, rideId: string) {
 
 function withRide(ride: Record<string, any>, patch: Record<string, any>): Record<string, any> {
   return { ...ride, ...patch, updated_date: now() };
+}
+
+function publishLiveActivity(ride: Record<string, any>, force = false) {
+  void sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
+    // A Lock Screen update must never block the real ride-state transition.
+    console.error('[LiveActivity] Ride state push failed:', error);
+  });
 }
 
 /**
@@ -186,6 +194,9 @@ export const driverOperations = router({
     if (driverProfile?.id && driverProfile.id !== input.driverId) {
       await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, patch);
     }
+    void sendDriverLocationLiveActivityUpdates(input.driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
+      console.error('[LiveActivity] Foreground Driver location push failed:', error);
+    });
     return { success: true, location };
   }),
 });
@@ -359,6 +370,7 @@ export const driverTrips = router({
     };
     const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
     await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
+    publishLiveActivity(updated, true);
     return { success: true, ride: updated, decision: input.decision };
   }),
   arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => {
@@ -366,6 +378,7 @@ export const driverTrips = router({
     const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arrived', driver_arrived_at: now() });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'driver_arrived', actorId: input.driverId, actorRole: 'driver', status: updated.status });
+    publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
   verifyPickup: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => {
@@ -400,6 +413,7 @@ export const driverTrips = router({
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
+    publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
   recordTripLocation: publicProcedure.input(z.object({
@@ -424,6 +438,7 @@ export const driverTrips = router({
       trip_last_location_at: observedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
   }),
   complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative().optional(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
@@ -487,6 +502,7 @@ export const driverTrips = router({
       completed_at: completedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    publishLiveActivity(updated, true);
     await recordRideEvent({
       rideId: input.rideId,
       type: 'trip_completed',

@@ -7,6 +7,7 @@ import { registerHubtelWebhook } from "./hubtelWebhook";
 import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { registerDriverOtpRoutes } from "./driverOtp";
 import { registerDriverLocationRoutes } from "./driverLocation";
+import { registerLiveActivityRoutes } from "./liveActivities";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
@@ -158,6 +159,12 @@ export function createApp(): Express {
     }
     const requestBody = originalUrl.startsWith('/api/notifications/push-device')
       ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
+      : originalUrl.startsWith('/api/live-activities/token')
+        ? {
+            ...req.body,
+            fcmToken: req.body?.fcmToken ? '[REDACTED]' : undefined,
+            activityPushToken: req.body?.activityPushToken ? '[REDACTED]' : undefined,
+          }
       : originalUrl.startsWith('/api/driver/otp')
         ? {
             ...req.body,
@@ -209,6 +216,7 @@ export function createApp(): Express {
   registerPublicPaymentsApi(app);
   registerDriverOtpRoutes(app);
   registerDriverLocationRoutes(app);
+  registerLiveActivityRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
   registerTripShareRoutes(app);
