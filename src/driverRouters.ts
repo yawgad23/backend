@@ -131,6 +131,13 @@ function pickupDistanceKm(ride: Record<string, any>, driverLocation: { lat: numb
   return Math.hypot(latKm, lngKm);
 }
 
+/** Only a matched MoMo ride receives a Driver's valid local payment number. */
+function directMomoNumber(value: unknown): string | null {
+  const digits = String(value || '').replace(/\D/g, '');
+  const localNumber = digits.startsWith('233') ? `0${digits.slice(3)}` : digits;
+  return /^0\d{9}$/.test(localNumber) ? localNumber : null;
+}
+
 export const driverOperations = router({
   getPreferences: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const p = await profile(input.driverId);
@@ -315,6 +322,8 @@ export const driverTrips = router({
     const vehicleColour = input.vehicle_colour || input.vehicle_color || driverProfile?.vehicle_colour || driverProfile?.vehicle_color || '';
     const vehicleColourHex = input.vehicle_colour_hex || driverProfile?.vehicle_colour_hex || '';
     const acceptedAt = now();
+    const isDirectMomoRide = ride.payment_method === 'mobile_money' || ride.payment === 'mobile_money';
+    const momoNumber = isDirectMomoRide ? directMomoNumber(driverProfile.momo_number) : null;
     const driver = {
       id: input.driverId,
       name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
@@ -328,8 +337,25 @@ export const driverTrips = router({
       vehicle_colour_hex: vehicleColourHex,
       plate: vehiclePlate,
       location: locationOf(driverProfile),
+      momo_number: momoNumber,
+      momo_network: momoNumber ? (driverProfile.momo_network || '') : '',
     };
-    const patch = { driver, driver_name: driver.name, driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(), driver_vehicle_make: vehicleMake, driver_vehicle_model: vehicleModel, driver_plate: vehiclePlate, driver_colour: vehicleColour, driver_colour_hex: vehicleColourHex, status, accepted_at: acceptedAt, matched_at: acceptedAt, queued_after_ride_id: input.queueAfterRideId || null };
+    const patch = {
+      driver,
+      driver_name: driver.name,
+      driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(),
+      driver_vehicle_make: vehicleMake,
+      driver_vehicle_model: vehicleModel,
+      driver_plate: vehiclePlate,
+      driver_colour: vehicleColour,
+      driver_colour_hex: vehicleColourHex,
+      driver_momo_number: momoNumber,
+      driver_momo_network: momoNumber ? (driverProfile.momo_network || '') : null,
+      status,
+      accepted_at: acceptedAt,
+      matched_at: acceptedAt,
+      queued_after_ride_id: input.queueAfterRideId || null,
+    };
     const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
     await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
     return { success: true, ride: updated, decision: input.decision };
