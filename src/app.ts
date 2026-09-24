@@ -5,6 +5,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { z } from "zod";
 import { registerHubtelWebhook } from "./hubtelWebhook";
 import { registerPublicPaymentsApi } from "./publicPaymentsApi";
+import { registerDriverOtpRoutes } from "./driverOtp";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
@@ -156,7 +157,13 @@ export function createApp(): Express {
     }
     const requestBody = originalUrl.startsWith('/api/notifications/push-device')
       ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
-      : req.body;
+      : originalUrl.startsWith('/api/driver/otp')
+        ? {
+            ...req.body,
+            phoneNumber: req.body?.phoneNumber ? '[REDACTED]' : undefined,
+            code: req.body?.code ? '[REDACTED]' : undefined,
+          }
+        : req.body;
 
     console.log(`[API Request] >>> ${method} ${originalUrl}`, JSON.stringify({
       timestamp: new Date().toISOString(),
@@ -193,6 +200,7 @@ export function createApp(): Express {
 
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
+  registerDriverOtpRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
   registerTripShareRoutes(app);

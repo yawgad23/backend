@@ -76,6 +76,10 @@ firebase functions:secrets:set ADMIN_DASHBOARD_PIN
 firebase functions:secrets:set PUBLIC_PAYMENTS_API_USERNAME
 firebase functions:secrets:set PUBLIC_PAYMENTS_API_PASSWORD
 firebase functions:secrets:set GOOGLE_MAPS_API_KEY
+firebase functions:secrets:set HUBTEL_SMS_CLIENT_ID
+firebase functions:secrets:set HUBTEL_SMS_CLIENT_SECRET
+firebase functions:secrets:set HUBTEL_SMS_SENDER_ID
+firebase functions:secrets:set HUBTEL_OTP_PEPPER
 
 firebase deploy --only functions
 ```

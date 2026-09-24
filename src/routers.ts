@@ -8,7 +8,7 @@ import {
   transactionStatusCheck,
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
-import { generateReference, formatMsisdn } from "./publicPaymentsApi";
+import { generateReference } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
 import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
 import { getTripChargeTotal } from "./fareAuthority";
@@ -290,93 +290,6 @@ export const appRouter = router({
           driverId: input.driverId,
           date,
           clientReference,
-        };
-      }),
-
-    sendOtp: publicProcedure
-      .input(z.object({
-        phoneNumber: z.string(),
-        driverId: z.string(),
-      }))
-      .mutation(async ({ input }) => {
-        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-        const smsClientId = process.env.HUBTEL_SMS_CLIENT_ID;
-        const smsClientSecret = process.env.HUBTEL_SMS_CLIENT_SECRET;
-        const senderId = process.env.HUBTEL_SMS_SENDER_ID || 'HY3N';
-        if (!smsClientId || !smsClientSecret) {
-          console.error('[Hubtel SMS] OTP not sent: SMS credentials are not configured.');
-          return { success: false, message: 'SMS verification is temporarily unavailable. Please contact support.' };
-        }
-
-        const phone = formatMsisdn(input.phoneNumber);
-        try {
-          const smsUrl = 'https://sms.hubtel.com/v1/messages/send';
-          const smsBody = {
-            From: senderId,
-            To: phone,
-            Content: `Your HY3N verification code is: ${otpCode}. Valid for 10 minutes.`
-          };
-
-          const smsResponse = await fetch(smsUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Basic ${Buffer.from(`${smsClientId}:${smsClientSecret}`).toString('base64')}`,
-            },
-            body: JSON.stringify(smsBody),
-          });
-
-          const smsResultText = await smsResponse.text();
-          if (!smsResponse.ok) {
-            console.error(`[Hubtel SMS] OTP delivery failed. Status: ${smsResponse.status}, Response: ${smsResultText.slice(0, 500)}`);
-            return { success: false, message: 'We could not send the verification SMS. Please check your number and try again.' };
-          }
-        } catch (err: any) {
-          console.error('[Hubtel SMS] Failed to send OTP via SMS:', err?.message);
-          return { success: false, message: 'We could not send the verification SMS. Please try again shortly.' };
-        }
-
-        await adminFirestore.set('otp_verifications', input.driverId, {
-          phone_number: input.phoneNumber,
-          driver_id: input.driverId,
-          code: otpCode,
-          expires_at: expiresAt,
-          verified: false,
-        });
-
-        return {
-          success: true,
-          message: 'Verification code sent.',
-        };
-      }),
-
-    verifyOtp: publicProcedure
-      .input(z.object({
-        driverId: z.string(),
-        code: z.string(),
-      }))
-      .mutation(async ({ input }) => {
-        const doc = await adminFirestore.get('otp_verifications', input.driverId);
-        if (!doc) {
-          return { success: false, message: 'No verification code found for this driver.' };
-        }
-
-        const now = new Date().toISOString();
-        if (doc.expires_at < now) {
-          return { success: false, message: 'Verification code has expired.' };
-        }
-
-        if (doc.code !== input.code.trim()) {
-          return { success: false, message: 'Invalid verification code.' };
-        }
-
-        await adminFirestore.delete('otp_verifications', input.driverId);
-
-        return {
-          success: true,
-          message: 'OTP verified successfully.',
         };
       }),
 

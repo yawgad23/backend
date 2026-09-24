@@ -133,28 +133,6 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
             };
             meta: object;
         }>;
-        sendOtp: import("@trpc/server").TRPCMutationProcedure<{
-            input: {
-                phoneNumber: string;
-                driverId: string;
-            };
-            output: {
-                success: boolean;
-                message: string;
-            };
-            meta: object;
-        }>;
-        verifyOtp: import("@trpc/server").TRPCMutationProcedure<{
-            input: {
-                driverId: string;
-                code: string;
-            };
-            output: {
-                success: boolean;
-                message: string;
-            };
-            meta: object;
-        }>;
         /**
          * Admin: List all commissions for a date range.
          * Gated by the /api/admin/verify-pin check the admin dashboard performs
