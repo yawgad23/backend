@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { transactionStatusCheck } from './hubtel';
 
 /**
  * Server-only Hubtel Online Checkout integration.
@@ -11,7 +12,10 @@ import { randomUUID } from 'node:crypto';
 const HUBTEL_POS_NUMBER = process.env.HUBTEL_POS_NUMBER || '';
 const HUBTEL_API_ID = process.env.HUBTEL_API_ID || '';
 const HUBTEL_API_KEY = process.env.HUBTEL_API_KEY || '';
-const HUBTEL_ONLINE_CHECKOUT_BASE_URL = 'https://api.hubtel.com/v1/merchantaccount/onlinecheckout';
+// Hubtel's legacy `/v1/merchantaccount/onlinecheckout/invoice/create`
+// endpoint is retired and returns HTTP 404. Card checkout is now created via
+// the Sales Checkout endpoint below; it returns a one-time hosted URL.
+const HUBTEL_SALES_CHECKOUT_URL = 'https://payproxyapi.hubtel.com/items/initiate';
 
 export type CardCheckoutState = 'processing' | 'paid' | 'failed';
 
@@ -20,6 +24,7 @@ export interface CardCheckoutRequest {
   customerName: string;
   reference: string;
   description: string;
+  callbackUrl: string;
   returnUrl: string;
 }
 
@@ -125,6 +130,24 @@ export function hostedCheckoutUrlFromPayload(payload: Record<string, any>): stri
   return firstHostedUrl(payload);
 }
 
+/**
+ * Hubtel Sales Checkout creates the payment session server-side.  The app is
+ * given only the one-time hosted URL and never receives merchant credentials
+ * or handles a card number, expiry date, CVV, or saved card token.
+ */
+export function buildHubtelCardCheckoutPayload(request: CardCheckoutRequest): Record<string, unknown> {
+  const amount = Math.round(request.amount * 100) / 100;
+  return {
+    totalAmount: amount,
+    description: request.description,
+    callbackUrl: request.callbackUrl,
+    returnUrl: request.returnUrl,
+    cancellationUrl: request.returnUrl,
+    merchantAccountNumber: Number(HUBTEL_POS_NUMBER),
+    clientReference: request.reference,
+  };
+}
+
 export async function initiateHubtelCardCheckout(request: CardCheckoutRequest): Promise<CardCheckoutCreation> {
   if (!canUseHubtelCardCheckout()) {
     return { success: false, message: 'Card payments are not configured yet.' };
@@ -135,36 +158,10 @@ export async function initiateHubtelCardCheckout(request: CardCheckoutRequest): 
     return { success: false, message: 'The card payment amount is invalid.' };
   }
 
-  const body = {
-    invoice: {
-      total_amount: amount,
-      description: request.description,
-      items: [{
-        name: 'HY3N ride credit',
-        description: request.description,
-        quantity: 1,
-        unit_price: amount,
-        total_price: amount,
-      }],
-    },
-    store: {
-      name: 'HY3N',
-      tagline: 'Safe, reliable rides',
-      phone: '0557278990',
-    },
-    actions: {
-      return_url: request.returnUrl,
-      cancel_url: request.returnUrl,
-    },
-    custom_data: {
-      client_reference: request.reference,
-      reference: request.reference,
-      source: 'hy3n_rider_card_checkout',
-    },
-  };
+  const body = buildHubtelCardCheckoutPayload(request);
 
   try {
-    const response = await fetch(`${HUBTEL_ONLINE_CHECKOUT_BASE_URL}/invoice/create`, {
+    const response = await fetch(HUBTEL_SALES_CHECKOUT_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -175,7 +172,7 @@ export async function initiateHubtelCardCheckout(request: CardCheckoutRequest): 
     });
     const payload = await responseJson(response);
     const checkoutUrl = firstHostedUrl(payload);
-    const token = nestedString(payload, ['token', 'Token', 'checkoutToken', 'checkout_token']);
+    const token = nestedString(payload, ['token', 'Token', 'checkoutToken', 'checkout_token', 'clientReference', 'ClientReference']) || request.reference;
     const responseCode = nestedString(payload, ['response_code', 'ResponseCode', 'code', 'Code']);
 
     if (!response.ok) {
@@ -219,21 +216,16 @@ export async function checkHubtelCardCheckout(token: string): Promise<CardChecko
   }
 
   try {
-    const response = await fetch(`${HUBTEL_ONLINE_CHECKOUT_BASE_URL}/invoice/status/${encodeURIComponent(token)}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: basicAuth(),
-        'Cache-Control': 'no-cache',
-      },
-    });
-    const payload = await responseJson(response);
-    if (!response.ok) {
-      console.error('[Hubtel Card] Checkout status failed', { status: response.status, payload });
+    // Hubtel's existing transaction-status endpoint verifies both direct
+    // receive and Sales Checkout references.  Use the client reference that
+    // the server generated rather than trusting any data returned by the app.
+    const payload = await transactionStatusCheck(token) as Record<string, any>;
+    if (payload?.success === false) {
+      console.error('[Hubtel Card] Checkout status failed', { token, payload });
       return {
         success: false,
         state: 'processing',
-        message: providerMessage(payload) || `Hubtel returned HTTP ${response.status}.`,
+        message: providerMessage(payload) || String(payload?.message || 'Hubtel could not confirm the card payment yet.'),
         raw: payload,
       };
     }

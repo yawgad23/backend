@@ -102,6 +102,18 @@ function cardCheckoutReturnUrl(reference: string): string {
   return `${baseUrl.replace(/\/$/, '')}/api/hubtel/card-return?reference=${encodeURIComponent(reference)}`;
 }
 
+function cardCheckoutCallbackUrl(): string {
+  const configuredWalletCallback = String(process.env.HUBTEL_WALLET_CALLBACK_URL || '').trim();
+  if (configuredWalletCallback) return configuredWalletCallback;
+
+  const configuredCallback = String(process.env.PRIMARY_CALLBACK_URL || '').trim();
+  const fallback = 'https://api-yvurtipaxq-ew.a.run.app';
+  const baseUrl = configuredCallback
+    ? configuredCallback.replace(/\/api\/hubtel\/(?:wallet-)?callback\/?$/i, '')
+    : fallback;
+  return `${baseUrl.replace(/\/$/, '')}/api/hubtel/wallet-callback`;
+}
+
 /**
  * Builds the Express app. Shared by src/index.ts (local dev / a plain Node
  * server) and src/functions.ts (Firebase Cloud Functions) so the actual
@@ -289,6 +301,7 @@ export function createApp(): Express {
       const purposeLabel = parsed.data.purpose === 'ride_quote' ? 'Ride quote' : 'Wallet top-up';
       const description = parsed.data.description || `${purposeLabel} by card`;
       const returnUrl = cardCheckoutReturnUrl(reference);
+      const callbackUrl = cardCheckoutCallbackUrl();
 
       const transaction = await adminFirestore.create(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {
         user_id: riderId,
@@ -310,6 +323,7 @@ export function createApp(): Express {
         customerName: riderName,
         reference,
         description: `HY3N ${description} · GH₵${amount.toFixed(2)}`,
+        callbackUrl,
         returnUrl,
       });
 
