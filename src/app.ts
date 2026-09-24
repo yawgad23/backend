@@ -6,6 +6,7 @@ import { z } from "zod";
 import { registerHubtelWebhook } from "./hubtelWebhook";
 import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { registerDriverOtpRoutes } from "./driverOtp";
+import { registerDriverLocationRoutes } from "./driverLocation";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
@@ -163,6 +164,12 @@ export function createApp(): Express {
             phoneNumber: req.body?.phoneNumber ? '[REDACTED]' : undefined,
             code: req.body?.code ? '[REDACTED]' : undefined,
           }
+        : originalUrl.startsWith('/api/driver/location')
+          ? {
+              ...req.body,
+              latitude: req.body?.latitude === undefined ? undefined : '[REDACTED]',
+              longitude: req.body?.longitude === undefined ? undefined : '[REDACTED]',
+            }
         : req.body;
 
     console.log(`[API Request] >>> ${method} ${originalUrl}`, JSON.stringify({
@@ -201,6 +208,7 @@ export function createApp(): Express {
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
   registerDriverOtpRoutes(app);
+  registerDriverLocationRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
   registerTripShareRoutes(app);
