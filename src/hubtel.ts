@@ -182,26 +182,40 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
     // the transaction-status endpoint before reporting a failure to the app.
     console.error('[Hubtel] Network error:', networkMessage);
     try {
-      const statusResponse: any = await transactionStatusCheck(req.clientReference);
-      const responseCode = String(statusResponse?.responseCode || statusResponse?.ResponseCode || '');
-      const data = statusResponse?.data || statusResponse?.Data || {};
-      const providerStatus = String(data.status || data.Status || '').toLowerCase();
+      // Hubtel's status record may take a short time to become queryable after
+      // the receive-money connection closes. Retry briefly before deciding that
+      // a terminated initiation request was genuinely rejected.
+      const recoveryDelaysMs = [0, 500, 1000, 2000];
       const terminalFailureStates = new Set(['failed', 'declined', 'cancelled', 'canceled', 'expired', 'reversed']);
+      for (const delayMs of recoveryDelaysMs) {
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
 
-      if (responseCode === '0000' && !terminalFailureStates.has(providerStatus)) {
-        const transactionId = data.transactionId || data.TransactionId || data.orderId || data.OrderId;
-        console.warn('[Hubtel] Recovered accepted transaction after terminated initiation connection:', {
-          clientReference: req.clientReference,
-          transactionId,
-          providerStatus,
-        });
-        return {
-          success: true,
-          transactionId,
-          status: 'pending',
-          message: 'Charge initiated. Awaiting MoMo approval.',
-          raw: statusResponse,
-        };
+        const statusResponse: any = await transactionStatusCheck(req.clientReference);
+        const responseCode = String(statusResponse?.responseCode || statusResponse?.ResponseCode || '');
+        const data = statusResponse?.data || statusResponse?.Data || {};
+        const providerStatus = String(data.status || data.Status || '').toLowerCase();
+
+        if (responseCode === '0000' && !terminalFailureStates.has(providerStatus)) {
+          const transactionId = data.transactionId || data.TransactionId || data.orderId || data.OrderId;
+          console.warn('[Hubtel] Recovered accepted transaction after terminated initiation connection:', {
+            clientReference: req.clientReference,
+            transactionId,
+            providerStatus,
+          });
+          return {
+            success: true,
+            transactionId,
+            status: 'pending',
+            message: 'Charge initiated. Awaiting MoMo approval.',
+            raw: statusResponse,
+          };
+        }
+
+        if (responseCode === '0000' && terminalFailureStates.has(providerStatus)) {
+          break;
+        }
       }
     } catch (statusError: any) {
       console.error('[Hubtel] Status recovery after network error failed:', statusError?.message);
