@@ -10,6 +10,7 @@ import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
+import { roundGhsFare } from "./fareAuthority";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -161,6 +162,11 @@ export function createApp(): Express {
     try {
       const now = new Date().toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
+      // The Rider's accepted quote is locked here. A Driver app may report
+      // distance and duration for trip records, but it must never replace the
+      // amount the Rider agreed to pay at booking time.
+      const quotedFare = roundGhsFare(input.fare);
+      const quotedBaseFare = roundGhsFare(input.baseFare);
 
       const ride = await adminFirestore.create(ADMIN_COLLECTIONS.RIDES, {
         rider_id: input.riderId,
@@ -175,9 +181,11 @@ export function createApp(): Express {
         stops: input.stops || [],
         payment: input.payment,
         payment_method: input.payment,
-        fare: input.fare,
-        fare_estimate: input.fare,
-        base_fare: input.baseFare,
+        fare: quotedFare,
+        fare_estimate: quotedFare,
+        quoted_fare: quotedFare,
+        base_fare: quotedBaseFare,
+        quote_accepted_at: now,
         surge_multiplier: input.surgeMultiplier,
         distance: input.distance,
         distance_km: input.distance,

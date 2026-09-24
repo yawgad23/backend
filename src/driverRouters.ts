@@ -3,6 +3,7 @@ import { publicProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
+import { getAuthoritativeFinalFare, getQuotedRideFare, getTripChargeTotal } from './fareAuthority';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -306,9 +307,33 @@ export const driverTrips = router({
   start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
   complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
-    const tip = input.tipAmount || 0;
+    const quotedFare = getQuotedRideFare(ride);
+    const finalFare = getAuthoritativeFinalFare(ride);
+    // Tips are a Rider-controlled post-trip action. Do not allow a Driver
+    // completion request to add one to the amount charged or earned.
+    const tip = 0;
     const completedAt = now();
-    const updated = withRide(ride, { driver_id: input.driverId, status: 'completed', final_fare: input.finalFare, fare: input.finalFare, tip_amount: tip, driver_earnings: input.finalFare + tip, actual_distance_km: input.actualDistanceKm, actual_duration_minutes: input.actualDurationMinutes, fare_breakdown: input.fareBreakdown, completed_at: completedAt });
+    const updated = withRide(ride, {
+      driver_id: input.driverId,
+      status: 'completed',
+      quoted_fare: quotedFare,
+      fare_estimate: quotedFare,
+      fare: finalFare,
+      final_fare: finalFare,
+      tip_amount: tip,
+      driver_earnings: getTripChargeTotal({ ...ride, final_fare: finalFare, tip_amount: tip }),
+      driver_reported_final_fare: input.finalFare,
+      actual_distance_km: input.actualDistanceKm,
+      actual_duration_minutes: input.actualDurationMinutes,
+      fare_breakdown: {
+        ...(input.fareBreakdown || {}),
+        quotedFare,
+        waitingFee: Number(ride.waiting_fee || 0),
+        finalFare,
+        authority: 'rider_quote',
+      },
+      completed_at: completedAt,
+    });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
 
     // Send the receipt from the backend so it works even when the rider closes
@@ -326,7 +351,7 @@ export const driverTrips = router({
         driverPlate: ride.driver_plate || ride.driverPlate || 'Not available',
         pickup,
         destination,
-        fare: input.finalFare + tip,
+        fare: finalFare,
         paymentMethod: ride.payment_method || ride.payment || 'Cash',
         distance: input.actualDistanceKm,
         duration: input.actualDurationMinutes,
@@ -337,7 +362,7 @@ export const driverTrips = router({
       if (sent) await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { receipt_email_sent: true, receipt_email_sent_at: now() });
     }
 
-    return { success: true, ride: updated, driverEarnings: input.finalFare + tip };
+    return { success: true, ride: updated, driverEarnings: finalFare };
   }),
   cancel: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { status: 'cancelled', cancelled_by: 'driver', cancellation_reason: input.reason, cancelled_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
 });

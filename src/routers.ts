@@ -11,6 +11,7 @@ import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin
 import { generateReference, formatMsisdn } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
 import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
+import { getTripChargeTotal } from "./fareAuthority";
 
 function hasDriverFeeTestBypass(driverId: string) {
   return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
@@ -683,16 +684,32 @@ export const appRouter = router({
         driverId: z.string(),
         driverName: z.string(),
         riderName: z.string(),
-        fare: z.number(),
         pickup: z.string(),
         destination: z.string(),
       }))
       .mutation(async ({ input }) => {
+        const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId);
+        if (!ride || ride.status !== 'completed') {
+          return { success: false, message: 'This ride has not been completed yet.' };
+        }
+        const rideRiderId = String(ride.rider_id || ride.riderId || ride.rider?.id || '');
+        const rideDriverId = String(ride.driver_id || ride.driverId || ride.driver?.id || '');
+        if (rideRiderId !== input.riderId || rideDriverId !== input.driverId) {
+          return { success: false, message: 'Ride payment details do not match this trip.' };
+        }
+        if (ride.wallet_settled_at) {
+          const existingWallet = (await getOrCreateWallet(input.riderId, 'rider')) as any;
+          return { success: true, alreadySettled: true, newRiderBalance: Number(existingWallet.balance || 0) };
+        }
+
+        // Never charge an amount supplied by a mobile client. The completed
+        // ride record contains the single quote-backed amount both apps show.
+        const fare = getTripChargeTotal(ride);
         const riderWallet = (await getOrCreateWallet(input.riderId, 'rider')) as any;
         const currentBalance = (riderWallet.balance as number) ?? 0;
 
-        if (currentBalance < input.fare) {
-          return { success: false, message: `Insufficient wallet balance. Balance: GH₵${currentBalance.toFixed(2)}, Fare: GH₵${input.fare.toFixed(2)}` };
+        if (currentBalance < fare) {
+          return { success: false, message: `Insufficient wallet balance. Balance: GH₵${currentBalance.toFixed(2)}, Fare: GH₵${fare.toFixed(2)}` };
         }
 
         const reference = `hy3n-ride-${input.rideId}`;
@@ -700,11 +717,11 @@ export const appRouter = router({
 
         // Deduct from rider wallet
         await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, input.riderId, {
-          balance: currentBalance - input.fare,
-          total_spent: ((riderWallet.total_spent as number) ?? 0) + input.fare,
+          balance: currentBalance - fare,
+          total_spent: ((riderWallet.total_spent as number) ?? 0) + fare,
         });
         await recordWalletTransaction(
-          input.riderId, 'debit', input.fare,
+          input.riderId, 'debit', fare,
           `Ride to ${input.destination}`,
           reference,
           { ride_id: input.rideId, driver_id: input.driverId, date: now },
@@ -713,17 +730,23 @@ export const appRouter = router({
         // Credit driver wallet
         const driverWallet = (await getOrCreateWallet(input.driverId, 'driver')) as any;
         await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, input.driverId, {
-          balance: ((driverWallet.balance as number) ?? 0) + input.fare,
-          total_earned: ((driverWallet.total_earned as number) ?? 0) + input.fare,
+          balance: ((driverWallet.balance as number) ?? 0) + fare,
+          total_earned: ((driverWallet.total_earned as number) ?? 0) + fare,
         });
         await recordWalletTransaction(
-          input.driverId, 'credit', input.fare,
+          input.driverId, 'credit', fare,
           `Ride fare from ${input.pickup}`,
           reference,
           { ride_id: input.rideId, rider_id: input.riderId, date: now },
         );
 
-        return { success: true, newRiderBalance: currentBalance - input.fare };
+        await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, {
+          wallet_settled_at: now,
+          wallet_settled_fare: fare,
+          wallet_settlement_reference: reference,
+        });
+
+        return { success: true, newRiderBalance: currentBalance - fare, fare };
       }),
   }),
 });
