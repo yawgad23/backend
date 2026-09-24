@@ -69,6 +69,7 @@ export const ADMIN_COLLECTIONS = {
   PROMO_CODES: 'promo_codes',
   PAYMENTS: 'payments',
   RIDE_REPORTS: 'ride_reports',
+  TRIP_SHARES: 'trip_shares',
   DRIVER_PROFILES: 'driver_profiles',
   DAILY_COMMISSION: 'daily_commissions',
 };
