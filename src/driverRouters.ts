@@ -418,7 +418,7 @@ export const driverTrips = router({
         pickup,
         destination,
         fare: finalFare,
-        paymentMethod: ride.payment_method || ride.payment || 'Cash',
+        paymentMethod: ride.payment_display_name || ride.payment_method || ride.payment || 'Cash',
         distance: input.actualDistanceKm,
         duration: input.actualDurationMinutes,
         category: ride.category,

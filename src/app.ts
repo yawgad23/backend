@@ -13,6 +13,11 @@ import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin
 import { roundGhsFare } from "./fareAuthority";
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
+import {
+  checkHubtelCardCheckout,
+  createCardCheckoutReference,
+  initiateHubtelCardCheckout,
+} from "./cardCheckout";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +44,7 @@ const riderRideRequestInput = z.object({
   destination: rideLocationInput,
   stops: z.array(rideLocationInput).max(3).optional(),
   payment: z.string().min(1).max(50),
+  paymentLabel: z.string().min(1).max(80).optional(),
   fare: z.number().finite().nonnegative(),
   baseFare: z.number().finite().nonnegative(),
   surgeMultiplier: z.number().finite().positive(),
@@ -80,6 +86,21 @@ const pushDeviceInput = z.object({
   platform: z.enum(['ios', 'android']),
   appVersion: z.string().max(80).optional(),
 });
+
+const cardCheckoutInput = z.object({
+  amount: z.number().finite().min(5).max(5000),
+  purpose: z.enum(['ride_quote', 'wallet_top_up']).default('wallet_top_up'),
+  description: z.string().min(3).max(180).optional(),
+});
+
+function cardCheckoutReturnUrl(reference: string): string {
+  const configuredCallback = String(process.env.PRIMARY_CALLBACK_URL || '').trim();
+  const fallback = 'https://api-yvurtipaxq-ew.a.run.app';
+  const baseUrl = configuredCallback
+    ? configuredCallback.replace(/\/api\/hubtel\/(?:wallet-)?callback\/?$/i, '')
+    : fallback;
+  return `${baseUrl.replace(/\/$/, '')}/api/hubtel/card-return?reference=${encodeURIComponent(reference)}`;
+}
 
 /**
  * Builds the Express app. Shared by src/index.ts (local dev / a plain Node
@@ -222,6 +243,199 @@ export function createApp(): Express {
   });
 
   /**
+   * Starts a hosted Hubtel card checkout for an authenticated Rider. HY3N
+   * deliberately receives no PAN, expiry, CVV, or reusable card token: the
+   * mobile client opens only the one-time URL returned by Hubtel.
+   */
+  app.post('/api/wallet/card-checkout', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before paying by card.' });
+      return;
+    }
+
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+
+    const parsed = cardCheckoutInput.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Please enter a valid card payment amount.' });
+      return;
+    }
+
+    const amount = roundGhsFare(parsed.data.amount);
+    if (amount < 5) {
+      res.status(400).json({ success: false, message: 'The minimum card payment is GH₵5.00.' });
+      return;
+    }
+
+    try {
+      const riderProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, riderId);
+      const matchingProfile = riderProfile || (await adminFirestore.list(
+        ADMIN_COLLECTIONS.RIDER_PROFILES,
+        { user_id: riderId },
+        null,
+        'desc',
+        1,
+      ))[0];
+      const riderName = String(matchingProfile?.full_name || matchingProfile?.name || 'HY3N Rider').trim();
+      const reference = createCardCheckoutReference();
+      const purposeLabel = parsed.data.purpose === 'ride_quote' ? 'Ride quote' : 'Wallet top-up';
+      const description = parsed.data.description || `${purposeLabel} by card`;
+      const returnUrl = cardCheckoutReturnUrl(reference);
+
+      const transaction = await adminFirestore.create(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {
+        user_id: riderId,
+        user_type: 'rider',
+        type: 'credit',
+        amount,
+        description,
+        reference,
+        payment_method: 'card',
+        payment_provider: 'hubtel',
+        checkout_purpose: parsed.data.purpose,
+        status: 'processing',
+        callback_url: returnUrl,
+        date: new Date().toISOString(),
+      });
+
+      const checkout = await initiateHubtelCardCheckout({
+        amount,
+        customerName: riderName,
+        reference,
+        description: `HY3N ${description} · GH₵${amount.toFixed(2)}`,
+        returnUrl,
+      });
+
+      if (!checkout.success || !checkout.checkoutUrl) {
+        await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, transaction.id, {
+          status: 'failed',
+          hubtel_status: checkout.providerStatus || 'CheckoutUnavailable',
+          hubtel_message: checkout.message || 'Hubtel did not create a card checkout session.',
+        });
+        res.status(502).json({ success: false, message: checkout.message || 'Card checkout is unavailable right now.' });
+        return;
+      }
+
+      await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, transaction.id, {
+        hubtel_checkout_token: checkout.token || null,
+        hubtel_checkout_url_created_at: new Date().toISOString(),
+        hubtel_status: checkout.providerStatus || 'CheckoutCreated',
+        hubtel_message: checkout.message || 'Hosted card checkout created.',
+      });
+
+      res.status(201).json({
+        success: true,
+        transactionId: transaction.id,
+        reference,
+        amount,
+        checkoutUrl: checkout.checkoutUrl,
+      });
+    } catch (error: any) {
+      console.error('[Hubtel Card] Unable to create Rider checkout', error?.message);
+      res.status(503).json({ success: false, message: 'Card checkout is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /**
+   * Confirms a hosted Hubtel card checkout. The transaction belongs to the
+   * authenticated Rider; a client cannot query or settle another account.
+   */
+  app.get('/api/wallet/card-checkout/:transactionId', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before checking this card payment.' });
+      return;
+    }
+
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+
+    try {
+      const transaction = await adminFirestore.get(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, String(req.params.transactionId || ''));
+      if (!transaction || String(transaction.user_id || '') !== riderId || transaction.payment_method !== 'card') {
+        res.status(404).json({ success: false, message: 'Card payment was not found.' });
+        return;
+      }
+
+      if (transaction.status === 'completed') {
+        res.json({ success: true, status: 'completed', transactionId: transaction.id, amount: transaction.amount });
+        return;
+      }
+      if (transaction.status === 'failed') {
+        res.json({ success: true, status: 'failed', transactionId: transaction.id, message: transaction.hubtel_message || 'The card payment was not completed.' });
+        return;
+      }
+
+      const token = String(transaction.hubtel_checkout_token || '');
+      if (!token) {
+        res.status(409).json({ success: false, status: 'failed', message: 'The secure card checkout reference is missing.' });
+        return;
+      }
+
+      const confirmation = await checkHubtelCardCheckout(token);
+      if (!confirmation.success) {
+        res.status(503).json({ success: false, status: 'processing', message: confirmation.message || 'Card payment confirmation is temporarily unavailable.' });
+        return;
+      }
+
+      if (confirmation.state === 'paid') {
+        const settlement = await adminFirestore.settleWalletTopUp(String(transaction.reference), {
+          transactionId: confirmation.transactionId,
+          status: confirmation.providerStatus || 'Paid',
+          message: confirmation.message || 'Card payment confirmed by Hubtel.',
+        });
+        res.json({
+          success: true,
+          status: settlement.settled || settlement.alreadyCompleted ? 'completed' : 'processing',
+          transactionId: transaction.id,
+          amount: transaction.amount,
+          balance: settlement.newBalance,
+        });
+        return;
+      }
+
+      if (confirmation.state === 'failed') {
+        await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, transaction.id, {
+          status: 'failed',
+          hubtel_status: confirmation.providerStatus || 'Failed',
+          hubtel_message: confirmation.message || 'The card payment was not completed.',
+        });
+        res.json({ success: true, status: 'failed', transactionId: transaction.id, message: confirmation.message || 'The card payment was not completed.' });
+        return;
+      }
+
+      await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, transaction.id, {
+        hubtel_status: confirmation.providerStatus || 'Pending',
+        hubtel_message: confirmation.message || 'Waiting for card payment approval.',
+      });
+      res.json({ success: true, status: 'processing', transactionId: transaction.id, amount: transaction.amount });
+    } catch (error: any) {
+      console.error('[Hubtel Card] Unable to confirm Rider checkout', error?.message);
+      res.status(503).json({ success: false, status: 'processing', message: 'Unable to confirm the card payment yet. Please try again shortly.' });
+    }
+  });
+
+  /** Hubtel returns the payer here after the hosted checkout. The app then confirms server-side. */
+  app.get('/api/hubtel/card-return', (req, res) => {
+    const reference = typeof req.query.reference === 'string' ? req.query.reference.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 80) : '';
+    const appUrl = `manusrider://hubtel-card-payment?reference=${encodeURIComponent(reference)}`;
+    res.status(200).type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Return to HY3N</title></head><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#111;color:#fff;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center;text-align:center"><main><h1 style="color:#d4af37">Payment submitted</h1><p>Return to HY3N to confirm your card payment.</p><p><a href="${appUrl}" style="display:inline-block;background:#006b3f;color:#fff;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:700">Return to HY3N</a></p></main><script>setTimeout(function(){ window.location.href=${JSON.stringify(appUrl)}; },500);</script></body></html>`);
+  });
+
+  /**
    * Creates a Rider request with Firebase ID-token authentication. A request
    * always remains unassigned until a real logged-in Driver explicitly accepts
    * it; the server must never assign a profile merely because it was last seen
@@ -287,6 +501,7 @@ export function createApp(): Express {
         stops: input.stops || [],
         payment: input.payment,
         payment_method: input.payment,
+        payment_display_name: input.paymentLabel || input.payment,
         fare: quotedFare,
         fare_estimate: quotedFare,
         quoted_fare: quotedFare,
@@ -325,6 +540,7 @@ export function createApp(): Express {
           metadata: {
             category: input.category,
             payment_method: input.payment,
+            payment_display_name: input.paymentLabel || input.payment,
             booking_for_other: Boolean(input.bookingForOther),
           },
           created_at: now,
