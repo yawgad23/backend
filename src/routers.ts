@@ -626,6 +626,13 @@ export const appRouter = router({
           return { success: false, message: result.message || 'Top-up failed', reference, txId: txRecord.id };
         }
 
+        await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+          status: 'processing',
+          hubtel_transaction_id: result.transactionId || null,
+          hubtel_status: result.status || 'Pending',
+          hubtel_message: result.message || null,
+        });
+
         return {
           success: true,
           status: 'processing',

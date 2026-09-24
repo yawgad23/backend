@@ -175,11 +175,42 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
       raw: data,
     };
   } catch (err: any) {
-    console.error('[Hubtel] Network error:', err?.message);
+    const networkMessage = err?.message || 'Network error contacting Hubtel';
+    // Hubtel can create the Direct Receive transaction and then close the
+    // initiation connection before Node receives the HTTP response. A closed
+    // connection therefore does not always mean that the charge failed. Check
+    // the transaction-status endpoint before reporting a failure to the app.
+    console.error('[Hubtel] Network error:', networkMessage);
+    try {
+      const statusResponse: any = await transactionStatusCheck(req.clientReference);
+      const responseCode = String(statusResponse?.responseCode || statusResponse?.ResponseCode || '');
+      const data = statusResponse?.data || statusResponse?.Data || {};
+      const providerStatus = String(data.status || data.Status || '').toLowerCase();
+      const terminalFailureStates = new Set(['failed', 'declined', 'cancelled', 'canceled', 'expired', 'reversed']);
+
+      if (responseCode === '0000' && !terminalFailureStates.has(providerStatus)) {
+        const transactionId = data.transactionId || data.TransactionId || data.orderId || data.OrderId;
+        console.warn('[Hubtel] Recovered accepted transaction after terminated initiation connection:', {
+          clientReference: req.clientReference,
+          transactionId,
+          providerStatus,
+        });
+        return {
+          success: true,
+          transactionId,
+          status: 'pending',
+          message: 'Charge initiated. Awaiting MoMo approval.',
+          raw: statusResponse,
+        };
+      }
+    } catch (statusError: any) {
+      console.error('[Hubtel] Status recovery after network error failed:', statusError?.message);
+    }
+
     return {
       success: false,
       status: 'failed',
-      message: err?.message || 'Network error contacting Hubtel',
+      message: networkMessage,
     };
   }
 }
