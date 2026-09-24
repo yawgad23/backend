@@ -87,6 +87,33 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
     errorShape: import("@trpc/server").TRPCDefaultErrorShape;
     transformer: true;
 }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+    rateRider: import("@trpc/server").TRPCMutationProcedure<{
+        input: {
+            driverId: string;
+            rideId: string;
+            riderId: string;
+            rating: number;
+            feedback?: string | undefined;
+            foundItem?: string | undefined;
+            safetyReport?: string | undefined;
+        };
+        output: {
+            success: boolean;
+            warnings: string[];
+        };
+        meta: object;
+    }>;
+    availableOffers: import("@trpc/server").TRPCQueryProcedure<{
+        input: {
+            driverId: string;
+        };
+        output: {
+            offers: {
+                pickup_distance_km: number | null;
+            }[];
+        };
+        meta: object;
+    }>;
     activateQueued: import("@trpc/server").TRPCMutationProcedure<{
         input: {
             driverId: string;
@@ -95,9 +122,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;
@@ -119,13 +144,12 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
             decision: "decline";
         } | {
             success: boolean;
             ride: {
+                driver_id: string;
                 updated_date: string;
             };
             decision: "accept";
@@ -139,9 +163,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;
@@ -153,9 +175,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;
@@ -165,12 +185,31 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
             rideId: string;
             waitingTimeMinutes?: number | undefined;
             waitingFee?: number | undefined;
+            startLocation?: {
+                latitude: number;
+                longitude: number;
+            } | undefined;
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
+        };
+        meta: object;
+    }>;
+    recordTripLocation: import("@trpc/server").TRPCMutationProcedure<{
+        input: {
+            driverId: string;
+            rideId: string;
+            latitude: number;
+            longitude: number;
+            recordedAt?: string | undefined;
+        };
+        output: {
+            success: boolean;
+            accepted: boolean;
+            incrementKm: number;
+            ignoredReason: "invalid" | "noise" | "jump" | null;
+            actualDistanceKm: number;
         };
         meta: object;
     }>;
@@ -178,7 +217,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         input: {
             driverId: string;
             rideId: string;
-            finalFare: number;
+            finalFare?: number | undefined;
             tipAmount?: number | undefined;
             actualDistanceKm?: number | undefined;
             actualDurationMinutes?: number | undefined;
@@ -186,9 +225,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
             driverEarnings: number;
         };
         meta: object;
@@ -201,9 +238,7 @@ export declare const driverTrips: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;
@@ -422,9 +457,7 @@ export declare const driverScheduling: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;
@@ -435,9 +468,7 @@ export declare const driverScheduling: import("@trpc/server").TRPCBuiltRouter<{
         };
         output: {
             success: boolean;
-            ride: {
-                updated_date: string;
-            };
+            ride: Record<string, any>;
         };
         meta: object;
     }>;

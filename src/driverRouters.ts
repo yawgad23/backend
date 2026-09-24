@@ -3,7 +3,8 @@ import { publicProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
-import { canCompleteTrip, canStartTrip, getAuthoritativeFinalFare, getQuotedRideFare, getTripChargeTotal } from './fareAuthority';
+import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
+import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -375,24 +376,93 @@ export const driverTrips = router({
     await recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     return { success: true, ride: updated };
   }),
-  start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => {
+  start: publicProcedure.input(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+    waitingTimeMinutes: z.number().optional(),
+    waitingFee: z.number().optional(),
+    startLocation: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
+  })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     if (!canStartTrip(ride)) throw new Error('Trip must be marked driver_arrived before it can start.');
     if (ride.pickup_code && !ride.pickup_verified_at) throw new Error('Pickup code must be verified before the trip can start.');
-    const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 });
+    const tripStartedAt = now();
+    const tripMeter = initializeTripMeter(tripStartedAt, input.startLocation);
+    const updated = withRide(ride, {
+      driver_id: input.driverId,
+      status: 'in_progress',
+      trip_started_at: tripStartedAt,
+      trip_meter: tripMeter,
+      trip_distance_source: 'server_gps_meter',
+      actual_distance_km: 0,
+      waiting_time_minutes: input.waitingTimeMinutes || 0,
+      waiting_fee: input.waitingFee || 0,
+    });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
     return { success: true, ride: updated };
   }),
-  complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
+  recordTripLocation: publicProcedure.input(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    recordedAt: z.string().datetime().optional(),
+  })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    if (!canCompleteTrip(ride)) throw new Error('Trip GPS can only be recorded after Start Trip is confirmed.');
+    const observedAt = input.recordedAt || now();
+    const { meter, accepted, incrementKm, ignoredReason } = advanceTripMeter(
+      ride.trip_meter,
+      { latitude: input.latitude, longitude: input.longitude },
+      observedAt,
+    );
+    const updated = withRide(ride, {
+      trip_meter: meter,
+      trip_distance_source: 'server_gps_meter',
+      actual_distance_km: meter.distance_km,
+      trip_last_location_at: observedAt,
+    });
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
+  }),
+  complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative().optional(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     if (!canCompleteTrip(ride)) throw new Error('A trip cannot be completed or charged before Start Trip is confirmed.');
     const quotedFare = getQuotedRideFare(ride);
-    const finalFare = getAuthoritativeFinalFare(ride);
+    const completedAt = now();
+    const meteredDurationMinutes = getTripDurationMinutes(ride.trip_started_at, new Date(completedAt).getTime());
+    const recordedMeterDistance = Number(ride.trip_meter?.distance_km);
+    const hasServerMeteredDistance = Number(ride.trip_meter?.accepted_samples) > 0
+      && Number.isFinite(recordedMeterDistance)
+      && recordedMeterDistance >= 0;
+    const compatibleDistance = getCappedCompatibilityDistanceKm(
+      input.actualDistanceKm,
+      ride.estimated_distance_km ?? ride.distance_km ?? ride.distance,
+    );
+    // Build 45 reports its locally tracked post-start distance at completion.
+    // Newer builds submit each point through recordTripLocation. Neither path
+    // can fall back to the booking route estimate when the Driver did not move.
+    const actualDistanceKm = hasServerMeteredDistance
+      ? recordedMeterDistance
+      : (compatibleDistance ?? 0);
+    const finalFare = getMeteredTripFare({
+      category: ride.category,
+      distanceKm: actualDistanceKm,
+      durationMinutes: meteredDurationMinutes,
+      waitingFee: ride.waiting_fee,
+      surgeMultiplier: ride.surge_multiplier,
+    });
+    const meteredBreakdown = getMeteredFareBreakdown({
+      category: ride.category,
+      distanceKm: actualDistanceKm,
+      durationMinutes: meteredDurationMinutes,
+      waitingFee: ride.waiting_fee,
+      surgeMultiplier: ride.surge_multiplier,
+    });
     // Tips are a Rider-controlled post-trip action. Do not allow a Driver
     // completion request to add one to the amount charged or earned.
     const tip = 0;
-    const completedAt = now();
     const updated = withRide(ride, {
       driver_id: input.driverId,
       status: 'completed',
@@ -402,15 +472,17 @@ export const driverTrips = router({
       final_fare: finalFare,
       tip_amount: tip,
       driver_earnings: getTripChargeTotal({ ...ride, final_fare: finalFare, tip_amount: tip }),
-      driver_reported_final_fare: input.finalFare,
-      actual_distance_km: input.actualDistanceKm,
-      actual_duration_minutes: input.actualDurationMinutes,
+      driver_reported_final_fare: input.finalFare ?? null,
+      actual_distance_km: actualDistanceKm,
+      actual_duration_minutes: meteredDurationMinutes,
+      fare_authority: 'metered_trip',
       fare_breakdown: {
-        ...(input.fareBreakdown || {}),
+        ...meteredBreakdown,
         quotedFare,
         waitingFee: Number(ride.waiting_fee || 0),
         finalFare,
-        authority: 'rider_quote',
+        authority: 'server_metered_distance_and_time',
+        compatibility_distance_used: !hasServerMeteredDistance,
       },
       completed_at: completedAt,
     });
@@ -423,8 +495,9 @@ export const driverTrips = router({
       status: updated.status,
       metadata: {
         final_fare: finalFare,
-        actual_distance_km: input.actualDistanceKm ?? null,
-        actual_duration_minutes: input.actualDurationMinutes ?? null,
+        actual_distance_km: actualDistanceKm,
+        actual_duration_minutes: meteredDurationMinutes,
+        fare_authority: 'server_metered_distance_and_time',
       },
     });
 
@@ -445,8 +518,8 @@ export const driverTrips = router({
         destination,
         fare: finalFare,
         paymentMethod: ride.payment_display_name || ride.payment_method || ride.payment || 'Cash',
-        distance: input.actualDistanceKm,
-        duration: input.actualDurationMinutes,
+        distance: actualDistanceKm,
+        duration: meteredDurationMinutes,
         category: ride.category,
         tripId: input.rideId,
         completedAt,

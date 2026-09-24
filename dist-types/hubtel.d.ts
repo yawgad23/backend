@@ -32,6 +32,8 @@ export interface HubtelChargeRequest {
     clientReference: string;
     /** MoMo network channel: "mtn-gh" | "vodafone-gh" | "tigo-gh" */
     channel: 'mtn-gh' | 'vodafone-gh' | 'tigo-gh';
+    /** Optional callback destination for payment-type-specific settlement. */
+    callbackUrl?: string;
 }
 export interface HubtelChargeResponse {
     success: boolean;
