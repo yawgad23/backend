@@ -247,6 +247,26 @@ export function createApp(): Express {
         created_at: now,
       });
 
+      try {
+        await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
+          ride_id: ride.id,
+          event_type: 'ride_requested',
+          actor_id: tokenUid,
+          actor_role: 'rider',
+          ride_status: 'searching',
+          metadata: {
+            category: input.category,
+            payment_method: input.payment,
+            booking_for_other: Boolean(input.bookingForOther),
+          },
+          created_at: now,
+        });
+      } catch (eventError) {
+        // The ride has been created successfully. Keep the customer-facing
+        // request available if optional operational audit logging fails.
+        console.error('[RideEvents] Unable to record ride request:', eventError);
+      }
+
       res.status(201).json({
         success: true,
         ride,

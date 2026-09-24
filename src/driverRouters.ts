@@ -32,8 +32,37 @@ async function rideFor(driverId: string, rideId: string) {
   return ride;
 }
 
-function withRide(ride: Record<string, any>, patch: Record<string, any>) {
+function withRide(ride: Record<string, any>, patch: Record<string, any>): Record<string, any> {
   return { ...ride, ...patch, updated_date: now() };
+}
+
+/**
+ * Store an append-only operational event for support and safety review. The
+ * ride document remains the source of truth for the current state; this log
+ * answers how it reached that state without duplicating rider contact data.
+ */
+async function recordRideEvent(input: {
+  rideId: string;
+  type: string;
+  actorId?: string;
+  actorRole: 'driver' | 'rider' | 'system';
+  status?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  try {
+    await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
+      ride_id: input.rideId,
+      event_type: input.type,
+      actor_id: input.actorId || null,
+      actor_role: input.actorRole,
+      ride_status: input.status || null,
+      metadata: input.metadata || {},
+      created_at: now(),
+    });
+  } catch (error) {
+    // Event logging must not block a legitimate rider or Driver state change.
+    console.error('[RideEvents] Unable to record event:', error);
+  }
 }
 
 function isOnline(profileData: Record<string, any> | null) {
@@ -242,6 +271,7 @@ export const driverTrips = router({
     const ride = await rideFor(input.driverId, input.rideId);
     const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', queued_after_ride_id: null, activated_at: now() });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    await recordRideEvent({ rideId: input.rideId, type: 'queued_ride_activated', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { completed_ride_id: input.completedRideId || null } });
     return { success: true, ride: updated };
   }),
   respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
@@ -259,6 +289,7 @@ export const driverTrips = router({
         declined_by_driver_ids: [...new Set([...declined, input.driverId])],
       });
       await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+      await recordRideEvent({ rideId: input.rideId, type: 'offer_declined', actorId: input.driverId, actorRole: 'driver', status: updated.status });
       return { success: true, ride: updated, decision: input.decision };
     }
     if (input.queueAfterRideId) {
@@ -300,11 +331,31 @@ export const driverTrips = router({
     };
     const patch = { driver, driver_name: driver.name, driver_vehicle: `${vehicleMake} ${vehicleModel}`.trim(), driver_vehicle_make: vehicleMake, driver_vehicle_model: vehicleModel, driver_plate: vehiclePlate, driver_colour: vehicleColour, driver_colour_hex: vehicleColourHex, status, accepted_at: acceptedAt, matched_at: acceptedAt, queued_after_ride_id: input.queueAfterRideId || null };
     const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
+    await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
     return { success: true, ride: updated, decision: input.decision };
   }),
-  arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', driver_arrived_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
-  verifyPickup: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.'); const updated = withRide(ride, { pickup_verified_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
-  start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
+  arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arrived', driver_arrived_at: now() });
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    await recordRideEvent({ rideId: input.rideId, type: 'driver_arrived', actorId: input.driverId, actorRole: 'driver', status: updated.status });
+    return { success: true, ride: updated };
+  }),
+  verifyPickup: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.');
+    const updated = withRide(ride, { pickup_verified_at: now() });
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    await recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
+    return { success: true, ride: updated };
+  }),
+  start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 });
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
+    return { success: true, ride: updated };
+  }),
   complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     const quotedFare = getQuotedRideFare(ride);
@@ -335,6 +386,18 @@ export const driverTrips = router({
       completed_at: completedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    await recordRideEvent({
+      rideId: input.rideId,
+      type: 'trip_completed',
+      actorId: input.driverId,
+      actorRole: 'driver',
+      status: updated.status,
+      metadata: {
+        final_fare: finalFare,
+        actual_distance_km: input.actualDistanceKm ?? null,
+        actual_duration_minutes: input.actualDurationMinutes ?? null,
+      },
+    });
 
     // Send the receipt from the backend so it works even when the rider closes
     // the app immediately after the driver completes the trip. The rider app
