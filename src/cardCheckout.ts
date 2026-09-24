@@ -143,7 +143,9 @@ export function buildHubtelCardCheckoutPayload(request: CardCheckoutRequest): Re
     callbackUrl: request.callbackUrl,
     returnUrl: request.returnUrl,
     cancellationUrl: request.returnUrl,
-    merchantAccountNumber: Number(HUBTEL_POS_NUMBER),
+    // Hubtel Sales Checkout validates this field as a JSON string, even when
+    // the merchant account itself is numeric.
+    merchantAccountNumber: HUBTEL_POS_NUMBER,
     clientReference: request.reference,
   };
 }
