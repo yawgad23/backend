@@ -11,6 +11,7 @@ import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { roundGhsFare } from "./fareAuthority";
+import { registerTripShareRoutes } from "./tripShare";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -144,6 +145,7 @@ export function createApp(): Express {
   registerPublicPaymentsApi(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
+  registerTripShareRoutes(app);
 
   /**
    * Creates a Rider request with Firebase ID-token authentication. A request
