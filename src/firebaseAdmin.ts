@@ -136,6 +136,43 @@ export const adminFirestore = {
     });
   },
 
+  /**
+   * Creates the Driver's emergency incident and the matching critical support
+   * ticket in one Firestore batch. An SOS is only acknowledged once both the
+   * incident record and the Safety queue entry exist.
+   */
+  async createSosIncidentWithTicket(
+    incidentData: Record<string, any>,
+    ticketData: Record<string, any>,
+  ) {
+    return withFirestoreErrorHandling('createSosIncidentWithTicket', async () => {
+      const db = getDb();
+      const incidentRef = db.collection(ADMIN_COLLECTIONS.SOS_INCIDENTS).doc();
+      const ticketRef = db.collection(ADMIN_COLLECTIONS.SUPPORT_TICKETS).doc();
+      const timestamp = new Date().toISOString();
+      const incident: Record<string, any> = {
+        ...incidentData,
+        id: incidentRef.id,
+        created_date: incidentData.created_date || timestamp,
+        updated_date: timestamp,
+      };
+      const ticket = {
+        ...ticketData,
+        id: ticketRef.id,
+        incident_id: incidentRef.id,
+        created_date: ticketData.created_date || timestamp,
+        updated_date: timestamp,
+      };
+      incident.support_ticket_id = ticketRef.id;
+
+      const batch = db.batch();
+      batch.set(incidentRef, incident);
+      batch.set(ticketRef, ticket);
+      await batch.commit();
+      return { incident, ticket };
+    });
+  },
+
   async update(collectionName: string, id: string, data: Record<string, any>) {
     return withFirestoreErrorHandling(`update(${collectionName}/${id})`, async () => {
       const payload = { ...data, updated_date: new Date().toISOString() };

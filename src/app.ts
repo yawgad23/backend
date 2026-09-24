@@ -46,6 +46,16 @@ const riderRideRequestInput = z.object({
   }).optional(),
 });
 
+const driverSosInput = z.object({
+  clientAlertId: z.string().min(12).max(160),
+  rideId: z.string().min(1).max(160).optional(),
+  message: z.string().min(1).max(600).optional(),
+  location: z.object({
+    latitude: z.number().finite().min(-90).max(90),
+    longitude: z.number().finite().min(-180).max(180),
+  }).optional(),
+});
+
 /**
  * Builds the Express app. Shared by src/index.ts (local dev / a plain Node
  * server) and src/functions.ts (Firebase Cloud Functions) so the actual
@@ -217,6 +227,127 @@ export function createApp(): Express {
     } catch (error) {
       console.error('[Ride Dispatch] Failed to create rider request:', error);
       res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /**
+   * Records a Driver SOS through Firebase ID-token authentication. The server
+   * derives the Driver identity from the token rather than trusting a client-
+   * supplied driver ID, verifies the active trip where present, then creates a
+   * critical incident and a matching Safety support ticket atomically.
+   */
+  app.post("/api/driver/sos", async (req, res) => {
+    const authHeader = String(req.headers.authorization || "");
+    const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+    if (!idToken) {
+      res.status(401).json({ success: false, message: "Please sign in again before sending an SOS alert." });
+      return;
+    }
+
+    let driverId: string;
+    try {
+      driverId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: "Your session has expired. Please sign in again before sending an SOS alert." });
+      return;
+    }
+
+    const parsed = driverSosInput.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: "The SOS details are incomplete. Please try again or call emergency services." });
+      return;
+    }
+
+    try {
+      const input = parsed.data;
+      const driver = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+      if (!driver) {
+        res.status(403).json({ success: false, message: "Only an approved Driver account can send an SOS alert." });
+        return;
+      }
+
+      const previousIncident = (await adminFirestore.list(
+        ADMIN_COLLECTIONS.SOS_INCIDENTS,
+        { client_alert_id: input.clientAlertId },
+        null,
+        "desc",
+        1,
+      ))[0];
+      if (previousIncident) {
+        res.status(200).json({
+          success: true,
+          incidentId: previousIncident.id,
+          supportTicketId: previousIncident.support_ticket_id || "",
+          receivedAt: previousIncident.received_at || previousIncident.created_date,
+        });
+        return;
+      }
+
+      let ride: Record<string, any> | null = null;
+      if (input.rideId) {
+        ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId);
+        const assignedDriverId = String(ride?.driver_id || ride?.driverId || "");
+        if (!ride || assignedDriverId !== driverId) {
+          res.status(403).json({ success: false, message: "The selected trip is not assigned to your Driver account." });
+          return;
+        }
+      }
+
+      const receivedAt = new Date().toISOString();
+      const driverName = String(driver.full_name || driver.name || driver.display_name || "HY3N Driver");
+      const locationText = input.location
+        ? `https://www.google.com/maps?q=${input.location.latitude},${input.location.longitude}`
+        : "Location unavailable";
+      const result = await adminFirestore.createSosIncidentWithTicket(
+        {
+          client_alert_id: input.clientAlertId,
+          driver_id: driverId,
+          driver_name: driverName,
+          driver_phone: driver.phone || driver.phone_number || null,
+          ride_id: input.rideId || null,
+          location: input.location || null,
+          message: input.message || "Emergency alert initiated from the Driver app.",
+          status: "open",
+          priority: "critical",
+          source: "driver_app",
+          received_at: receivedAt,
+        },
+        {
+          driver_id: driverId,
+          user_type: "driver",
+          category: "safety",
+          type: "sos",
+          priority: "critical",
+          status: "open",
+          subject: `SOS emergency alert — ${driverName}`,
+          message: [
+            input.message || "Emergency alert initiated from the Driver app.",
+            `Driver: ${driverName}`,
+            `Trip: ${input.rideId || "No active trip"}`,
+            `Location: ${locationText}`,
+          ].join("\n"),
+          location: input.location || null,
+          ride_id: input.rideId || null,
+          received_at: receivedAt,
+        },
+      );
+
+      console.warn("[SOS] Driver emergency alert recorded", {
+        incidentId: result.incident.id,
+        supportTicketId: result.ticket.id,
+        driverId,
+        rideId: input.rideId || null,
+        hasLocation: Boolean(input.location),
+      });
+      res.status(201).json({
+        success: true,
+        incidentId: result.incident.id,
+        supportTicketId: result.ticket.id,
+        receivedAt,
+      });
+    } catch (error) {
+      console.error("[SOS] Failed to record Driver emergency alert:", error);
+      res.status(503).json({ success: false, message: "HY3N Safety could not confirm your SOS report. Please call emergency services." });
     }
   });
 
