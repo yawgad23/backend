@@ -495,6 +495,14 @@ export function createApp(): Express {
       // amount the Rider agreed to pay at booking time.
       const quotedFare = roundGhsFare(input.fare);
       const quotedBaseFare = roundGhsFare(input.baseFare);
+      const isDirectMomoPayment = input.payment === 'mobile_money';
+      const paymentDisplayName = isDirectMomoPayment
+        ? 'MoMo'
+        : (input.paymentLabel || input.payment);
+      const paymentCollection = isDirectMomoPayment ? 'direct_to_driver' : null;
+      const paymentInstructions = isDirectMomoPayment
+        ? 'Rider pays the Driver directly by MoMo after the trip. HY3N has not initiated or collected a Hubtel payment.'
+        : null;
 
       const ride = await adminFirestore.create(ADMIN_COLLECTIONS.RIDES, {
         rider_id: input.riderId,
@@ -515,7 +523,9 @@ export function createApp(): Express {
         stops: input.stops || [],
         payment: input.payment,
         payment_method: input.payment,
-        payment_display_name: input.paymentLabel || input.payment,
+        payment_display_name: paymentDisplayName,
+        payment_collection: paymentCollection,
+        payment_instructions: paymentInstructions,
         fare: quotedFare,
         fare_estimate: quotedFare,
         quoted_fare: quotedFare,
@@ -554,7 +564,8 @@ export function createApp(): Express {
           metadata: {
             category: input.category,
             payment_method: input.payment,
-            payment_display_name: input.paymentLabel || input.payment,
+            payment_display_name: paymentDisplayName,
+            payment_collection: paymentCollection,
             booking_for_other: Boolean(input.bookingForOther),
           },
           created_at: now,
