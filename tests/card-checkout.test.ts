@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHubtelCardCheckoutPayload, hostedCheckoutUrlFromPayload, parseCardCheckoutState } from '../src/cardCheckout';
+import { buildHubtelCardCheckoutPayload, createCardCheckoutReference, hostedCheckoutUrlFromPayload, parseCardCheckoutState } from '../src/cardCheckout';
 
 describe('Hubtel card checkout response handling', () => {
   it('accepts only secure hosted checkout URLs', () => {
@@ -29,5 +29,13 @@ describe('Hubtel card checkout response handling', () => {
     expect(payload.totalAmount).toBe(5);
     expect(payload.merchantAccountNumber).toEqual(expect.any(String));
     expect(payload.clientReference).toBe('hy3n-card-test');
+  });
+
+  it('creates a short, unique Hubtel-compatible payment reference', () => {
+    const first = createCardCheckoutReference();
+    const second = createCardCheckoutReference();
+    expect(first).toMatch(/^H[a-z0-9]+$/i);
+    expect(first.length).toBeLessThanOrEqual(20);
+    expect(second).not.toBe(first);
   });
 });

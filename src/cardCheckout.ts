@@ -119,7 +119,9 @@ function canUseHubtelCardCheckout(): boolean {
 }
 
 export function createCardCheckoutReference(): string {
-  return `hy3n-card-${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+  // Sales Checkout enforces a short client-reference limit.  Keep a compact
+  // time component plus cryptographic randomness while staying well below it.
+  return `H${Math.floor(Date.now() / 1000).toString(36)}${randomUUID().replaceAll('-', '').slice(0, 8)}`;
 }
 
 export function parseCardCheckoutState(payload: Record<string, any>): CardCheckoutState {
