@@ -1,5 +1,7 @@
 import { onRequest } from "firebase-functions/v2/https";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createApp } from "./app";
+import { sendRideChatPush } from "./pushNotifications";
 
 // Force deploy: 2026-07-18T17:10:00Z
 // Same unhandledRejection/uncaughtException risk as src/index.ts applies here
@@ -50,4 +52,21 @@ export const api = onRequest(
     ],
   },
   app,
+);
+
+/**
+ * The Rider and Driver clients write chat messages directly to Firestore for
+ * real-time conversation. This event handler mirrors each new message to the
+ * authenticated recipient's registered Expo device(s), including when their
+ * app is backgrounded or not currently running.
+ */
+export const chatMessagePush = onDocumentCreated(
+  {
+    document: 'ride_messages/{messageId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    if (!event.data) return;
+    await sendRideChatPush(event.params.messageId, event.data.data());
+  },
 );

@@ -12,6 +12,7 @@ import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { roundGhsFare } from "./fareAuthority";
 import { registerTripShareRoutes } from "./tripShare";
+import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,6 +74,13 @@ const riderSosInput = z.object({
   }).optional(),
 });
 
+const pushDeviceInput = z.object({
+  role: z.enum(['rider', 'driver']),
+  token: z.string().min(16).max(300),
+  platform: z.enum(['ios', 'android']),
+  appVersion: z.string().max(80).optional(),
+});
+
 /**
  * Builds the Express app. Shared by src/index.ts (local dev / a plain Node
  * server) and src/functions.ts (Firebase Cloud Functions) so the actual
@@ -113,12 +121,15 @@ export function createApp(): Express {
     if (headers.authorization) {
       headers.authorization = "[REDACTED]";
     }
+    const requestBody = originalUrl.startsWith('/api/notifications/push-device')
+      ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
+      : req.body;
 
     console.log(`[API Request] >>> ${method} ${originalUrl}`, JSON.stringify({
       timestamp: new Date().toISOString(),
       headers,
       query: req.query,
-      body: req.body,
+      body: requestBody,
     }, null, 2));
 
     const originalSend = res.send;
@@ -152,6 +163,63 @@ export function createApp(): Express {
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
   registerTripShareRoutes(app);
+
+  /**
+   * Registers an Expo token for the authenticated account. Tokens remain in a
+   * server-only collection and cannot be read or written through the mobile
+   * Firestore clients. The account-role check stops a Rider from registering
+   * a token as an unrelated Driver and vice versa.
+   */
+  app.post('/api/notifications/push-device', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before enabling notifications.' });
+      return;
+    }
+
+    let uid: string;
+    try {
+      uid = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+
+    const parsed = pushDeviceInput.safeParse(req.body);
+    if (!parsed.success || !isExpoPushToken(parsed.data?.token || '')) {
+      res.status(400).json({ success: false, message: 'The device notification token is invalid.' });
+      return;
+    }
+
+    try {
+      const collection = parsed.data.role === 'rider'
+        ? ADMIN_COLLECTIONS.RIDER_PROFILES
+        : ADMIN_COLLECTIONS.DRIVER_PROFILES;
+      const canonicalDriverProfile = parsed.data.role === 'driver'
+        ? await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, uid)
+        : null;
+      const matchingProfiles = await adminFirestore.list(collection, { user_id: uid }, null, 'desc', 1);
+      const accountExists = Boolean(matchingProfiles[0])
+        || (parsed.data.role === 'driver' && String(canonicalDriverProfile?.user_id || canonicalDriverProfile?.id || '') === uid);
+      if (!accountExists) {
+        res.status(403).json({ success: false, message: 'This account cannot register notifications for that app.' });
+        return;
+      }
+
+      const device = await registerPushDevice({
+        uid,
+        role: parsed.data.role,
+        token: parsed.data.token,
+        platform: parsed.data.platform,
+        appVersion: parsed.data.appVersion,
+      });
+      res.status(201).json({ success: true, deviceId: device.id });
+    } catch (error) {
+      console.error('[Push] Device registration failed', { uid, role: parsed.data.role, error });
+      res.status(503).json({ success: false, message: 'Notifications could not be enabled right now. Please try again.' });
+    }
+  });
 
   /**
    * Creates a Rider request with Firebase ID-token authentication. A request

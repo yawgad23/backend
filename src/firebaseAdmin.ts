@@ -73,6 +73,8 @@ export const ADMIN_COLLECTIONS = {
   TRIP_SHARES: 'trip_shares',
   DRIVER_PROFILES: 'driver_profiles',
   DAILY_COMMISSION: 'daily_commissions',
+  PUSH_DEVICES: 'push_devices',
+  PUSH_DELIVERIES: 'push_deliveries',
 };
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────
