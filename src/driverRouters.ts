@@ -45,6 +45,35 @@ function publishLiveActivity(ride: Record<string, any>, force = false) {
   });
 }
 
+function receiptEmail(value: unknown) {
+  const email = String(value || '').trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+/**
+ * A ride keeps the recipient email at booking time, but older phone-authored
+ * rides can predate that field. Resolve the Rider's own profile only on the
+ * trusted backend so a completion still receives its automatic receipt.
+ */
+async function receiptEmailForRide(ride: Record<string, any>) {
+  const recordedEmail = receiptEmail(ride.rider_email || ride.riderEmail);
+  if (recordedEmail) return recordedEmail;
+
+  const riderId = String(ride.rider_id || ride.riderId || '').trim();
+  if (!riderId) return '';
+  try {
+    const uidProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, riderId);
+    const directProfileEmail = receiptEmail(uidProfile?.email);
+    if (directProfileEmail) return directProfileEmail;
+
+    const profiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: riderId }, null, 'desc', 5);
+    return receiptEmail(profiles.find((profile: any) => receiptEmail(profile.email))?.email);
+  } catch (error) {
+    console.warn('[ReceiptEmail] Could not resolve Rider profile email:', error);
+    return '';
+  }
+}
+
 /**
  * Store an append-only operational event for support and safety review. The
  * ride document remains the source of truth for the current state; this log
@@ -520,7 +549,7 @@ export const driverTrips = router({
     // Send the receipt from the backend so it works even when the rider closes
     // the app immediately after the driver completes the trip. The rider app
     // keeps its local request as a fallback for older deployments.
-    const riderEmail = String(ride.rider_email || ride.riderEmail || '').trim();
+    const riderEmail = await receiptEmailForRide(ride);
     if (riderEmail && !ride.receipt_email_sent) {
       const pickup = typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.name || ride.pickup_address || 'Pickup location';
       const destination = typeof ride.destination === 'string' ? ride.destination : ride.destination?.name || ride.destination_address || 'Destination';
@@ -540,7 +569,23 @@ export const driverTrips = router({
         tripId: input.rideId,
         completedAt,
       });
-      if (sent) await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { receipt_email_sent: true, receipt_email_sent_at: now() });
+      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, sent
+        ? {
+            rider_email: riderEmail,
+            receipt_email_sent: true,
+            receipt_email_sent_at: now(),
+            receipt_email_last_status: 'sent',
+          }
+        : {
+            rider_email: riderEmail,
+            receipt_email_last_status: 'failed',
+            receipt_email_last_attempt_at: now(),
+          });
+    } else if (!riderEmail) {
+      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, {
+        receipt_email_last_status: 'missing_recipient_email',
+        receipt_email_last_attempt_at: now(),
+      });
     }
 
     return { success: true, ride: updated, driverEarnings: finalFare };
