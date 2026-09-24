@@ -163,16 +163,58 @@ export const driverTrips = router({
     safetyReport: z.string().max(2000).optional(),
   })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
-    if (ride.driver_id !== input.driverId || ride.rider_id !== input.riderId) throw new Error('This ride is not eligible for rating.');
+    const rideDriverId = String(ride.driver_id || ride.driverId || ride.driver?.id || '');
+    const rideRiderId = String(ride.rider_id || ride.riderId || ride.rider?.id || '');
+    if (rideDriverId !== input.driverId || rideRiderId !== input.riderId) throw new Error('This ride is not eligible for rating.');
     if (ride.status !== 'completed') throw new Error('Complete the ride before submitting a rating.');
+
+    // This primary write is the rating submission itself. It must never be
+    // blocked by a secondary, non-critical average-rating refresh.
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { driver_rating: input.rating, driver_feedback: input.feedback || '', driver_rated_at: now() });
-    const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: input.riderId }, 'completed_at', 'desc', 500);
-    const rated = riderRides.map((item) => Number(item.driver_rating || 0)).filter((value) => value > 0);
-    const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: input.riderId }, '', 'desc', 5);
-    if (riderProfiles[0] && rated.length) await adminFirestore.update(ADMIN_COLLECTIONS.RIDER_PROFILES, riderProfiles[0].id, { rating: Number((rated.reduce((sum, value) => sum + value, 0) / rated.length).toFixed(2)) });
-    if (input.foundItem?.trim()) await adminFirestore.create('found_items', { driver_id: input.driverId, ride_id: input.rideId, rider_id: input.riderId, description: input.foundItem.trim(), status: 'reported', reported_at: now() });
-    if (input.safetyReport?.trim()) await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_REPORTS, { reporter_id: input.driverId, reporter_role: 'driver', ride_id: input.rideId, type: 'safety', description: input.safetyReport.trim(), status: 'open', created_at: now() });
-    return { success: true };
+
+    const warnings: string[] = [];
+    try {
+      // A Firestore `where(rider_id) + orderBy(completed_at)` query requires a
+      // composite index. Ordering is irrelevant to an average, so read the
+      // rider's completed rides without an order and calculate locally. This
+      // keeps the flow compatible with existing production data.
+      const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: input.riderId }, null, 'desc', 500);
+      const rated = riderRides
+        .filter((item) => item.status === 'completed')
+        .map((item) => Number(item.driver_rating || 0))
+        .filter((value) => value > 0);
+      const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: input.riderId }, null, 'desc', 5);
+      const riderProfile = riderProfiles[0] || await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, input.riderId);
+      if (riderProfile && rated.length) {
+        await adminFirestore.update(
+          ADMIN_COLLECTIONS.RIDER_PROFILES,
+          riderProfile.id,
+          { rating: Number((rated.reduce((sum, value) => sum + value, 0) / rated.length).toFixed(2)), rating_count: rated.length },
+        );
+      }
+    } catch (error) {
+      // The ride record already has the driver's rating. Do not present an
+      // optional aggregate-refresh failure as a failed submission.
+      console.error('[Ratings] Rider average refresh failed after rating write:', error);
+      warnings.push('rider_average_not_refreshed');
+    }
+    if (input.foundItem?.trim()) {
+      try {
+        await adminFirestore.create('found_items', { driver_id: input.driverId, ride_id: input.rideId, rider_id: input.riderId, description: input.foundItem.trim(), status: 'reported', reported_at: now() });
+      } catch (error) {
+        console.error('[Ratings] Found-item report failed after rating write:', error);
+        warnings.push('found_item_not_recorded');
+      }
+    }
+    if (input.safetyReport?.trim()) {
+      try {
+        await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_REPORTS, { reporter_id: input.driverId, reporter_role: 'driver', ride_id: input.rideId, type: 'safety', description: input.safetyReport.trim(), status: 'open', created_at: now() });
+      } catch (error) {
+        console.error('[Ratings] Safety report failed after rating write:', error);
+        warnings.push('safety_report_not_recorded');
+      }
+    }
+    return { success: true, warnings };
   }),
   availableOffers: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
