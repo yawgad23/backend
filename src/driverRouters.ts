@@ -3,7 +3,7 @@ import { publicProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
-import { getAuthoritativeFinalFare, getQuotedRideFare, getTripChargeTotal } from './fareAuthority';
+import { canCompleteTrip, canStartTrip, getAuthoritativeFinalFare, getQuotedRideFare, getTripChargeTotal } from './fareAuthority';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -351,6 +351,8 @@ export const driverTrips = router({
   }),
   start: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), waitingTimeMinutes: z.number().optional(), waitingFee: z.number().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
+    if (!canStartTrip(ride)) throw new Error('Trip must be marked driver_arrived before it can start.');
+    if (ride.pickup_code && !ride.pickup_verified_at) throw new Error('Pickup code must be verified before the trip can start.');
     const updated = withRide(ride, { driver_id: input.driverId, status: 'in_progress', trip_started_at: now(), waiting_time_minutes: input.waitingTimeMinutes || 0, waiting_fee: input.waitingFee || 0 });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
@@ -358,6 +360,7 @@ export const driverTrips = router({
   }),
   complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
+    if (!canCompleteTrip(ride)) throw new Error('A trip cannot be completed or charged before Start Trip is confirmed.');
     const quotedFare = getQuotedRideFare(ride);
     const finalFare = getAuthoritativeFinalFare(ride);
     // Tips are a Rider-controlled post-trip action. Do not allow a Driver

@@ -47,3 +47,16 @@ export function getTripChargeTotal(ride: RideFareFields): number {
   const safeTip = Number.isFinite(tip) && tip > 0 ? tip : 0;
   return roundGhsFare(getAuthoritativeFinalFare(ride) + safeTip);
 }
+
+/** A Driver can start only after the server has recorded arrival at pickup. */
+export function canStartTrip(ride: RideFareFields): boolean {
+  return ride.status === 'driver_arrived';
+}
+
+/**
+ * A trip can create a final fare only after it was explicitly started. This
+ * prevents an arriving or waiting ride from being marked completed/charged.
+ */
+export function canCompleteTrip(ride: RideFareFields): boolean {
+  return ride.status === 'in_progress' && Boolean(ride.trip_started_at);
+}
