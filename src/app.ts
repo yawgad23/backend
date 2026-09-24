@@ -27,6 +27,12 @@ const riderRideRequestInput = z.object({
   riderName: z.string().min(1).max(120),
   riderPhone: z.string().max(40),
   riderEmail: z.string().max(254).optional(),
+  bookingForOther: z.boolean().optional(),
+  bookedByName: z.string().max(120).optional(),
+  bookedByPhone: z.string().max(40).optional(),
+  passengerName: z.string().max(120).optional(),
+  passengerPhone: z.string().max(40).optional(),
+  passengerPickupNote: z.string().max(300).optional(),
   category: z.string().min(1).max(50),
   pickup: rideLocationInput,
   destination: rideLocationInput,
@@ -180,6 +186,10 @@ export function createApp(): Express {
       res.status(403).json({ success: false, message: "You can only request a ride for your own account." });
       return;
     }
+    if (input.bookingForOther && (!input.passengerName?.trim() || !input.passengerPhone?.trim())) {
+      res.status(400).json({ success: false, message: "Please provide the passenger's name and phone number." });
+      return;
+    }
 
     try {
       const now = new Date().toISOString();
@@ -195,6 +205,12 @@ export function createApp(): Express {
         rider_name: input.riderName,
         rider_phone: input.riderPhone,
         rider_email: input.riderEmail || '',
+        booking_for_other: Boolean(input.bookingForOther),
+        booked_by_name: input.bookedByName || input.riderName,
+        booked_by_phone: input.bookedByPhone || input.riderPhone,
+        passenger_name: input.passengerName || input.riderName,
+        passenger_phone: input.passengerPhone || input.riderPhone,
+        passenger_pickup_note: input.passengerPickupNote || null,
         category: input.category,
         pickup: input.pickup,
         pickup_address: input.pickup.address || input.pickup.name,
