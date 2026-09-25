@@ -236,20 +236,47 @@ async function hasCurrentPlatformFee(driverId: string) {
   });
 }
 
+const CATEGORY_ALIASES: Record<string, string> = {
+  economy: 'standard',
+  premium: 'comfort',
+  delivery: 'express_delivery',
+};
+
+export function driverRideCategories(profileData: Record<string, any>) {
+  const configured = Array.isArray(profileData.ride_categories)
+    ? profileData.ride_categories
+    : Array.isArray(profileData.accepted_categories)
+      ? profileData.accepted_categories
+      : [];
+  const categories = configured
+    .map((value: unknown) => CATEGORY_ALIASES[String(value).trim().toLowerCase()] || String(value).trim().toLowerCase())
+    .filter(Boolean);
+  if (categories.length > 0) return [...new Set(categories)];
+
+  const serviceType = String(profileData.service_type || profileData.serviceType || '').toLowerCase();
+  if (serviceType.includes('deliver')) return ['express_delivery'];
+  if (serviceType.includes('okada') || serviceType.includes('moto')) return ['okada'];
+  return ['standard'];
+}
+
+export function driverCanServeRideCategory(profileData: Record<string, any>, category: unknown) {
+  const requested = CATEGORY_ALIASES[String(category || 'standard').trim().toLowerCase()]
+    || String(category || 'standard').trim().toLowerCase();
+  const categories = driverRideCategories(profileData);
+  const serviceType = String(profileData.service_type || profileData.serviceType || '').toLowerCase();
+
+  if (requested === 'okada') return serviceType.includes('okada') || serviceType.includes('moto') || categories.includes('okada');
+  if (requested === 'express_delivery') return serviceType.includes('deliver') || categories.includes('express_delivery');
+  if (serviceType.includes('okada') || serviceType.includes('moto') || serviceType.includes('deliver')) return false;
+
+  // Kantanka vehicles can receive Comfort requests. Comfort-only vehicles can
+  // never receive Kantanka requests; every other car category stays exact.
+  if (requested === 'comfort') return categories.includes('comfort') || categories.includes('kantanka');
+  return categories.includes(requested);
+}
+
 function hasCategory(profileData: Record<string, any>, category: unknown) {
-  const requested = String(category || '').toLowerCase();
-  const categories = Array.isArray(profileData.ride_categories)
-    ? profileData.ride_categories.map((value: unknown) => String(value).toLowerCase())
-    : [];
-  if (categories.length > 0) return categories.includes(requested);
-  const serviceType = String(profileData.service_type || '').toLowerCase();
-  return ['standard', 'comfort', 'kantanka', 'executive'].includes(requested)
-    ? (!serviceType || serviceType === 'car')
-    : requested === 'okada'
-      ? serviceType === 'okada'
-      : requested === 'express_delivery'
-        ? serviceType === 'delivery'
-        : false;
+  return driverCanServeRideCategory(profileData, category);
 }
 
 function locationOf(profileData: Record<string, any>) {

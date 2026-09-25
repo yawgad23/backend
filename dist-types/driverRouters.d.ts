@@ -12,6 +12,8 @@ export declare function sendCompletedRideReceipt(rideId: string, suppliedRide?: 
     pending: boolean;
     missingRecipient: boolean;
 }>;
+export declare function driverRideCategories(profileData: Record<string, any>): string[];
+export declare function driverCanServeRideCategory(profileData: Record<string, any>, category: unknown): boolean;
 export declare const driverOperations: import("@trpc/server").TRPCBuiltRouter<{
     ctx: import("./context").TrpcContext;
     meta: object;

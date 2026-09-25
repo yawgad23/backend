@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { receiptDeliveryState, receiptEmail } from './driverRouters';
+import { driverCanServeRideCategory, receiptDeliveryState, receiptEmail } from './driverRouters';
 
 describe('receiptEmail', () => {
   it('accepts a real Rider email address', () => {
@@ -37,5 +37,22 @@ describe('receiptDeliveryState', () => {
       receipt_email_delivery_status: 'sending',
       receipt_email_delivery_started_at: '2026-09-25T14:40:00.000Z',
     }, currentTime)).toBe('ready');
+  });
+});
+
+describe('driverCanServeRideCategory', () => {
+  it('allows Kantanka Drivers to receive Comfort and Kantanka requests', () => {
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['kantanka'] }, 'comfort')).toBe(true);
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['kantanka'] }, 'kantanka')).toBe(true);
+  });
+
+  it('does not allow Comfort-only Drivers to receive Kantanka requests', () => {
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['comfort'] }, 'kantanka')).toBe(false);
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['comfort'] }, 'comfort')).toBe(true);
+  });
+
+  it('keeps Standard matching exact for categorized cars', () => {
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['standard'] }, 'standard')).toBe(true);
+    expect(driverCanServeRideCategory({ service_type: 'car', ride_categories: ['kantanka'] }, 'standard')).toBe(false);
   });
 });
