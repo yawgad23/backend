@@ -13,16 +13,16 @@ import nodemailer from 'nodemailer';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const RECEIPT_LOGO_CID = 'hy3n-logo@ridehy3n.com';
+const RECEIPT_LOGO_CID = 'hy3n-receipt-logo@ridehy3n.com';
 
 function getReceiptLogoAttachment() {
-  const logoPath = path.join(process.cwd(), 'assets', 'hy3n-logo-fixed.png');
+  const logoPath = path.join(process.cwd(), 'assets', 'hy3n-receipt-logo.png');
   if (!existsSync(logoPath)) {
     console.warn('[HY3N Email] Receipt logo asset not found:', logoPath);
     return null;
   }
   return {
-    filename: 'hy3n-logo-fixed.png',
+    filename: 'hy3n-receipt-logo.png',
     content: readFileSync(logoPath),
     cid: RECEIPT_LOGO_CID,
   };
@@ -89,10 +89,9 @@ export async function sendTripReceiptEmail(data: TripReceiptData): Promise<boole
     <tr><td align="center">
       <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;max-width:560px;width:100%">
         <!-- Header -->
-        <tr><td style="background:#0A0A0A;padding:24px 32px;text-align:center">
-          ${logoAttachment ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="220" style="display:block;width:220px;max-width:100%;height:auto;margin:0 auto 10px;border:0" />` : '<div style="font-size:28px;font-weight:900;color:#D4AF37;letter-spacing:2px">HY3N</div>'}
-          <div style="color:#D4AF37;font-size:13px;font-weight:700;letter-spacing:1.5px;margin-top:4px">RIDE WITH PRIDE</div>
-          <div style="color:#9CA3AF;font-size:13px;margin-top:6px">Your trip receipt</div>
+        <tr><td style="background:#FFFFFF;padding:0 28px 18px;text-align:center;border-bottom:4px solid #D4AF37">
+          ${logoAttachment ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="430" style="display:block;width:430px;max-width:100%;height:auto;margin:0 auto;border:0" />` : '<div style="font-size:28px;font-weight:900;color:#111827;letter-spacing:2px;padding-top:24px">HY3N</div>'}
+          <div style="color:#6B7280;font-size:13px;margin-top:0">Your trip receipt</div>
         </td></tr>
 
         <!-- Greeting -->
