@@ -74,10 +74,15 @@ export function registerDriverLocationRoutes(app: Express) {
       await Promise.all(targets.map((profile) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, patch)));
     }
 
-    void sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
-      // Location persistence remains successful even if Apple/FCM is delayed.
+    try {
+      // Await delivery while this HTTP invocation is alive. Detached work can
+      // be stopped as soon as the response returns, leaving a backgrounded
+      // Rider with a frozen Lock Screen route.
+      await sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude });
+    } catch (error) {
+      // Location persistence remains successful if Apple/FCM is delayed.
       console.error('[LiveActivity] Background Driver location push failed:', error);
-    });
+    }
 
     res.json({ success: true, location });
   });

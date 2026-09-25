@@ -85,10 +85,28 @@ async function roadRouteMetrics(from?: Point, to?: Point) {
   }
 }
 
-async function liveActivityPresentation(ride: Record<string, any>, driverLocation?: Point) {
+export async function liveActivityPresentation(ride: Record<string, any>, driverLocation?: Point) {
   const status = cleanText(ride.status, 'driver_arriving', 40);
   const onTrip = status === 'in_progress';
   const completed = status === 'completed' || status === 'cancelled';
+  const destinationName = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_name, 'your destination', 80);
+  const pickupName = cleanText(ride.pickup?.name || ride.pickup?.address || ride.pickup_name, 'your pickup point', 80);
+  const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your HY3N driver', 60);
+  const vehicle = cleanText(ride.driver_vehicle || `${ride.driver_vehicle_make || ''} ${ride.driver_vehicle_model || ''}`, '', 70);
+
+  // Ending an activity must never wait on external route calculation. It is
+  // sent synchronously by the completion handler so an old trip cannot remain
+  // on the Rider's Lock Screen after the Driver has finished it.
+  if (completed) {
+    return {
+      event: 'end' as ActivityEvent,
+      title: status === 'completed' ? 'Trip complete' : 'Ride cancelled',
+      subtitle: status === 'completed' ? 'Thank you for riding with HY3N' : 'Open HY3N to book another ride',
+      arrivalAt: null as number | null,
+      progress: 1,
+    };
+  }
+
   const target = onTrip ? maybePoint(ride.destination) : maybePoint(ride.pickup);
   const fallbackMinutes = onTrip
     ? Number(ride.estimated_duration_minutes ?? ride.duration ?? 12)
@@ -110,20 +128,6 @@ async function liveActivityPresentation(ride: Record<string, any>, driverLocatio
     ? Math.max(0.02, Math.min(0.98, 1 - (road.distanceKm / bookedDistanceKm)))
     : onTrip ? 0.5 : 0.15;
   const arrivalAt = Date.now() + etaMinutes * 60_000;
-  const destinationName = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_name, 'your destination', 80);
-  const pickupName = cleanText(ride.pickup?.name || ride.pickup?.address || ride.pickup_name, 'your pickup point', 80);
-  const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your HY3N driver', 60);
-  const vehicle = cleanText(ride.driver_vehicle || `${ride.driver_vehicle_make || ''} ${ride.driver_vehicle_model || ''}`, '', 70);
-
-  if (completed) {
-    return {
-      event: 'end' as ActivityEvent,
-      title: status === 'completed' ? 'Trip complete' : 'Ride cancelled',
-      subtitle: status === 'completed' ? 'Thank you for riding with HY3N' : 'Open HY3N to book another ride',
-      arrivalAt: null as number | null,
-      progress: 1,
-    };
-  }
   if (status === 'driver_arrived') {
     return {
       event: 'update' as ActivityEvent,
@@ -237,10 +241,14 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
                 subtitle: presentation.subtitle,
                 timerEndDateInMilliseconds: presentation.arrivalAt,
                 progress: presentation.progress,
-                imageName: 'hy3n_car',
-                dynamicIslandImageName: 'hy3n_car',
+                ...(presentation.event === 'end' ? {} : {
+                  imageName: 'hy3n_car',
+                  dynamicIslandImageName: 'hy3n_car',
+                }),
               },
-              ...(presentation.event === 'end' ? { 'dismissal-date': Math.floor(now / 1000) + 15 * 60 } : {}),
+              // Briefly confirm the final state, then remove the Lock Screen
+              // card instead of leaving an old destination visible.
+              ...(presentation.event === 'end' ? { 'dismissal-date': Math.floor(now / 1000) + 30 } : {}),
             },
           },
         },

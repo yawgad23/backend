@@ -3,6 +3,14 @@ type Point = {
     latitude: number;
     longitude: number;
 };
+type ActivityEvent = 'update' | 'end';
+export declare function liveActivityPresentation(ride: Record<string, any>, driverLocation?: Point): Promise<{
+    event: ActivityEvent;
+    title: string;
+    subtitle: string;
+    arrivalAt: number | null;
+    progress: number;
+}>;
 /** Securely stores the per-activity APNs token and its paired FCM token. */
 export declare function registerLiveActivityRoutes(app: Express): void;
 /** Sends a throttled remote ActivityKit update for one Rider trip. */

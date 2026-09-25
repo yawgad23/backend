@@ -40,8 +40,8 @@ function withRide(ride: Record<string, any>, patch: Record<string, any>): Record
   return { ...ride, ...patch, updated_date: now() };
 }
 
-function publishLiveActivity(ride: Record<string, any>, force = false) {
-  void sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
+async function publishLiveActivity(ride: Record<string, any>, force = false) {
+  await sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
     // A Lock Screen update must never block the real ride-state transition.
     console.error('[LiveActivity] Ride state push failed:', error);
   });
@@ -430,7 +430,7 @@ export const driverTrips = router({
     };
     const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
     await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
-    publishLiveActivity(updated, true);
+    await publishLiveActivity(updated, true);
     return { success: true, ride: updated, decision: input.decision };
   }),
   arrive: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => {
@@ -438,7 +438,7 @@ export const driverTrips = router({
     const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arrived', driver_arrived_at: now() });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'driver_arrived', actorId: input.driverId, actorRole: 'driver', status: updated.status });
-    publishLiveActivity(updated, true);
+    await publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
   verifyPickup: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => {
@@ -473,7 +473,7 @@ export const driverTrips = router({
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
-    publishLiveActivity(updated, true);
+    await publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
   recordTripLocation: publicProcedure.input(z.object({
@@ -498,7 +498,7 @@ export const driverTrips = router({
       trip_last_location_at: observedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
-    publishLiveActivity(updated);
+    await publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
   }),
   complete: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative().optional(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
@@ -562,7 +562,10 @@ export const driverTrips = router({
       completed_at: completedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
-    publishLiveActivity(updated, true);
+    // An ActivityKit end event must complete before this request returns. A
+    // fire-and-forget promise can be terminated with the function invocation,
+    // leaving a completed trip visible on the Rider's Lock Screen.
+    await publishLiveActivity(updated, true);
     await recordRideEvent({
       rideId: input.rideId,
       type: 'trip_completed',
