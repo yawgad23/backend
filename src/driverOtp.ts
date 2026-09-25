@@ -49,7 +49,17 @@ function asMilliseconds(value: unknown): number {
 function messageFromProvider(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return '';
   const record = payload as Record<string, unknown>;
-  return String(record.Message ?? record.message ?? record.Description ?? record.description ?? record.Status ?? record.status ?? '');
+  return String(
+    record.statusDescription
+    ?? record.status_description
+    ?? record.Message
+    ?? record.message
+    ?? record.Description
+    ?? record.description
+    ?? record.Status
+    ?? record.status
+    ?? '',
+  );
 }
 
 function providerRejected(response: { ok: boolean }, payload: unknown): boolean {
@@ -157,8 +167,15 @@ export function registerDriverOtpRoutes(app: Express) {
       const raw = await providerResponse.text();
       try { providerPayload = raw ? JSON.parse(raw) : {}; } catch { providerPayload = { message: raw.slice(0, 300) }; }
       if (providerRejected(providerResponse, providerPayload)) {
-        console.error('[Hubtel SMS] Driver OTP delivery rejected.', { status: providerResponse.status, providerMessage: messageFromProvider(providerPayload) });
-        res.status(502).json({ success: false, message: 'We could not send the verification SMS. Please check your number and try again.' });
+        const providerMessage = messageFromProvider(providerPayload);
+        console.error('[Hubtel SMS] Driver OTP delivery rejected.', { status: providerResponse.status, providerMessage });
+        const paymentRequired = /payment required|insufficient|balance|fund/i.test(providerMessage);
+        res.status(paymentRequired ? 503 : 502).json({
+          success: false,
+          message: paymentRequired
+            ? 'SMS verification is temporarily unavailable. Please contact HY3N Support.'
+            : 'We could not send the verification SMS. Please check your number and try again.',
+        });
         return;
       }
     } catch (error: any) {
