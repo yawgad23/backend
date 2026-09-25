@@ -1,3 +1,4 @@
+export declare function receiptEmail(value: unknown): string;
 export declare const driverOperations: import("@trpc/server").TRPCBuiltRouter<{
     ctx: import("./context").TrpcContext;
     meta: object;

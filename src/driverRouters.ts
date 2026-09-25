@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { publicProcedure, router } from './trpc';
-import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
+import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
 import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
@@ -47,8 +47,11 @@ async function publishLiveActivity(ride: Record<string, any>, force = false) {
   });
 }
 
-function receiptEmail(value: unknown) {
+export function receiptEmail(value: unknown) {
   const email = String(value || '').trim().toLowerCase();
+  // Phone-auth-only Firebase accounts can have an internal placeholder email.
+  // It is valid syntactically but cannot receive a Rider's receipt.
+  if (email.endsWith('@hy3n.local')) return '';
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
 }
 
@@ -69,9 +72,19 @@ async function receiptEmailForRide(ride: Record<string, any>) {
     if (directProfileEmail) return directProfileEmail;
 
     const profiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: riderId }, null, 'desc', 5);
-    return receiptEmail(profiles.find((profile: any) => receiptEmail(profile.email))?.email);
+    const profileEmail = receiptEmail(profiles.find((profile: any) => receiptEmail(profile.email))?.email);
+    if (profileEmail) return profileEmail;
   } catch (error) {
     console.warn('[ReceiptEmail] Could not resolve Rider profile email:', error);
+  }
+
+  // The mobile app's Firebase account is the last trusted source. This covers
+  // valid email-authenticated Riders whose legacy ride/profile documents do
+  // not yet contain `rider_email`.
+  try {
+    return receiptEmail((await getAdminAuth().getUser(riderId)).email);
+  } catch (error) {
+    console.warn('[ReceiptEmail] Could not resolve Firebase auth email:', error);
     return '';
   }
 }
