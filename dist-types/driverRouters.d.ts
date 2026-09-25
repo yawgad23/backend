@@ -1,4 +1,17 @@
 export declare function receiptEmail(value: unknown): string;
+export type ReceiptDeliveryState = 'ready' | 'sending' | 'sent';
+/** A pure state reader used by receipt idempotency coverage. */
+export declare function receiptDeliveryState(ride: Record<string, any>, currentTime?: number): ReceiptDeliveryState;
+/**
+ * Send one receipt per completed ride. Driver completion and older Rider
+ * clients share the same Firestore lock so they cannot race to SMTP.
+ */
+export declare function sendCompletedRideReceipt(rideId: string, suppliedRide?: Record<string, any>): Promise<{
+    sent: boolean;
+    alreadySent: boolean;
+    pending: boolean;
+    missingRecipient: boolean;
+}>;
 export declare const driverOperations: import("@trpc/server").TRPCBuiltRouter<{
     ctx: import("./context").TrpcContext;
     meta: object;

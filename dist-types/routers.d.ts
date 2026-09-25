@@ -12,23 +12,13 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
     }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
         sendReceipt: import("@trpc/server").TRPCMutationProcedure<{
             input: {
-                riderEmail: string;
-                riderName: string;
-                driverName: string;
-                driverVehicle: string;
-                driverPlate: string;
-                pickup: string;
-                destination: string;
-                fare: number;
-                paymentMethod: string;
                 tripId: string;
-                completedAt: string;
-                distance?: number | undefined;
-                duration?: number | undefined;
-                category?: string | undefined;
             };
             output: {
                 success: boolean;
+                alreadySent: boolean;
+                pending: boolean;
+                missingRecipient: boolean;
             };
             meta: object;
         }>;
@@ -157,7 +147,7 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
         overrideStatus: import("@trpc/server").TRPCMutationProcedure<{
             input: {
                 commissionId: string;
-                newStatus: "processing" | "paid" | "failed";
+                newStatus: "failed" | "processing" | "paid";
                 reason?: string | undefined;
             };
             output: {

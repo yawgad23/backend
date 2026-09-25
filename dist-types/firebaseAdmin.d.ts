@@ -72,6 +72,25 @@ export declare const adminFirestore: {
         updated_date: string;
     }>;
     /**
+     * Claims a completed ride's receipt delivery before SMTP is called. The Rider
+     * app and the Driver completion request can arrive at almost the same time,
+     * so a normal read followed by a write can send two identical receipts.
+     * A Firestore transaction makes one caller the sender and makes every other
+     * caller observe the same sent/in-progress state.
+     */
+    claimReceiptEmailDelivery(rideId: string, recipientEmail: string, staleAfterMs?: number): Promise<{
+        claimed: boolean;
+        state: "sent";
+    } | {
+        claimed: boolean;
+        state: "sending";
+    }>;
+    /** Complete the receipt delivery state after the caller that owns the lock finishes SMTP. */
+    finishReceiptEmailDelivery(rideId: string, recipientEmail: string, sent: boolean): Promise<{
+        sent: boolean;
+        completedAt: string;
+    }>;
+    /**
      * Settles a successful Hubtel wallet top-up exactly once. Hubtel can retry
      * callbacks and the status-reconciliation route can run concurrently, so
      * the wallet credit and transaction state change must share one Firestore

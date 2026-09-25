@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { receiptEmail } from './driverRouters';
+import { receiptDeliveryState, receiptEmail } from './driverRouters';
 
 describe('receiptEmail', () => {
   it('accepts a real Rider email address', () => {
@@ -13,5 +13,29 @@ describe('receiptEmail', () => {
 
   it('rejects internal phone-auth placeholder addresses', () => {
     expect(receiptEmail('phone-233123456789@hy3n.local')).toBe('');
+  });
+});
+
+describe('receiptDeliveryState', () => {
+  const currentTime = Date.parse('2026-09-25T15:00:00.000Z');
+
+  it('keeps a sent receipt idempotent', () => {
+    expect(receiptDeliveryState({ receipt_email_sent: true }, currentTime)).toBe('sent');
+    expect(receiptDeliveryState({ receipt_email_delivery_status: 'sent' }, currentTime)).toBe('sent');
+  });
+
+  it('blocks a second send while the first SMTP delivery is active', () => {
+    expect(receiptDeliveryState({
+      receipt_email_delivery_status: 'sending',
+      receipt_email_delivery_started_at: '2026-09-25T14:50:00.000Z',
+    }, currentTime)).toBe('sending');
+  });
+
+  it('allows a retry after a failed or stale delivery lock', () => {
+    expect(receiptDeliveryState({ receipt_email_delivery_status: 'failed' }, currentTime)).toBe('ready');
+    expect(receiptDeliveryState({
+      receipt_email_delivery_status: 'sending',
+      receipt_email_delivery_started_at: '2026-09-25T14:40:00.000Z',
+    }, currentTime)).toBe('ready');
   });
 });

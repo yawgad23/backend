@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { publicProcedure, router } from "./trpc";
-import { sendTripReceiptEmail, sendVerificationEmail } from "./email";
+import { sendVerificationEmail } from "./email";
 import {
   chargeDriverCommission,
   getMomoChannel,
@@ -9,7 +9,7 @@ import {
 } from "./hubtel";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { generateReference } from "./publicPaymentsApi";
-import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport } from "./driverRouters";
+import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport, sendCompletedRideReceipt } from "./driverRouters";
 import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
 import { getTripChargeTotal } from "./fareAuthority";
 
@@ -61,24 +61,20 @@ export const appRouter = router({
   trips: router({
     sendReceipt: publicProcedure
       .input(z.object({
-        riderEmail: z.string().email(),
-        riderName: z.string(),
-        driverName: z.string(),
-        driverVehicle: z.string(),
-        driverPlate: z.string(),
-        pickup: z.string(),
-        destination: z.string(),
-        fare: z.number(),
-        paymentMethod: z.string(),
-        distance: z.number().optional(),
-        duration: z.number().optional(),
-        category: z.string().optional(),
-        tripId: z.string(),
-        completedAt: z.string(),
+        // Older Rider builds provide a whole receipt payload. Deliberately
+        // accept only the trip ID and derive every value and recipient from
+        // the completed backend ride, so this fallback cannot send a second
+        // or tampered receipt.
+        tripId: z.string().min(1),
       }))
       .mutation(async ({ input }) => {
-        const sent = await sendTripReceiptEmail(input);
-        return { success: sent };
+        const result = await sendCompletedRideReceipt(input.tripId);
+        return {
+          success: result.sent || result.alreadySent,
+          alreadySent: result.alreadySent,
+          pending: result.pending,
+          missingRecipient: result.missingRecipient,
+        };
       }),
   }),
 

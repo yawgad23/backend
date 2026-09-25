@@ -227,6 +227,73 @@ export const adminFirestore = {
   },
 
   /**
+   * Claims a completed ride's receipt delivery before SMTP is called. The Rider
+   * app and the Driver completion request can arrive at almost the same time,
+   * so a normal read followed by a write can send two identical receipts.
+   * A Firestore transaction makes one caller the sender and makes every other
+   * caller observe the same sent/in-progress state.
+   */
+  async claimReceiptEmailDelivery(rideId: string, recipientEmail: string, staleAfterMs = 15 * 60 * 1000) {
+    return withFirestoreErrorHandling(`claimReceiptEmailDelivery(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = snap.data() as Record<string, any>;
+        const status = String(ride.receipt_email_delivery_status || '');
+
+        if (ride.receipt_email_sent === true || status === 'sent') {
+          return { claimed: false, state: 'sent' as const };
+        }
+
+        const deliveryStartedAt = new Date(String(ride.receipt_email_delivery_started_at || '')).getTime();
+        const hasFreshDeliveryLock = status === 'sending'
+          && Number.isFinite(deliveryStartedAt)
+          && Date.now() - deliveryStartedAt >= 0
+          && Date.now() - deliveryStartedAt < staleAfterMs;
+        if (hasFreshDeliveryLock) {
+          return { claimed: false, state: 'sending' as const };
+        }
+
+        const timestamp = new Date().toISOString();
+        transaction.update(ref, {
+          rider_email: recipientEmail,
+          receipt_email_delivery_status: 'sending',
+          receipt_email_delivery_started_at: timestamp,
+          receipt_email_last_attempt_at: timestamp,
+          updated_date: timestamp,
+        });
+        return { claimed: true, state: 'sending' as const };
+      });
+    });
+  },
+
+  /** Complete the receipt delivery state after the caller that owns the lock finishes SMTP. */
+  async finishReceiptEmailDelivery(rideId: string, recipientEmail: string, sent: boolean) {
+    return withFirestoreErrorHandling(`finishReceiptEmailDelivery(${rideId})`, async () => {
+      const timestamp = new Date().toISOString();
+      await getDb().collection(ADMIN_COLLECTIONS.RIDES).doc(rideId).update(sent
+        ? {
+            rider_email: recipientEmail,
+            receipt_email_sent: true,
+            receipt_email_sent_at: timestamp,
+            receipt_email_delivery_status: 'sent',
+            receipt_email_last_status: 'sent',
+            updated_date: timestamp,
+          }
+        : {
+            rider_email: recipientEmail,
+            receipt_email_delivery_status: 'failed',
+            receipt_email_last_status: 'failed',
+            receipt_email_last_attempt_at: timestamp,
+            updated_date: timestamp,
+          });
+      return { sent, completedAt: timestamp };
+    });
+  },
+
+  /**
    * Settles a successful Hubtel wallet top-up exactly once. Hubtel can retry
    * callbacks and the status-reconciliation route can run concurrently, so
    * the wallet credit and transaction state change must share one Firestore

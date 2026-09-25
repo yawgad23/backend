@@ -55,6 +55,19 @@ export function receiptEmail(value: unknown) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
 }
 
+export type ReceiptDeliveryState = 'ready' | 'sending' | 'sent';
+
+/** A pure state reader used by receipt idempotency coverage. */
+export function receiptDeliveryState(ride: Record<string, any>, currentTime = Date.now()): ReceiptDeliveryState {
+  if (ride.receipt_email_sent === true || ride.receipt_email_delivery_status === 'sent') return 'sent';
+  const startedAt = new Date(String(ride.receipt_email_delivery_started_at || '')).getTime();
+  const hasFreshDeliveryLock = ride.receipt_email_delivery_status === 'sending'
+    && Number.isFinite(startedAt)
+    && currentTime - startedAt >= 0
+    && currentTime - startedAt < 15 * 60 * 1000;
+  return hasFreshDeliveryLock ? 'sending' : 'ready';
+}
+
 /**
  * A ride keeps the recipient email at booking time, but older phone-authored
  * rides can predate that field. Resolve the Rider's own profile only on the
@@ -87,6 +100,62 @@ async function receiptEmailForRide(ride: Record<string, any>) {
     console.warn('[ReceiptEmail] Could not resolve Firebase auth email:', error);
     return '';
   }
+}
+
+function receiptPayloadForRide(ride: Record<string, any>, rideId: string, riderEmail: string) {
+  const pickup = typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.name || ride.pickup_address || 'Pickup location';
+  const destination = typeof ride.destination === 'string' ? ride.destination : ride.destination?.name || ride.destination_address || 'Destination';
+  const distance = Number(ride.actual_distance_km ?? ride.distance_km ?? ride.distance);
+  const duration = Number(ride.actual_duration_minutes ?? ride.duration_minutes ?? ride.duration);
+  return {
+    riderEmail,
+    riderName: ride.rider_name || ride.riderName || 'HY3N Rider',
+    driverName: ride.driver_name || ride.driverName || 'Driver',
+    driverVehicle: ride.driver_vehicle || ride.driverVehicle || 'HY3N vehicle',
+    driverPlate: ride.driver_plate || ride.driverPlate || 'Not available',
+    pickup,
+    destination,
+    fare: Number(ride.final_fare ?? ride.fare ?? 0),
+    paymentMethod: ride.payment_display_name || ride.payment_method || ride.payment || 'Cash',
+    distance: Number.isFinite(distance) ? distance : undefined,
+    duration: Number.isFinite(duration) ? duration : undefined,
+    category: ride.category,
+    tripId: rideId,
+    completedAt: ride.completed_at || now(),
+  };
+}
+
+/**
+ * Send one receipt per completed ride. Driver completion and older Rider
+ * clients share the same Firestore lock so they cannot race to SMTP.
+ */
+export async function sendCompletedRideReceipt(rideId: string, suppliedRide?: Record<string, any>) {
+  const ride = suppliedRide || await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+  if (!ride) throw new Error('Ride not found.');
+  if (ride.status !== 'completed') throw new Error('A receipt can only be sent after the trip is completed.');
+
+  const riderEmail = await receiptEmailForRide(ride);
+  if (!riderEmail) {
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, rideId, {
+      receipt_email_last_status: 'missing_recipient_email',
+      receipt_email_last_attempt_at: now(),
+    });
+    return { sent: false, alreadySent: false, pending: false, missingRecipient: true };
+  }
+
+  const claim = await adminFirestore.claimReceiptEmailDelivery(rideId, riderEmail);
+  if (!claim.claimed) {
+    return {
+      sent: claim.state === 'sent',
+      alreadySent: claim.state === 'sent',
+      pending: claim.state === 'sending',
+      missingRecipient: false,
+    };
+  }
+
+  const sent = await sendTripReceiptEmail(receiptPayloadForRide(ride, rideId, riderEmail));
+  await adminFirestore.finishReceiptEmailDelivery(rideId, riderEmail, sent);
+  return { sent, alreadySent: false, pending: false, missingRecipient: false };
 }
 
 /**
@@ -593,47 +662,10 @@ export const driverTrips = router({
       },
     });
 
-    // Send the receipt from the backend so it works even when the rider closes
-    // the app immediately after the driver completes the trip. The rider app
-    // keeps its local request as a fallback for older deployments.
-    const riderEmail = await receiptEmailForRide(ride);
-    if (riderEmail && !ride.receipt_email_sent) {
-      const pickup = typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.name || ride.pickup_address || 'Pickup location';
-      const destination = typeof ride.destination === 'string' ? ride.destination : ride.destination?.name || ride.destination_address || 'Destination';
-      const sent = await sendTripReceiptEmail({
-        riderEmail,
-        riderName: ride.rider_name || ride.riderName || 'HY3N Rider',
-        driverName: ride.driver_name || ride.driverName || 'Driver',
-        driverVehicle: ride.driver_vehicle || ride.driverVehicle || 'HY3N vehicle',
-        driverPlate: ride.driver_plate || ride.driverPlate || 'Not available',
-        pickup,
-        destination,
-        fare: finalFare,
-        paymentMethod: ride.payment_display_name || ride.payment_method || ride.payment || 'Cash',
-        distance: actualDistanceKm,
-        duration: meteredDurationMinutes,
-        category: ride.category,
-        tripId: input.rideId,
-        completedAt,
-      });
-      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, sent
-        ? {
-            rider_email: riderEmail,
-            receipt_email_sent: true,
-            receipt_email_sent_at: now(),
-            receipt_email_last_status: 'sent',
-          }
-        : {
-            rider_email: riderEmail,
-            receipt_email_last_status: 'failed',
-            receipt_email_last_attempt_at: now(),
-          });
-    } else if (!riderEmail) {
-      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, {
-        receipt_email_last_status: 'missing_recipient_email',
-        receipt_email_last_attempt_at: now(),
-      });
-    }
+    // A receipt belongs to the completed ride, not to either mobile client.
+    // The shared Firestore transaction prevents a current or older Rider build
+    // from racing this request and sending the same receipt twice.
+    await sendCompletedRideReceipt(input.rideId, updated);
 
     return { success: true, ride: updated, driverEarnings: finalFare };
   }),
