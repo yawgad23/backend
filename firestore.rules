@@ -75,15 +75,29 @@ service cloud.firestore {
       allow create, update, delete: if isOwner();
     }
 
+    // Daily Driver fee records are a Hubtel settlement ledger. Mobile and web
+    // clients cannot create, read, or modify it directly: the Firebase Admin
+    // server writes status only after Hubtel callback/status confirmation, and
+    // the authenticated admin dashboard reads through its trusted API.
+    match /daily_commissions/{commissionId} {
+      allow read, write: if false;
+    }
+
     // Existing Rider, trip, message, and wallet flows continue to require a
     // signed-in Firebase account. Driver profiles above intentionally override
     // this broad legacy path so applicants cannot self-approve or self-publish.
+    // The Hubtel commission ledger is also excluded: Firestore rules are
+    // additive, so it must be omitted here as well as denied explicitly above.
     match /{collection}/{document} {
-      allow read, write: if signedIn() && collection != 'driver_profiles';
+      allow read, write: if signedIn()
+        && collection != 'driver_profiles'
+        && collection != 'daily_commissions';
     }
 
     match /{collection}/{document}/{subdocument=**} {
-      allow read, write: if signedIn() && collection != 'driver_profiles';
+      allow read, write: if signedIn()
+        && collection != 'driver_profiles'
+        && collection != 'daily_commissions';
     }
   }
 }

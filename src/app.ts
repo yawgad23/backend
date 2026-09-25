@@ -16,6 +16,8 @@ import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin
 import { roundGhsFare } from "./fareAuthority";
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
+import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
+import { registerAdminAccountRoutes } from "./adminAccountRoutes";
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -131,7 +133,7 @@ export function createApp(): Express {
     if (origin) {
       res.header("Access-Control-Allow-Origin", origin);
     }
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.header(
       "Access-Control-Allow-Headers",
       "Origin, X-Requested-With, Content-Type, Accept, Authorization",
@@ -171,6 +173,11 @@ export function createApp(): Express {
             phoneNumber: req.body?.phoneNumber ? '[REDACTED]' : undefined,
             code: req.body?.code ? '[REDACTED]' : undefined,
           }
+        : originalUrl.startsWith('/api/admin/accounts')
+          ? {
+              ...req.body,
+              password: req.body?.password ? '[REDACTED]' : undefined,
+            }
         : originalUrl.startsWith('/api/driver/location')
           ? {
               ...req.body,
@@ -220,6 +227,7 @@ export function createApp(): Express {
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
   registerTripShareRoutes(app);
+  registerAdminAccountRoutes(app);
 
   /**
    * Registers an Expo token for the authenticated account. Tokens remain in a
@@ -919,6 +927,8 @@ export function createApp(): Express {
   app.get("/api/hubtel/status", (_req, res) => {
     res.json({ status: "ready", webhook: "/api/hubtel/callback" });
   });
+
+  registerAdminCommissionRoutes(app);
 
   // Admin commission dashboard (served as static HTML)
   app.get("/admin/commission", (_req, res) => {

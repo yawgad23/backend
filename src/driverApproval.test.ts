@@ -4,6 +4,7 @@ import { driverApprovalState, isApprovedDriverProfile } from './driverApproval';
 describe('Driver approval policy', () => {
   it('requires an explicit admin approval before a Driver can be dispatchable', () => {
     expect(isApprovedDriverProfile({ approval_status: 'approved' })).toBe(true);
+    expect(isApprovedDriverProfile({ approval_status: 'approved', account_status: 'suspended' })).toBe(false);
     expect(isApprovedDriverProfile({ approval_status: 'pending' })).toBe(false);
     expect(isApprovedDriverProfile({ approval_status: 'rejected' })).toBe(false);
     expect(isApprovedDriverProfile({})).toBe(false);
