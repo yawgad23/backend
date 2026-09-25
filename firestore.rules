@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner() {
+      return signedIn() && request.auth.token.email == 'yawgad23@gmail.com';
+    }
+
+    function isAdmin() {
+      return isOwner()
+        || (signedIn()
+          && exists(/databases/$(database)/documents/admin_access/$(request.auth.token.email))
+          && get(/databases/$(database)/documents/admin_access/$(request.auth.token.email)).data.is_active == true);
+    }
+
+    function ownsDriverProfile() {
+      return signedIn() && resource.data.user_id == request.auth.uid;
+    }
+
+    function createsOwnPendingDriverProfile() {
+      return signedIn()
+        && request.resource.data.user_id == request.auth.uid
+        && request.resource.data.get('approval_status', 'pending') == 'pending'
+        && request.resource.data.get('approved', false) != true
+        && request.resource.data.get('is_approved', false) != true
+        && request.resource.data.get('is_online', false) != true
+        && request.resource.data.get('is_available', false) != true
+        && request.resource.data.get('availability_status', 'offline') != 'online';
+    }
+
+    function preservesDriverApprovalAndPresence() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let oldApproval = resource.data.get('approval_status', 'pending');
+      let newApproval = request.resource.data.get('approval_status', 'pending');
+      let isAllowedResubmission = oldApproval == 'rejected' && newApproval == 'pending';
+      return !changed.hasAny([
+          'approved',
+          'is_approved',
+          'application_status',
+          'status',
+          'is_online',
+          'is_available',
+          'availability_status',
+          'current_location',
+          'location',
+          'latitude',
+          'longitude',
+          'last_location_update',
+          'last_seen_at',
+          'last_seen'
+        ])
+        && (newApproval == oldApproval || isAllowedResubmission);
+    }
+
+    match /app_config/{configId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Drivers submit their own application as pending. Only an HY3N admin can
+    // approve, reject, or set online/location presence; the backend uses the
+    // Firebase Admin SDK for trusted dispatch updates.
+    match /driver_profiles/{driverId} {
+      allow read: if signedIn();
+      allow create: if isAdmin() || createsOwnPendingDriverProfile();
+      allow update: if isAdmin() || (ownsDriverProfile() && preservesDriverApprovalAndPresence());
+      allow delete: if isAdmin() || ownsDriverProfile();
+    }
+
+    match /admin_access/{adminId} {
+      allow read: if isAdmin() || (signedIn() && request.auth.token.email == adminId);
+      allow create, update, delete: if isOwner();
+    }
+
+    // Existing Rider, trip, message, and wallet flows continue to require a
+    // signed-in Firebase account. Driver profiles above intentionally override
+    // this broad legacy path so applicants cannot self-approve or self-publish.
+    match /{collection}/{document} {
+      allow read, write: if signedIn() && collection != 'driver_profiles';
+    }
+
+    match /{collection}/{document}/{subdocument=**} {
+      allow read, write: if signedIn() && collection != 'driver_profiles';
+    }
+  }
+}

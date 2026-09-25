@@ -8,25 +8,18 @@ import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod } from './driverEarnings';
 import { isOnlineWithFreshLocation, profilePresencePatch } from './driverPresence';
+import {
+  approvalRequiredError,
+  driverProfileForUserId,
+  isApprovedDriverProfile,
+} from './driverApproval';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
 const driverIdInput = z.object({ driverId: z.string().min(1) });
 
 async function profile(driverId: string) {
-  // Driver profiles created by the original admin workflow use auto IDs while
-  // mobile authentication uses Firebase UIDs. Always prefer the approved
-  // profile whose `user_id` matches the signed-in user, then fall back to a
-  // UID-keyed document only for new registrations.
-  const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null);
-  if (matches.length > 0) {
-    return matches.sort((a: any, b: any) => {
-      const approved = (item: any) => item.approval_status === 'approved' || item.approved === true || item.is_approved === true;
-      if (approved(a) !== approved(b)) return approved(a) ? -1 : 1;
-      return String(b.updated_date || b.created_date || '').localeCompare(String(a.updated_date || a.created_date || ''));
-    })[0];
-  }
-  return adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+  return driverProfileForUserId(driverId);
 }
 
 async function rideFor(driverId: string, rideId: string) {
@@ -335,10 +328,16 @@ export const driverOperations = router({
     return { success: true, preferences };
   }),
   setAvailability: publicProcedure.input(z.object({ driverId: z.string().min(1), status: z.enum(['online', 'offline', 'busy']) })).mutation(async ({ input }) => {
+    const driverProfile = await profile(input.driverId);
+    if (input.status === 'online' && !isApprovedDriverProfile(driverProfile)) {
+      throw approvalRequiredError();
+    }
     await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status));
     return { success: true, status: input.status };
   }),
   updateLocation: publicProcedure.input(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
+    const driverProfile = await profile(input.driverId);
+    if (!isApprovedDriverProfile(driverProfile)) throw approvalRequiredError();
     const location = { latitude: input.latitude, longitude: input.longitude, heading: input.heading ?? null, speedKmh: input.speedKmh ?? null, recorded_at: now() };
     const patch = { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() };
     // Keep every profile document for this UID in sync so an offline toggle on
@@ -436,7 +435,7 @@ export const driverTrips = router({
   }),
   availableOffers: publicProcedure.input(driverIdInput).query(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
-    if (!driverProfile || !isOnline(driverProfile)) return { offers: [] };
+    if (!isApprovedDriverProfile(driverProfile) || !isOnline(driverProfile)) return { offers: [] };
     if (!(await hasCurrentPlatformFee(input.driverId))) return { offers: [] };
 
     const preferences = driverProfile.driver_preferences || {};
@@ -464,7 +463,8 @@ export const driverTrips = router({
   }),
   respondToOffer: publicProcedure.input(z.object({ driverId: z.string(), rideId: z.string(), decision: z.enum(['accept', 'decline']), driverName: z.string().optional(), vehicle_make: z.string().optional(), vehicle_model: z.string().optional(), vehicle_plate: z.string().optional(), license_plate: z.string().optional(), vehicle_color: z.string().optional(), vehicle_colour: z.string().optional(), vehicle_colour_hex: z.string().optional(), vehicle_full_model: z.string().optional(), queueAfterRideId: z.string().optional() })).mutation(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
-    if (!driverProfile || !isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
+    if (!isApprovedDriverProfile(driverProfile)) throw approvalRequiredError();
+    if (!isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
     if (input.decision === 'accept' && !(await hasCurrentPlatformFee(input.driverId))) {
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }

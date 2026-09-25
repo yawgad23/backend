@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendDriverLocationLiveActivityUpdates } from './liveActivities';
+import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
 
 const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
@@ -36,6 +37,15 @@ export function registerDriverLocationRoutes(app: Express) {
     const driverId = await authenticatedDriverId(req, res);
     if (!driverId) return;
 
+    const approvedProfile = await driverProfileForUserId(driverId);
+    if (!isApprovedDriverProfile(approvedProfile)) {
+      res.status(403).json({
+        success: false,
+        message: 'Your Driver application must be approved by HY3N before location sharing can be enabled.',
+      });
+      return;
+    }
+
     const parsed = driverLocationInput.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, message: 'Invalid driver location.' });
@@ -62,7 +72,7 @@ export function registerDriverLocationRoutes(app: Express) {
 
     // Keep the legacy approved-profile document and UID-keyed presence document
     // in sync. The Rider subscribes to the UID-keyed document for live updates.
-    const canonical = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+    const canonical = approvedProfile;
     const profiles = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null, 'desc', 10);
     const targets = [...profiles, canonical]
       .filter((profile): profile is Record<string, any> => Boolean(profile))
