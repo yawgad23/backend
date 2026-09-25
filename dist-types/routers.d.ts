@@ -315,6 +315,15 @@ export declare const appRouter: import("@trpc/server").TRPCBuiltRouter<{
         errorShape: import("@trpc/server").TRPCDefaultErrorShape;
         transformer: true;
     }, import("@trpc/server").TRPCDecorateCreateRouterOptions<{
+        history: import("@trpc/server").TRPCQueryProcedure<{
+            input: {
+                driverId: string;
+            };
+            output: {
+                rides: Record<string, any>[];
+            };
+            meta: object;
+        }>;
         rateRider: import("@trpc/server").TRPCMutationProcedure<{
             input: {
                 driverId: string;

@@ -6,6 +6,7 @@ import { getDailyPlatformFee } from './platformFee';
 import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
+import { completedRidesForPeriod, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod } from './driverEarnings';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -231,6 +232,25 @@ export const driverOperations = router({
 });
 
 export const driverTrips = router({
+  history: publicProcedure.input(driverIdInput).query(async ({ input }) => {
+    // History is read through the backend rather than a direct mobile Firestore
+    // query. This avoids a client-side rules/index failure being displayed as an
+    // empty trip list, while still limiting results to the signed-in Driver ID.
+    const rides = await adminFirestore.list(
+      ADMIN_COLLECTIONS.RIDES,
+      { driver_id: input.driverId },
+      'created_date',
+      'desc',
+      500,
+    );
+    return {
+      rides: rides.sort((left, right) => {
+        const rightDate = new Date(String(right.completed_at || right.trip_date || right.created_date || 0)).getTime();
+        const leftDate = new Date(String(left.completed_at || left.trip_date || left.created_date || 0)).getTime();
+        return rightDate - leftDate;
+      }),
+    };
+  }),
   rateRider: publicProcedure.input(z.object({
     driverId: z.string().min(1),
     rideId: z.string().min(1),
@@ -603,24 +623,31 @@ export const driverFinance = router({
   getOverview: publicProcedure
     .input(z.object({ driverId: z.string(), period: z.enum(['today', 'week', 'month']).optional() }))
     .query(async ({ input }) => {
+      const period = input.period || 'week';
+      // Do not combine `driver_id`, `status`, and `completed_at` in a Firestore
+      // query. Older production projects do not have that composite index, and
+      // a failed query was previously rendered by the app as GH₵0.00. Fetch the
+      // Driver's own bounded ride history with the already-provisioned index,
+      // then apply completion and period filtering on the trusted backend.
       const rides = await adminFirestore.list(
         ADMIN_COLLECTIONS.RIDES,
-        { driver_id: input.driverId, status: 'completed' },
-        'completed_at',
+        { driver_id: input.driverId },
+        'created_date',
         'desc',
         500,
       );
-      const gross = rides.reduce((sum, ride) => sum + Number(ride.final_fare ?? ride.fare ?? ride.fare_estimate ?? 0), 0);
-      const tips = rides.reduce((sum, ride) => sum + Number(ride.tip_amount || 0), 0);
+      const completedRides = completedRidesForPeriod(rides, period);
+      const gross = completedRides.reduce((sum, ride) => sum + numericRideFare(ride), 0);
+      const tips = completedRides.reduce((sum, ride) => sum + numericTip(ride), 0);
       const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, 'date', 'desc', 100);
       const currentFee = await getDailyPlatformFee();
-      const dailyPlatformFee = fees
-        .filter((fee) => fee.status === 'paid' || fee.status === 'completed')
+      const periodFees = paidFeesForPeriod(fees, period);
+      const dailyPlatformFee = periodFees
         .reduce((sum, fee) => sum + Number(fee.amount ?? currentFee.amount), 0);
       const today = dateKey();
       const todayFee = fees.find((fee) => fee.date === today && ['paid', 'completed', 'processing'].includes(fee.status));
       const total = gross + tips;
-      const savedGoal = await adminFirestore.get('driver_goals', `${input.driverId}_${input.period || 'week'}`);
+      const savedGoal = await adminFirestore.get('driver_goals', `${input.driverId}_${period}`);
       const goal = savedGoal?.targetAmount
         ? {
             amount: Number(savedGoal.targetAmount),
@@ -635,9 +662,9 @@ export const driverFinance = router({
           net: total - dailyPlatformFee,
           tips,
           dailyPlatformFee,
-          dailyFeeDays: fees.length,
-          tripCount: rides.length,
-          averagePerTrip: rides.length ? total / rides.length : 0,
+          dailyFeeDays: periodFees.length,
+          tripCount: completedRides.length,
+          averagePerTrip: completedRides.length ? total / completedRides.length : 0,
           availableBalance: total - dailyPlatformFee,
         },
         dailyFee: {
@@ -645,10 +672,7 @@ export const driverFinance = router({
           status: todayFee?.status === 'paid' || todayFee?.status === 'completed' ? 'paid' : 'unpaid',
           date: today,
         },
-        trend: rides.slice(0, 14).map((ride) => ({
-          date: String(ride.completed_at || ride.created_date).slice(0, 10),
-          amount: Number(ride.final_fare ?? ride.fare ?? 0),
-        })),
+        trend: earningsTrend(completedRides),
         goals: [],
         goal,
         payoutMethod: (await profile(input.driverId))?.payout_method || null,
