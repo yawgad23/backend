@@ -239,7 +239,7 @@ export const driverTrips = router({
     const rides = await adminFirestore.list(
       ADMIN_COLLECTIONS.RIDES,
       { driver_id: input.driverId },
-      'created_date',
+      null,
       'desc',
       500,
     );
@@ -627,19 +627,22 @@ export const driverFinance = router({
       // Do not combine `driver_id`, `status`, and `completed_at` in a Firestore
       // query. Older production projects do not have that composite index, and
       // a failed query was previously rendered by the app as GH₵0.00. Fetch the
-      // Driver's own bounded ride history with the already-provisioned index,
-      // then apply completion and period filtering on the trusted backend.
+      // Driver's own bounded ride history without an order requirement, then
+      // apply completion, period filtering, and presentation sorting on the
+      // trusted backend.
       const rides = await adminFirestore.list(
         ADMIN_COLLECTIONS.RIDES,
         { driver_id: input.driverId },
-        'created_date',
+        null,
         'desc',
         500,
       );
       const completedRides = completedRidesForPeriod(rides, period);
       const gross = completedRides.reduce((sum, ride) => sum + numericRideFare(ride), 0);
       const tips = completedRides.reduce((sum, ride) => sum + numericTip(ride), 0);
-      const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, 'date', 'desc', 100);
+      // `daily_commissions` has no driver_id/date composite index in
+      // production. A no-order Driver-only read remains index-safe.
+      const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, null, 'desc', 100);
       const currentFee = await getDailyPlatformFee();
       const periodFees = paidFeesForPeriod(fees, period);
       const dailyPlatformFee = periodFees
