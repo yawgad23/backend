@@ -7,6 +7,7 @@ import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMet
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod } from './driverEarnings';
+import { isOnlineWithFreshLocation, profilePresencePatch } from './driverPresence';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -105,7 +106,23 @@ async function recordRideEvent(input: {
 }
 
 function isOnline(profileData: Record<string, any> | null) {
-  return profileData?.is_online === true || profileData?.availability_status === 'online';
+  return isOnlineWithFreshLocation(profileData);
+}
+
+/** Keep the legacy approved profile and UID presence document in agreement. */
+async function setDriverProfilePresence(driverId: string, patch: Record<string, any>) {
+  const canonical = await profile(driverId);
+  const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null, 'desc', 10);
+  const documentIds = new Set<string>([
+    driverId,
+    ...(canonical?.id ? [String(canonical.id)] : []),
+    ...matches.map((candidate) => String(candidate.id)),
+  ]);
+  await Promise.all([...documentIds].map((id) => adminFirestore.set(
+    ADMIN_COLLECTIONS.DRIVER_PROFILES,
+    id,
+    { user_id: driverId, ...patch },
+  )));
 }
 
 function hasDriverFeeTestBypass(driverId: string) {
@@ -209,21 +226,15 @@ export const driverOperations = router({
     return { success: true, preferences };
   }),
   setAvailability: publicProcedure.input(z.object({ driverId: z.string().min(1), status: z.enum(['online', 'offline', 'busy']) })).mutation(async ({ input }) => {
-    const driverProfile = await profile(input.driverId);
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, { user_id: input.driverId, availability_status: input.status, is_online: input.status === 'online', last_seen_at: now() });
+    await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status));
     return { success: true, status: input.status };
   }),
   updateLocation: publicProcedure.input(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
     const location = { latitude: input.latitude, longitude: input.longitude, heading: input.heading ?? null, speedKmh: input.speedKmh ?? null, recorded_at: now() };
-    const driverProfile = await profile(input.driverId);
     const patch = { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() };
-    // Legacy approved profiles use an auto-ID, while Rider tracking subscribes
-    // by Firebase UID. Keep both documents in sync so movement and heading are
-    // visible live without exposing a broad collection query to the Rider.
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverProfile?.id || input.driverId, patch);
-    if (driverProfile?.id && driverProfile.id !== input.driverId) {
-      await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, patch);
-    }
+    // Keep every profile document for this UID in sync so an offline toggle on
+    // the legacy approved profile cannot leave a stale UID marker visible.
+    await setDriverProfilePresence(input.driverId, patch);
     void sendDriverLocationLiveActivityUpdates(input.driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
       console.error('[LiveActivity] Foreground Driver location push failed:', error);
     });
