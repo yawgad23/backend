@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
 import { transactionStatusCheck } from "./hubtel";
+import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 
 export function registerCronRoutes(app: Express) {
   /**
@@ -198,27 +199,16 @@ export function registerCronRoutes(app: Express) {
       }
 
       // ─── 4. Stale Rides Checks ─────────────────────────────────────────────
-      const requestedRides = await adminFirestore.list(
+      const searchingRides = await adminFirestore.list(
         ADMIN_COLLECTIONS.RIDES,
-        { status: "requested" },
+        { status: "searching" },
         null
       );
 
-      for (const ride of requestedRides) {
-        const createdDate = ride.created_date || ride.date;
-        if (!createdDate) continue;
-
+      for (const ride of searchingRides) {
         stats.ridesChecked++;
-        const ageMs = Date.now() - new Date(createdDate).getTime();
-        const ageHours = ageMs / (1000 * 60 * 60);
-
-        // Auto-cancel if waiting for a driver for more than 2 hours
-        if (ageHours >= 2) {
-          await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, ride.id, {
-            status: "cancelled",
-            cancellation_reason: "Auto-cancelled: No driver accepted within 2 hours",
-            updated_date: new Date().toISOString()
-          });
+        if (isRideSearchExpired(ride)) {
+          await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, ride.id, expiredRideSearchPatch());
           stats.ridesCancelled++;
         }
       }

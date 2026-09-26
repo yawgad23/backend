@@ -21,6 +21,7 @@ import { registerAdminAccountRoutes } from "./adminAccountRoutes";
 import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
 import { registerAdminRideRoutes } from "./adminRideRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
+import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -541,7 +542,9 @@ export function createApp(): Express {
     }
 
     try {
-      const now = new Date().toISOString();
+      const requestedAt = new Date();
+      const now = requestedAt.toISOString();
+      const searchExpiresAt = new Date(requestedAt.getTime() + RIDE_SEARCH_TTL_MS).toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
       // The Rider's accepted quote is locked here. A Driver app may report
       // distance and duration for trip records, but it must never replace the
@@ -596,6 +599,7 @@ export function createApp(): Express {
         pickup_code: pickupCode,
         ride_pin: pickupCode,
         status: 'searching',
+        search_expires_at: searchExpiresAt,
         driver_id: null,
         driver: null,
         driver_name: null,
@@ -636,6 +640,47 @@ export function createApp(): Express {
       });
     } catch (error) {
       console.error('[Ride Dispatch] Failed to create rider request:', error);
+      res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /** Ends a stale unassigned search from an authenticated Rider relaunch. */
+  app.post('/api/rides/:rideId/expire-stale-search', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before managing a ride request.' });
+      return;
+    }
+
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+
+    const rideId = String(req.params.rideId || '').trim();
+    if (!rideId) {
+      res.status(400).json({ success: false, message: 'Ride request not found.' });
+      return;
+    }
+
+    try {
+      const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+      if (!ride || String(ride.rider_id || '') !== riderId) {
+        res.status(404).json({ success: false, message: 'Ride request not found.' });
+        return;
+      }
+      if (isRideSearchExpired(ride)) {
+        const updated = await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, rideId, expiredRideSearchPatch());
+        res.json({ success: true, expired: true, ride: updated });
+        return;
+      }
+      res.status(409).json({ success: false, message: 'This ride search is still active or has already changed state.' });
+    } catch (error) {
+      console.error('[Ride Dispatch] Unable to expire stale Rider search:', error);
       res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
     }
   });

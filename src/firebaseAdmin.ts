@@ -10,6 +10,7 @@
 import { initializeApp, getApps, cert, type App } from 'firebase-admin/app';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 
 // ─── App singleton ────────────────────────────────────────────────────────────
 
@@ -218,6 +219,11 @@ export const adminFirestore = {
         const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
         if (ride.status !== 'searching' || ride.driver_id) {
           throw new Error('This ride has already been accepted by another driver.');
+        }
+        if (isRideSearchExpired(ride)) {
+          const expired = expiredRideSearchPatch();
+          transaction.update(ref, expired);
+          return { ...ride, ...expired };
         }
         const payload = { ...data, driver_id: driverId, updated_date: new Date().toISOString() };
         transaction.update(ref, payload);

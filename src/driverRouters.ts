@@ -13,6 +13,7 @@ import {
   driverProfileForUserId,
   isApprovedDriverProfile,
 } from './driverApproval';
+import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -446,6 +447,7 @@ export const driverTrips = router({
     const recentRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
     const offers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
+      .filter((ride) => !isRideSearchExpired(ride))
       .filter((ride) => !Array.isArray(ride.declined_by_driver_ids) || !ride.declined_by_driver_ids.includes(input.driverId))
       .filter((ride) => hasCategory(driverProfile, ride.category))
       .map((ride) => ({ ...ride, pickup_distance_km: pickupDistanceKm(ride, driverLocation) }))
@@ -469,6 +471,10 @@ export const driverTrips = router({
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }
     const ride = await rideFor(input.driverId, input.rideId);
+    if (isRideSearchExpired(ride)) {
+      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, expiredRideSearchPatch());
+      throw new Error('This ride request has expired.');
+    }
     if (input.decision === 'decline') {
       const declined = Array.isArray(ride.declined_by_driver_ids) ? ride.declined_by_driver_ids : [];
       const updated = withRide(ride, {
@@ -538,6 +544,9 @@ export const driverTrips = router({
       queued_after_ride_id: input.queueAfterRideId || null,
     };
     const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
+    if ((updated as Record<string, any>).status === 'cancelled') {
+      throw new Error('This ride request has expired.');
+    }
     await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
     await publishLiveActivity(updated, true);
     return { success: true, ride: updated, decision: input.decision };
