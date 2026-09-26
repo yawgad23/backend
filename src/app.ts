@@ -20,6 +20,7 @@ import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
 import { registerAdminAccountRoutes } from "./adminAccountRoutes";
 import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
 import { registerAdminRideRoutes } from "./adminRideRoutes";
+import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -138,7 +139,7 @@ export function createApp(): Express {
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.header(
       "Access-Control-Allow-Headers",
-      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+      "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-HY3N-Admin-Access",
     );
     res.header("Access-Control-Allow-Credentials", "true");
 
@@ -161,6 +162,9 @@ export function createApp(): Express {
     if (headers.authorization) {
       headers.authorization = "[REDACTED]";
     }
+    if (headers['x-hy3n-admin-access']) {
+      headers['x-hy3n-admin-access'] = "[REDACTED]";
+    }
     const requestBody = originalUrl.startsWith('/api/notifications/push-device')
       ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
       : originalUrl.startsWith('/api/live-activities/token')
@@ -180,6 +184,11 @@ export function createApp(): Express {
               ...req.body,
               password: req.body?.password ? '[REDACTED]' : undefined,
             }
+          : originalUrl.startsWith('/api/admin/access-code')
+            ? {
+                ...req.body,
+                accessCode: req.body?.accessCode ? '[REDACTED]' : undefined,
+              }
         : originalUrl.startsWith('/api/driver/location')
           ? {
               ...req.body,
@@ -209,6 +218,13 @@ export function createApp(): Express {
         }
       }
 
+      if (originalUrl.startsWith('/api/admin/access-code') && parsedBody && typeof parsedBody === 'object') {
+        parsedBody = {
+          ...parsedBody,
+          accessProof: parsedBody.accessProof ? '[REDACTED]' : undefined,
+        };
+      }
+
       console.log(`[API Response] <<< ${method} ${originalUrl} | Status: ${res.statusCode} (Duration: ${Date.now() - start}ms)`, JSON.stringify({
         timestamp: new Date().toISOString(),
         headers: responseHeaders,
@@ -228,6 +244,7 @@ export function createApp(): Express {
   registerLiveActivityRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
+  registerAdminAccessCodeRoutes(app);
   registerAdminCommissionRoutes(app);
   registerAdminAccountRoutes(app);
   registerAdminSettingsRoutes(app);

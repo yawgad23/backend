@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { adminFirestore, getAdminAuth } from './firebaseAdmin';
+import { requireAdministratorAccessCode } from './adminAccessCode';
 
 const OWNER_EMAIL = 'yawgad23@gmail.com';
 
@@ -22,7 +23,8 @@ async function hasAdministratorAccess(email: string): Promise<boolean> {
   return legacyMatches.some((access) => access?.is_active === true);
 }
 
-export async function requireAdministrator(request: Request, response: Response): Promise<string | null> {
+/** Verifies the Firebase identity plus server-side administrator record only. */
+export async function requireAdministratorIdentity(request: Request, response: Response): Promise<string | null> {
   const token = bearerToken(request);
   if (!token) {
     response.status(401).json({ error: 'Sign in to continue.' });
@@ -41,4 +43,15 @@ export async function requireAdministrator(request: Request, response: Response)
     response.status(401).json({ error: 'Your administrator session has expired. Please sign in again.' });
     return null;
   }
+}
+
+/**
+ * Protects every operational admin endpoint with both the administrator
+ * identity and the short-lived, server-signed access-code proof.
+ */
+export async function requireAdministrator(request: Request, response: Response): Promise<string | null> {
+  const email = await requireAdministratorIdentity(request, response);
+  if (!email) return null;
+  if (!(await requireAdministratorAccessCode(request, response, email))) return null;
+  return email;
 }
