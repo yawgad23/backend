@@ -11,8 +11,15 @@ function bearerToken(request: Request): string {
 
 async function hasAdministratorAccess(email: string): Promise<boolean> {
   if (email.toLowerCase() === OWNER_EMAIL) return true;
-  const access = await adminFirestore.get('admin_access', email.toLowerCase());
-  return access?.is_active === true;
+  const normalizedEmail = email.toLowerCase();
+  const canonical = await adminFirestore.get('admin_access', normalizedEmail);
+  if (canonical?.is_active === true) return true;
+
+  // Older dashboard versions created administrator records with generated
+  // document IDs. Recognize those active records during the migration, while
+  // all new writes use the canonical email document ID.
+  const legacyMatches = await adminFirestore.list('admin_access', { email: normalizedEmail }, null, 'desc', 5);
+  return legacyMatches.some((access) => access?.is_active === true);
 }
 
 export async function requireAdministrator(request: Request, response: Response): Promise<string | null> {

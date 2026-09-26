@@ -18,6 +18,8 @@ import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
 import { registerAdminAccountRoutes } from "./adminAccountRoutes";
+import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
+import { registerAdminRideRoutes } from "./adminRideRoutes";
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -226,8 +228,10 @@ export function createApp(): Express {
   registerLiveActivityRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);
-  registerTripShareRoutes(app);
+  registerAdminCommissionRoutes(app);
   registerAdminAccountRoutes(app);
+  registerAdminSettingsRoutes(app);
+  registerAdminRideRoutes(app);
 
   /**
    * Registers an Expo token for the authenticated account. Tokens remain in a

@@ -57,9 +57,13 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
     createdAt: profile.created_date || null,
     documents: accountRole === 'driver'
       ? {
-          ghanaCard: profile.ghana_card_url || null,
-          driverLicense: profile.drivers_license_url || null,
-          vehicleRegistration: profile.vehicle_registration_url || null,
+          profilePhoto: profile.profile_photo_url || profile.photo_url || profile.avatar_url || null,
+          ghanaCardFront: profile.ghana_card_front_url || profile.ghana_card_url || profile.id_card_url || null,
+          ghanaCardBack: profile.ghana_card_back_url || null,
+          driverLicenseFront: profile.drivers_license_front_url || profile.drivers_license_url || profile.license_photo_url || null,
+          driverLicenseBack: profile.drivers_license_back_url || null,
+          vehiclePhoto: profile.vehicle_photo_url || null,
+          vehicleRegistration: profile.vehicle_registration_url || profile.vehicle_reg_url || null,
           insurance: profile.insurance_url || null,
           roadworthy: profile.roadworthy_url || null,
         }
