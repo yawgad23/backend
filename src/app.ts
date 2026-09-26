@@ -6,6 +6,7 @@ import { z } from "zod";
 import { registerHubtelWebhook } from "./hubtelWebhook";
 import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { registerDriverOtpRoutes } from "./driverOtp";
+import { registerDriverPhoneLoginRoutes } from "./driverPhoneLogin";
 import { registerDriverLocationRoutes } from "./driverLocation";
 import { registerLiveActivityRoutes } from "./liveActivities";
 import { appRouter } from "./routers";
@@ -241,6 +242,7 @@ export function createApp(): Express {
   registerHubtelWebhook(app);
   registerPublicPaymentsApi(app);
   registerDriverOtpRoutes(app);
+  registerDriverPhoneLoginRoutes(app);
   registerDriverLocationRoutes(app);
   registerLiveActivityRoutes(app);
   app.use("/newroute", newRouteRouter);
