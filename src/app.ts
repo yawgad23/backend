@@ -24,6 +24,7 @@ import { registerAdminRideRoutes } from "./adminRideRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
+import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -274,6 +275,71 @@ export function createApp(): Express {
   registerAdminSettingsRoutes(app);
   registerAdminRideRoutes(app);
   registerAdminNotificationRoutes(app);
+
+  /**
+   * A customer-requested account deletion is implemented as a retained,
+   * inactive account. The Firebase login is disabled and refresh tokens are
+   * revoked immediately; records remain available only to authorized staff for
+   * the declared retention-review period.
+   */
+  app.post('/api/account/deactivate', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before deleting your account.' });
+      return;
+    }
+
+    try {
+      const decoded = await getAdminAuth().verifyIdToken(idToken, true);
+      const requestedRole = String(req.body?.role || '').trim().toLowerCase();
+      const collection = requestedRole === 'driver'
+        ? ADMIN_COLLECTIONS.DRIVER_PROFILES
+        : requestedRole === 'rider'
+          ? ADMIN_COLLECTIONS.RIDER_PROFILES
+          : null;
+      if (!collection) {
+        res.status(400).json({ success: false, message: 'Choose a valid account type.' });
+        return;
+      }
+
+      const matching = await adminFirestore.list(collection, { user_id: decoded.uid }, null, 'desc', 20);
+      const canonical = await adminFirestore.get(collection, decoded.uid);
+      const profiles = [...matching, canonical].filter((profile): profile is Record<string, any> => Boolean(profile));
+      const ids = [...new Set(profiles.map((profile) => String(profile.id)))];
+      if (!ids.length) {
+        res.status(404).json({ success: false, message: 'Your account profile could not be found.' });
+        return;
+      }
+
+      const patch: Record<string, any> = accountStatusPatch('inactive', `self_service:${decoded.uid}`);
+      if (requestedRole === 'driver') {
+        patch.is_online = false;
+        patch.is_available = false;
+        patch.availability_status = 'offline';
+      }
+
+      await Promise.all(ids.map((id) => adminFirestore.set(collection, id, { user_id: decoded.uid, ...patch })));
+      if (requestedRole === 'driver') {
+        await adminFirestore.set('driver_presence', decoded.uid, {
+          user_id: decoded.uid,
+          account_status: 'inactive',
+          is_online: false,
+          is_available: false,
+          availability_status: 'offline',
+          offline_reason: 'account_deactivated',
+        });
+      }
+      if (accountIsDisabled('inactive')) {
+        await getAdminAuth().updateUser(decoded.uid, { disabled: true });
+        await getAdminAuth().revokeRefreshTokens(decoded.uid);
+      }
+      res.json({ success: true, retained: true, retentionReviewAfter: patch.account_retention_review_after });
+    } catch (error) {
+      console.error('[Account lifecycle] Failed to deactivate account:', error);
+      res.status(401).json({ success: false, message: 'Your account could not be deleted. Please sign in again and retry.' });
+    }
+  });
 
   /**
    * Registers an Expo token for the authenticated account. Tokens remain in a

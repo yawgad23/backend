@@ -1,10 +1,9 @@
 import type { Express, Request, Response } from 'express';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 import { requireAdministrator } from './adminAuthorization';
+import { accountIsDisabled, accountStatusPatch, type AccountStatus } from './accountLifecycle';
 
 type AccountRole = 'rider' | 'driver';
-
-type AccountStatus = 'active' | 'suspended';
 
 function role(value: unknown): AccountRole | null {
   const normalized = String(value || '').trim().toLowerCase();
@@ -13,7 +12,7 @@ function role(value: unknown): AccountRole | null {
 
 function accountStatus(value: unknown): AccountStatus | null {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'active' || normalized === 'suspended' ? normalized : null;
+  return normalized === 'active' || normalized === 'suspended' || normalized === 'inactive' ? normalized : null;
 }
 
 function accountCollection(accountRole: AccountRole): string {
@@ -44,7 +43,9 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
     fullName: profile.full_name || profile.name || 'Unnamed account',
     email: profile.email || '',
     phone: profile.phone || profile.phone_number || '',
-    accountStatus: String(profile.account_status || 'active').toLowerCase() === 'suspended' ? 'suspended' : 'active',
+    accountStatus: ['suspended', 'inactive'].includes(String(profile.account_status || 'active').toLowerCase())
+      ? String(profile.account_status).toLowerCase()
+      : 'active',
     approvalStatus: accountRole === 'driver' ? String(profile.approval_status || 'pending').toLowerCase() : null,
     isOnline: accountRole === 'driver' && (profile.is_online === true || profile.availability_status === 'online'),
     serviceType: accountRole === 'driver' ? profile.service_type || profile.serviceType || 'car' : null,
@@ -85,20 +86,16 @@ async function setAccountStatus(accountRole: AccountRole, userId: string, status
   const records = await profilesForUser(accountRole, userId);
   if (records.length === 0) throw new Error('Account profile was not found.');
 
-  const patch: Record<string, any> = {
-    account_status: status,
-    account_status_updated_at: new Date().toISOString(),
-    account_status_updated_by: changedBy,
-  };
-  if (accountRole === 'driver' && status === 'suspended') {
+  const patch: Record<string, any> = accountStatusPatch(status, changedBy);
+  if (accountRole === 'driver' && accountIsDisabled(status)) {
     patch.is_online = false;
     patch.is_available = false;
     patch.availability_status = 'offline';
   }
 
   try {
-    await getAdminAuth().updateUser(userId, { disabled: status === 'suspended' });
-    if (status === 'suspended') await getAdminAuth().revokeRefreshTokens(userId);
+    await getAdminAuth().updateUser(userId, { disabled: accountIsDisabled(status) });
+    if (accountIsDisabled(status)) await getAdminAuth().revokeRefreshTokens(userId);
   } catch (error: any) {
     // Some historic profile documents predate Firebase Auth. They cannot sign
     // in anyway, so still retain the administrator's profile-level control.
@@ -110,6 +107,16 @@ async function setAccountStatus(accountRole: AccountRole, userId: string, status
     String(record.id),
     { user_id: userId, ...patch },
   )));
+  if (accountRole === 'driver' && accountIsDisabled(status)) {
+    await adminFirestore.set('driver_presence', userId, {
+      user_id: userId,
+      account_status: status,
+      is_online: false,
+      is_available: false,
+      availability_status: 'offline',
+      offline_reason: status === 'inactive' ? 'account_deactivated' : 'account_suspended',
+    });
+  }
   return normalizedProfile({ ...newest(records[0], records[records.length - 1]), ...patch }, accountRole);
 }
 
@@ -128,9 +135,8 @@ function accountCreateInput(input: Record<string, any>) {
 }
 
 /**
- * Admin-only account lifecycle controls. Account removal disables the Firebase
- * login and removes profile documents, while payment, ride, and commission
- * records remain in place for operational and financial audit history.
+ * Admin-only account lifecycle controls. Deactivation disables login while
+ * retaining profile, ride, payment, commission, and safety records for review.
  */
 export function registerAdminAccountRoutes(app: Express) {
   app.get('/api/admin/accounts', async (request: Request, response: Response) => {
@@ -284,17 +290,11 @@ export function registerAdminAccountRoutes(app: Express) {
     }
 
     try {
-      const profiles = await profilesForUser(accountRole, userId);
-      await Promise.all(profiles.map((profile) => adminFirestore.delete(accountCollection(accountRole), String(profile.id))));
-      try {
-        await getAdminAuth().deleteUser(userId);
-      } catch (error: any) {
-        if (error?.code !== 'auth/user-not-found') throw error;
-      }
-      response.json({ success: true, removedUserId: userId, role: accountRole });
+      const account = await setAccountStatus(accountRole, userId, 'inactive', adminEmail);
+      response.json({ success: true, account, role: accountRole, retained: true });
     } catch (error) {
-      console.error('[Admin accounts] Failed to remove account:', error);
-      response.status(503).json({ error: 'The account could not be removed. No financial or trip records were deleted.' });
+      console.error('[Admin accounts] Failed to deactivate account:', error);
+      response.status(503).json({ error: 'The account could not be deactivated. No records were removed.' });
     }
   });
 }

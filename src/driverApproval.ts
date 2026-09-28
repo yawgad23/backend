@@ -30,6 +30,7 @@ export function isApprovedDriverProfile(profile: Record<string, any> | null | un
   const accountStatus = String(profile?.account_status || 'active').trim().toLowerCase();
   return driverApprovalState(profile) === 'approved'
     && accountStatus !== 'suspended'
+    && accountStatus !== 'inactive'
     && accountStatus !== 'removed';
 }
 
