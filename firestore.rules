@@ -61,6 +61,7 @@ service cloud.firestore {
 
     match /admin_access/{adminId} { allow read: if isAdmin() || (signedIn() && request.auth.token.email == adminId); allow write: if isOwner(); }
     match /app_config/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /account_lifecycle_events/{eventId} { allow read: if isAdmin(); allow write: if false; }
     // Financial, payout, safety-event, and unlisted data are backend/admin-only.
     match /{document=**} { allow read, write: if false; }
   }

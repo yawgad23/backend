@@ -320,6 +320,15 @@ export function createApp(): Express {
       }
 
       await Promise.all(ids.map((id) => adminFirestore.set(collection, id, { user_id: decoded.uid, ...patch })));
+      await adminFirestore.create('account_lifecycle_events', {
+        user_id: decoded.uid,
+        account_role: requestedRole,
+        action: 'account_deactivated',
+        actor_type: 'self_service',
+        actor_id: decoded.uid,
+        retained: true,
+        retention_review_after: patch.account_retention_review_after,
+      });
       if (requestedRole === 'driver') {
         await adminFirestore.set('driver_presence', decoded.uid, {
           user_id: decoded.uid,

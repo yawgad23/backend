@@ -56,6 +56,16 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
     rating: Number(profile.rating || 0),
     totalRides: Number(profile.total_rides || profile.total_trips || 0),
     createdAt: profile.created_date || null,
+    retentionAudit: {
+      deletionRequested: profile.account_deletion_requested === true,
+      inactivatedAt: profile.account_inactivated_at || null,
+      inactivatedBy: profile.account_inactivated_by || null,
+      retentionReviewAfter: profile.account_retention_review_after || null,
+      accountStatusUpdatedAt: profile.account_status_updated_at || null,
+      accountStatusUpdatedBy: profile.account_status_updated_by || null,
+      reactivatedAt: profile.account_reactivated_at || null,
+      reactivatedBy: profile.account_reactivated_by || null,
+    },
     documents: accountRole === 'driver'
       ? {
           profilePhoto: profile.profile_photo_url || profile.photo_url || profile.avatar_url || null,
@@ -107,6 +117,15 @@ async function setAccountStatus(accountRole: AccountRole, userId: string, status
     String(record.id),
     { user_id: userId, ...patch },
   )));
+  await adminFirestore.create('account_lifecycle_events', {
+    user_id: userId,
+    account_role: accountRole,
+    action: status === 'inactive' ? 'account_deactivated' : status === 'suspended' ? 'account_suspended' : 'account_reactivated',
+    actor_type: 'administrator',
+    actor_id: changedBy,
+    retained: status === 'inactive',
+    retention_review_after: patch.account_retention_review_after || null,
+  });
   if (accountRole === 'driver' && accountIsDisabled(status)) {
     await adminFirestore.set('driver_presence', userId, {
       user_id: userId,
