@@ -6,7 +6,7 @@ import { getDailyPlatformFee } from './platformFee';
 import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
-import { completedRidesForPeriod, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod } from './driverEarnings';
+import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
 import { isOnlineWithFreshLocation, profilePresencePatch } from './driverPresence';
 import {
   approvalRequiredError,
@@ -771,6 +771,11 @@ export const driverFinance = router({
           date: today,
         },
         trend: earningsTrend(completedRides),
+        insights: {
+          days: period === 'today' ? 1 : period === 'week' ? 7 : 30,
+          dailyTrend: rollingEarningsTrend(rides, period === 'today' ? 1 : period === 'week' ? 7 : 30),
+          comparison: earningsPeriodComparison(rides, period === 'today' ? 1 : period === 'week' ? 7 : 30),
+        },
         goals: [],
         goal,
         payoutMethod: (await profile(input.driverId))?.payout_method || null,

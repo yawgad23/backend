@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   completedRidesForPeriod,
+  earningsPeriodComparison,
   earningsTrend,
   numericRideFare,
   numericTip,
   paidFeesForPeriod,
+  rollingEarningsTrend,
 } from './driverEarnings';
 
 const reference = new Date('2026-09-25T12:00:00.000Z');
@@ -35,6 +37,28 @@ describe('Driver earnings aggregation', () => {
       { date: '2026-09-23', amount: 50 },
       { date: '2026-09-25', amount: 74 },
     ]);
+  });
+
+  it('fills zero-earning days in the rolling trend instead of inventing activity', () => {
+    expect(rollingEarningsTrend(rides, 3, reference)).toEqual([
+      { date: '2026-09-23', amount: 50 },
+      { date: '2026-09-24', amount: 0 },
+      { date: '2026-09-25', amount: 74 },
+    ]);
+  });
+
+  it('compares actual completed-trip earnings with the prior equal period', () => {
+    const comparisonRides = [
+      { status: 'completed', completed_at: '2026-09-25T07:15:00.000Z', final_fare: 69, tip_amount: 5 },
+      { status: 'completed', completed_at: '2026-09-23T10:00:00.000Z', fare: 50 },
+      { status: 'completed', completed_at: '2026-09-18T10:00:00.000Z', fare: 40 },
+    ];
+    expect(earningsPeriodComparison(comparisonRides, 7, reference)).toEqual({
+      current: 124,
+      previous: 40,
+      change: 84,
+      percentChange: 210,
+    });
   });
 
   it('uses paid fee records only in the selected period', () => {

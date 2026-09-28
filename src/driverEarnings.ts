@@ -94,3 +94,68 @@ export function earningsTrend(rides: DatedRecord[], maxDays = 14) {
     .slice(-maxDays)
     .map(([date, amount]) => ({ date, amount }));
 }
+
+function rollingDayBounds(days: number, referenceDate: Date, periodsAgo = 0) {
+  const safeDays = Math.max(1, Math.floor(days));
+  const reference = new Date(referenceDate);
+  const end = new Date(Date.UTC(
+    reference.getUTCFullYear(),
+    reference.getUTCMonth(),
+    reference.getUTCDate() + 1 - (periodsAgo * safeDays),
+  ));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - safeDays);
+  return { start, end, days: safeDays };
+}
+
+function dayKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function completedEarningsBetween(rides: DatedRecord[], start: Date, end: Date) {
+  return rides.reduce((sum, ride) => {
+    const completedAt = recordDate(ride, ['completed_at', 'trip_date', 'created_date']);
+    const completed = String(ride.status || '').toLowerCase() === 'completed';
+    if (!completed || !completedAt || completedAt < start || completedAt >= end) return sum;
+    return sum + numericRideFare(ride) + numericTip(ride);
+  }, 0);
+}
+
+/**
+ * Returns one record per calendar day, including zero-earning days. This keeps
+ * the mobile chart honest: a missing bar means no completed trip, not missing
+ * data or a generated estimate.
+ */
+export function rollingEarningsTrend(rides: DatedRecord[], days = 7, referenceDate = new Date()) {
+  const { start, end, days: safeDays } = rollingDayBounds(days, referenceDate);
+  const byDate = new Map<string, number>();
+  for (const ride of rides) {
+    const completedAt = recordDate(ride, ['completed_at', 'trip_date', 'created_date']);
+    const completed = String(ride.status || '').toLowerCase() === 'completed';
+    if (!completed || !completedAt || completedAt < start || completedAt >= end) continue;
+    const key = dayKey(completedAt);
+    byDate.set(key, (byDate.get(key) || 0) + numericRideFare(ride) + numericTip(ride));
+  }
+
+  return Array.from({ length: safeDays }, (_, index) => {
+    const date = new Date(start);
+    date.setUTCDate(start.getUTCDate() + index);
+    const key = dayKey(date);
+    return { date: key, amount: byDate.get(key) || 0 };
+  });
+}
+
+/** Compare a Driver's actual completed-trip earnings with the prior equal period. */
+export function earningsPeriodComparison(rides: DatedRecord[], days = 7, referenceDate = new Date()) {
+  const currentBounds = rollingDayBounds(days, referenceDate);
+  const previousBounds = rollingDayBounds(days, referenceDate, 1);
+  const current = completedEarningsBetween(rides, currentBounds.start, currentBounds.end);
+  const previous = completedEarningsBetween(rides, previousBounds.start, previousBounds.end);
+  const change = current - previous;
+  return {
+    current,
+    previous,
+    change,
+    percentChange: previous > 0 ? Number(((change / previous) * 100).toFixed(1)) : null,
+  };
+}
