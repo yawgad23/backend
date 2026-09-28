@@ -254,6 +254,38 @@ export function registerAdminAccountRoutes(app: Express) {
     }
   });
 
+  app.get('/api/admin/accounts/:userId/lifecycle', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    const userId = validUserId(request.params.userId);
+    const accountRole = role(request.query.role);
+    if (!userId || !accountRole) {
+      response.status(400).json({ error: 'A valid account and role are required.' });
+      return;
+    }
+
+    try {
+      const events = await adminFirestore.list('account_lifecycle_events', {
+        user_id: userId,
+        account_role: accountRole,
+      }, 'created_date', 'desc', 100);
+      response.json({
+        events: events.map((event) => ({
+          id: event.id,
+          action: String(event.action || 'account_status_updated'),
+          actorType: String(event.actor_type || 'system'),
+          actorId: String(event.actor_id || ''),
+          retained: event.retained === true,
+          retentionReviewAfter: event.retention_review_after || null,
+          createdAt: event.created_date || null,
+        })),
+      });
+    } catch (error) {
+      console.error('[Admin accounts] Failed to load account lifecycle:', error);
+      response.status(503).json({ error: 'Account audit records are temporarily unavailable. Please refresh.' });
+    }
+  });
+
   app.patch('/api/admin/drivers/:userId/approval', async (request: Request, response: Response) => {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;
