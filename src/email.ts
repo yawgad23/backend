@@ -254,3 +254,40 @@ export async function sendVerificationEmail(email: string, link: string): Promis
     return false;
   }
 }
+
+/** Sends a server-generated Firebase password-reset link through HY3N SMTP. */
+export async function sendPasswordResetEmail(email: string, link: string): Promise<boolean> {
+  const from = process.env.EMAIL_FROM || '"HY3N Support" <hy3ntransportservices@gmail.com>';
+  const transporter = getTransporter();
+  const safeLink = String(link || '');
+  if (!safeLink.startsWith('https://')) return false;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:32px 0"><tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;max-width:560px;width:100%">
+      <tr><td style="background:#0A0A0A;padding:28px 32px;text-align:center"><div style="font-size:28px;font-weight:900;color:#D4AF37;letter-spacing:2px">HY3N</div><div style="color:#9CA3AF;font-size:13px;margin-top:4px">Password reset request</div></td></tr>
+      <tr><td style="padding:28px 32px"><p style="margin:0;font-size:16px;color:#111827">Reset your password</p><p style="margin:12px 0 0;font-size:14px;color:#6B7280;line-height:20px">Use the secure button below to choose a new HY3N password. If you did not request this, you can safely ignore this email.</p><div style="margin:24px 0;text-align:center"><a href="${safeLink}" style="display:inline-block;background:#D4AF37;color:#000000;text-decoration:none;padding:12px 32px;font-weight:700;font-size:15px;border-radius:8px">Reset Password</a></div><p style="margin:12px 0 0;font-size:12px;color:#9CA3AF;line-height:18px">For your security, do not share this link with anyone.</p></td></tr>
+      <tr><td style="background:#F9FAFB;padding:20px 32px;text-align:center;border-top:1px solid #E5E7EB"><p style="margin:0;font-size:12px;color:#9CA3AF">Questions? Contact <a href="mailto:hello@ridehy3n.com" style="color:#D4AF37">hello@ridehy3n.com</a></p></td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>`;
+
+  try {
+    await transporter.sendMail({
+      from,
+      to: email,
+      subject: 'Reset your HY3N password',
+      text: `Reset your HY3N password\n\nUse this secure link to choose a new password:\n${safeLink}\n\nIf you did not request this, you can safely ignore this email.`,
+      html,
+    });
+    return true;
+  } catch (err) {
+    console.error('[HY3N Email] Failed to send password reset:', err);
+    return false;
+  }
+}

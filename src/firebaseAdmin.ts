@@ -49,8 +49,17 @@ function getAdminApp(): App {
   return _app;
 }
 
-function getDb(): Firestore {
+/**
+ * Server-only Firestore access for transactional operations that must not be
+ * exposed through mobile clients. Callers must keep identifiers and secrets
+ * out of logs.
+ */
+export function getAdminDb(): Firestore {
   return getFirestore(getAdminApp());
+}
+
+function getDb(): Firestore {
+  return getAdminDb();
 }
 
 // ─── Collection constants ─────────────────────────────────────────────────────
@@ -76,6 +85,7 @@ export const ADMIN_COLLECTIONS = {
   DAILY_COMMISSION: 'daily_commissions',
   PUSH_DEVICES: 'push_devices',
   PUSH_DELIVERIES: 'push_deliveries',
+  PASSWORD_RESET_LIMITS: 'password_reset_limits',
 };
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────

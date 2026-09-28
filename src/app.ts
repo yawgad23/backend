@@ -23,6 +23,7 @@ import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
 import { registerAdminRideRoutes } from "./adminRideRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import { registerAdminNotificationRoutes } from "./adminNotifications";
+import { registerPasswordResetRoutes } from './passwordReset';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
 import {
@@ -145,6 +146,10 @@ function cardCheckoutCallbackUrl(): string {
  */
 export function createApp(): Express {
   const app = express();
+  // The API runs behind one trusted Cloud Run proxy. This gives public
+  // anti-abuse endpoints a stable requester IP without trusting arbitrary
+  // forwarded-address chains.
+  app.set('trust proxy', 1);
 
   // Native apps do not send an Origin header. Browser calls are restricted to
   // HY3N-owned origins instead of reflecting arbitrary hostile websites.
@@ -275,6 +280,7 @@ export function createApp(): Express {
   registerAdminSettingsRoutes(app);
   registerAdminRideRoutes(app);
   registerAdminNotificationRoutes(app);
+  registerPasswordResetRoutes(app);
 
   /**
    * A customer-requested account deletion is implemented as a retained,
