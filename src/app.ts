@@ -22,6 +22,7 @@ import { registerAdminAccountRoutes } from "./adminAccountRoutes";
 import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
 import { registerAdminRideRoutes } from "./adminRideRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
+import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import {
   checkHubtelCardCheckout,
@@ -252,6 +253,7 @@ export function createApp(): Express {
   registerAdminAccountRoutes(app);
   registerAdminSettingsRoutes(app);
   registerAdminRideRoutes(app);
+  registerAdminNotificationRoutes(app);
 
   /**
    * Registers an Expo token for the authenticated account. Tokens remain in a
