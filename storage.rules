@@ -1,0 +1,37 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdministrator() {
+      return signedIn()
+        && (request.auth.token.email == 'yawgad23@gmail.com'
+          || (firestore.exists(/databases/(default)/documents/admin_access/$(request.auth.token.email))
+            && firestore.get(/databases/(default)/documents/admin_access/$(request.auth.token.email)).data.is_active == true));
+    }
+
+    function isImageUpload() {
+      return request.resource.size <= 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    // Driver documents are private identity material. Paths are UID-scoped and
+    // can only be managed by the logged-in driver or an authorized administrator.
+    match /drivers/{driverId}/{documentName} {
+      allow read: if signedIn() && (request.auth.uid == driverId || isAdministrator());
+      allow create, update: if signedIn() && request.auth.uid == driverId && isImageUpload();
+      allow delete: if signedIn() && (request.auth.uid == driverId || isAdministrator());
+    }
+
+    // Supports the scoped path used by future document-upload screens.
+    match /driver-documents/{driverId}/{documentName} {
+      allow read: if signedIn() && (request.auth.uid == driverId || isAdministrator());
+      allow create, update: if signedIn() && request.auth.uid == driverId && isImageUpload();
+      allow delete: if signedIn() && (request.auth.uid == driverId || isAdministrator());
+    }
+
+    // No wildcard fallback: every unlisted object path is denied by default.
+  }
+}

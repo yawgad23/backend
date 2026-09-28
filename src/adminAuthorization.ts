@@ -10,7 +10,7 @@ function bearerToken(request: Request): string {
   return match?.[1]?.trim() || '';
 }
 
-async function hasAdministratorAccess(email: string): Promise<boolean> {
+export async function hasAdministratorEmailAccess(email: string): Promise<boolean> {
   if (email.toLowerCase() === OWNER_EMAIL) return true;
   const normalizedEmail = email.toLowerCase();
   const canonical = await adminFirestore.get('admin_access', normalizedEmail);
@@ -34,7 +34,7 @@ export async function requireAdministratorIdentity(request: Request, response: R
   try {
     const decoded = await getAdminAuth().verifyIdToken(token);
     const email = String(decoded.email || '').trim().toLowerCase();
-    if (!email || !(await hasAdministratorAccess(email))) {
+    if (!email || !(await hasAdministratorEmailAccess(email))) {
       response.status(403).json({ error: 'Administrator access is required.' });
       return null;
     }

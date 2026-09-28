@@ -81,6 +81,12 @@ export async function hasAdministratorAccessCode(request: Request, email: string
   return verifyAdministratorAccessProof(email, accessCode, String(request.headers[ACCESS_CODE_HEADER] || ''));
 }
 
+/** Verifies the short-lived, server-signed dashboard proof outside Express. */
+export function hasAdministratorAccessProof(email: string, proof: string): boolean {
+  const accessCode = configuredAccessCode();
+  return Boolean(accessCode) && verifyAdministratorAccessProof(email, accessCode, proof);
+}
+
 export async function requireAdministratorAccessCode(request: Request, response: Response, email: string): Promise<boolean> {
   if (await hasAdministratorAccessCode(request, email)) return true;
   response.status(401).json({

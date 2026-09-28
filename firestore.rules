@@ -1,103 +1,67 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function isOwner() { return signedIn() && request.auth.token.email == 'yawgad23@gmail.com'; }
+    function isAdmin() { return isOwner() || (signedIn() && exists(/databases/$(database)/documents/admin_access/$(request.auth.token.email)) && get(/databases/$(database)/documents/admin_access/$(request.auth.token.email)).data.is_active == true); }
+    function isSelf(field) { return signedIn() && resource.data[field] == request.auth.uid; }
+    function isNewSelf(field) { return signedIn() && request.resource.data[field] == request.auth.uid; }
+    function isRideParticipant() { return signedIn() && (resource.data.rider_id == request.auth.uid || resource.data.driver_id == request.auth.uid); }
+    function pendingOwnDriverApplication() {
+      return isNewSelf('user_id') && request.resource.data.get('approval_status', 'pending') == 'pending'
+        && request.resource.data.get('approved', false) != true && request.resource.data.get('is_approved', false) != true
+        && request.resource.data.get('is_online', false) != true && request.resource.data.get('is_available', false) != true;
     }
-
-    function isOwner() {
-      return signedIn() && request.auth.token.email == 'yawgad23@gmail.com';
-    }
-
-    function isAdmin() {
-      return isOwner()
-        || (signedIn()
-          && exists(/databases/$(database)/documents/admin_access/$(request.auth.token.email))
-          && get(/databases/$(database)/documents/admin_access/$(request.auth.token.email)).data.is_active == true);
-    }
-
-    function ownsDriverProfile() {
-      return signedIn() && resource.data.user_id == request.auth.uid;
-    }
-
-    function createsOwnPendingDriverProfile() {
-      return signedIn()
-        && request.resource.data.user_id == request.auth.uid
-        && request.resource.data.get('approval_status', 'pending') == 'pending'
-        && request.resource.data.get('approved', false) != true
-        && request.resource.data.get('is_approved', false) != true
-        && request.resource.data.get('is_online', false) != true
-        && request.resource.data.get('is_available', false) != true
-        && request.resource.data.get('availability_status', 'offline') != 'online';
-    }
-
-    function preservesDriverApprovalAndPresence() {
+    function safeDriverSelfUpdate() {
       let changed = request.resource.data.diff(resource.data).affectedKeys();
-      let oldApproval = resource.data.get('approval_status', 'pending');
-      let newApproval = request.resource.data.get('approval_status', 'pending');
-      let isAllowedResubmission = oldApproval == 'rejected' && newApproval == 'pending';
-      return !changed.hasAny([
-          'approved',
-          'is_approved',
-          'application_status',
-          'status',
-          'is_online',
-          'is_available',
-          'availability_status',
-          'current_location',
-          'location',
-          'latitude',
-          'longitude',
-          'last_location_update',
-          'last_seen_at',
-          'last_seen'
-        ])
-        && (newApproval == oldApproval || isAllowedResubmission);
+      let prior = resource.data.get('approval_status', 'pending');
+      let next = request.resource.data.get('approval_status', 'pending');
+      return isSelf('user_id') && !changed.hasAny([
+        'approved', 'is_approved', 'application_status', 'status', 'is_online', 'is_available', 'availability_status',
+        'current_location', 'location', 'latitude', 'longitude', 'last_location_update', 'last_seen_at', 'last_seen',
+        'total_earnings', 'total_rides', 'rating', 'payout_method', 'momo_number_masked'
+      ]) && (next == prior || (prior == 'rejected' && next == 'pending'));
     }
 
-    match /app_config/{configId} {
-      allow read: if signedIn();
-      allow create, update, delete: if isAdmin();
-    }
-
-    // Drivers submit their own application as pending. Only an HY3N admin can
-    // approve, reject, or set online/location presence; the backend uses the
-    // Firebase Admin SDK for trusted dispatch updates.
+    // Only the Driver and admins can read full application records.
     match /driver_profiles/{driverId} {
-      allow read: if signedIn();
-      allow create: if isAdmin() || createsOwnPendingDriverProfile();
-      allow update: if isAdmin() || (ownsDriverProfile() && preservesDriverApprovalAndPresence());
-      allow delete: if isAdmin() || ownsDriverProfile();
+      allow read: if isAdmin() || isSelf('user_id');
+      allow create: if isAdmin() || pendingOwnDriverApplication();
+      allow update: if isAdmin() || safeDriverSelfUpdate();
+      allow delete: if isAdmin() || isSelf('user_id');
     }
+    // Server-owned, map-safe data: no documents, personal contacts, or payout data.
+    match /driver_presence/{driverId} { allow read: if signedIn(); allow write: if false; }
 
-    match /admin_access/{adminId} {
-      allow read: if isAdmin() || (signedIn() && request.auth.token.email == adminId);
-      allow create, update, delete: if isOwner();
+    match /rider_profiles/{riderId} {
+      allow read, update, delete: if isAdmin() || isSelf('user_id');
+      allow create: if isAdmin() || isNewSelf('user_id');
     }
+    match /wallets/{userId} { allow read: if signedIn() && request.auth.uid == userId; allow write: if false; }
+    match /wallet_transactions/{transactionId} { allow read: if isSelf('user_id'); allow write: if false; }
 
-    // Daily Driver fee records are a Hubtel settlement ledger. Mobile and web
-    // clients cannot create, read, or modify it directly: the Firebase Admin
-    // server writes status only after Hubtel callback/status confirmation, and
-    // the authenticated admin dashboard reads through its trusted API.
-    match /daily_commissions/{commissionId} {
-      allow read, write: if false;
+    // New ride state, pricing, and payment records move through the trusted backend.
+    match /rides/{rideId} {
+      allow read: if isAdmin() || isRideParticipant();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isRideParticipant() && resource.data.rider_id == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rider_rating', 'rider_feedback', 'rider_feedback_tags', 'rated_at', 'updated_date']));
     }
+    match /ride_messages/{messageId} {
+      allow read: if isAdmin() || (signedIn() && (resource.data.rider_id == request.auth.uid || resource.data.driver_id == request.auth.uid || resource.data.sender_id == request.auth.uid));
+      allow create: if isAdmin() || (signedIn() && request.resource.data.sender_id == request.auth.uid && exists(/databases/$(database)/documents/rides/$(request.resource.data.ride_id)) && (get(/databases/$(database)/documents/rides/$(request.resource.data.ride_id)).data.rider_id == request.auth.uid || get(/databases/$(database)/documents/rides/$(request.resource.data.ride_id)).data.driver_id == request.auth.uid));
+      allow update: if isAdmin() || (signedIn() && (resource.data.rider_id == request.auth.uid || resource.data.driver_id == request.auth.uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['delivered_to_rider', 'delivered_to_driver', 'read_by_rider', 'read_by_driver', 'read_at', 'updated_date']));
+      allow delete: if isAdmin();
+    }
+    match /support_tickets/{ticketId} { allow read: if isAdmin() || isSelf('user_id') || isSelf('driver_id') || isSelf('rider_id'); allow create: if isAdmin() || (signedIn() && (request.resource.data.user_id == request.auth.uid || request.resource.data.driver_id == request.auth.uid || request.resource.data.rider_id == request.auth.uid)); allow update, delete: if isAdmin(); }
+    match /sos_incidents/{incidentId} { allow read: if isAdmin() || isSelf('user_id') || isSelf('driver_id') || isSelf('rider_id'); allow create: if isAdmin() || (signedIn() && (request.resource.data.user_id == request.auth.uid || request.resource.data.driver_id == request.auth.uid || request.resource.data.rider_id == request.auth.uid)); allow update, delete: if isAdmin(); }
+    match /ride_reports/{reportId} { allow read: if isAdmin() || isSelf('rider_id') || isSelf('driver_id'); allow create: if signedIn() && (request.resource.data.rider_id == request.auth.uid || request.resource.data.driver_id == request.auth.uid); allow update, delete: if isAdmin(); }
+    match /driver_notifications/{id} { allow read: if isAdmin() || isSelf('driver_id'); allow update: if isSelf('driver_id') && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'read_at', 'updated_date']); allow create, delete: if isAdmin(); }
+    match /driver_referrals/{id} { allow read: if isAdmin() || isSelf('driver_id'); allow write: if false; }
 
-    // Existing Rider, trip, message, and wallet flows continue to require a
-    // signed-in Firebase account. Driver profiles above intentionally override
-    // this broad legacy path so applicants cannot self-approve or self-publish.
-    // The Hubtel commission ledger is also excluded: Firestore rules are
-    // additive, so it must be omitted here as well as denied explicitly above.
-    match /{collection}/{document} {
-      allow read, write: if signedIn()
-        && collection != 'driver_profiles'
-        && collection != 'daily_commissions';
-    }
-
-    match /{collection}/{document}/{subdocument=**} {
-      allow read, write: if signedIn()
-        && collection != 'driver_profiles'
-        && collection != 'daily_commissions';
-    }
+    match /admin_access/{adminId} { allow read: if isAdmin() || (signedIn() && request.auth.token.email == adminId); allow write: if isOwner(); }
+    match /app_config/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    // Financial, payout, safety-event, and unlisted data are backend/admin-only.
+    match /{document=**} { allow read, write: if false; }
   }
 }

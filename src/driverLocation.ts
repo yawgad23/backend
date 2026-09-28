@@ -84,6 +84,22 @@ export function registerDriverLocationRoutes(app: Express) {
       await Promise.all(targets.map((profile) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, patch)));
     }
 
+    // Rider maps use a deliberately minimal record. Full Driver profile and
+    // application data remain private to the Driver and the admin dashboard.
+    await adminFirestore.set('driver_presence', driverId, {
+      service_type: approvedProfile?.service_type || approvedProfile?.serviceType || 'car',
+      vehicle_type: approvedProfile?.vehicle_type || approvedProfile?.vehicleType || 'car',
+      vehicle_make: approvedProfile?.vehicle_make || approvedProfile?.vehicleMake || '',
+      vehicle_model: approvedProfile?.vehicle_model || approvedProfile?.vehicleModel || '',
+      vehicle_color: approvedProfile?.vehicle_color || approvedProfile?.vehicle_colour || '',
+      vehicle_colour: approvedProfile?.vehicle_colour || approvedProfile?.vehicle_color || '',
+      vehicle_colour_hex: approvedProfile?.vehicle_colour_hex || '',
+      license_plate: approvedProfile?.license_plate || approvedProfile?.vehicle_plate || '',
+      vehicle_plate: approvedProfile?.vehicle_plate || approvedProfile?.license_plate || '',
+      rating: Number(approvedProfile?.rating || 0),
+      ...patch,
+    });
+
     try {
       // Await delivery while this HTTP invocation is alive. Detached work can
       // be stopped as soon as the response returns, leaving a backgrounded

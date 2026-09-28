@@ -104,6 +104,18 @@ const cardCheckoutInput = z.object({
   description: z.string().min(3).max(180).optional(),
 });
 
+const TRUSTED_BROWSER_ORIGINS = new Set([
+  'https://hy3n-admin.web.app',
+  'https://ridehy3n.com',
+  'https://www.ridehy3n.com',
+  'http://localhost:3000',
+  'http://localhost:5173',
+]);
+
+function isTrustedBrowserOrigin(origin: string): boolean {
+  return TRUSTED_BROWSER_ORIGINS.has(origin);
+}
+
 function cardCheckoutReturnUrl(reference: string): string {
   const configuredCallback = String(process.env.PRIMARY_CALLBACK_URL || '').trim();
   const fallback = 'https://api-yvurtipaxq-ew.a.run.app';
@@ -133,28 +145,36 @@ function cardCheckoutCallbackUrl(): string {
 export function createApp(): Express {
   const app = express();
 
-  // Enable CORS for all routes - reflect the request origin to support credentials
+  // Native apps do not send an Origin header. Browser calls are restricted to
+  // HY3N-owned origins instead of reflecting arbitrary hostile websites.
   app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.header("Access-Control-Allow-Origin", origin);
+    const origin = String(req.headers.origin || '');
+    if (origin && isTrustedBrowserOrigin(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Credentials', 'true');
     }
     res.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.header(
       "Access-Control-Allow-Headers",
       "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-HY3N-Admin-Access",
     );
-    res.header("Access-Control-Allow-Credentials", "true");
 
     if (req.method === "OPTIONS") {
+      if (origin && !isTrustedBrowserOrigin(origin)) {
+        res.sendStatus(403);
+        return;
+      }
       res.sendStatus(200);
       return;
     }
     next();
   });
 
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Photos and documents go directly to locked Firebase Storage. The API only
+  // accepts small structured requests, preventing oversized JSON body abuse.
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ limit: '1mb', extended: true }));
 
   // Request / Response Logger Middleware
   app.use((req, res, next) => {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { publicProcedure, router } from "./trpc";
+import { administratorProcedure, driverProcedure, protectedProcedure, publicProcedure, riderProcedure, router, userProcedure } from "./trpc";
 import { sendVerificationEmail } from "./email";
 import {
   chargeDriverCommission,
@@ -59,7 +59,7 @@ async function recordWalletTransaction(
 export const appRouter = router({
   // ─── Trip Receipt Email ───────────────────────────────────────────────────────
   trips: router({
-    sendReceipt: publicProcedure
+    sendReceipt: protectedProcedure
       .input(z.object({
         // Older Rider builds provide a whole receipt payload. Deliberately
         // accept only the trip ID and derive every value and recipient from
@@ -67,7 +67,12 @@ export const appRouter = router({
         // or tampered receipt.
         tripId: z.string().min(1),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.tripId);
+        const riderId = String(ride?.rider_id || ride?.riderId || '');
+        if (!ride || riderId !== ctx.uid) {
+          throw new Error('This receipt does not belong to the signed-in Rider.');
+        }
         const result = await sendCompletedRideReceipt(input.tripId);
         return {
           success: result.sent || result.alreadySent,
@@ -79,11 +84,18 @@ export const appRouter = router({
   }),
 
   transactionStatus: router({
-    check: publicProcedure
+    check: protectedProcedure
       .input(z.object({
         clientReference: z.string(),
       }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
+        const commission = (await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { hubtel_reference: input.clientReference }, '', 'desc', 1))[0];
+        const walletTransaction = commission ? null : (await adminFirestore.list(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, { reference: input.clientReference }, '', 'desc', 1))[0];
+        const payment = commission || walletTransaction ? null : (await adminFirestore.list(ADMIN_COLLECTIONS.PAYMENTS, { reference: input.clientReference }, '', 'desc', 1))[0];
+        const ownerId = String(commission?.driver_id || walletTransaction?.user_id || payment?.user_id || payment?.rider_id || '');
+        if (!ownerId || ownerId !== ctx.uid) {
+          throw new Error('This payment status does not belong to the signed-in account.');
+        }
         const response = await transactionStatusCheck(input.clientReference);
 
         // Sync to Firestore if the status check succeeded
@@ -165,8 +177,7 @@ export const appRouter = router({
      *   - transactionId: Hubtel's transaction reference
      *   - message: human-readable status message
      */
-    charge: publicProcedure
-      .input(z.object({
+    charge: driverProcedure(z.object({
         /** Driver's Firestore user_id (used for idempotency reference) */
         driverId: z.string(),
         /** Driver's full name */
@@ -247,17 +258,13 @@ export const appRouter = router({
      * Updates the global daily driver charge. The administrator PIN is checked
      * again here rather than trusting a browser-only dashboard session.
      */
-    updatePlatformFee: publicProcedure
+    updatePlatformFee: administratorProcedure
       .input(z.object({
         amount: z.number().min(0.01).max(1000),
         serviceType: z.string().optional(),
         adminPin: z.string().min(1),
       }))
       .mutation(async ({ input }) => {
-        const expectedPin = process.env.ADMIN_DASHBOARD_PIN;
-        if (!expectedPin || input.adminPin !== expectedPin) {
-          throw new Error('Administrator authorization is required to change the platform fee.');
-        }
         const fee = await setDailyPlatformFee(input.serviceType, input.amount, 'admin_dashboard');
         return { success: true, fee };
       }),
@@ -270,8 +277,7 @@ export const appRouter = router({
      * the driver app writes/reads directly from Firestore. This endpoint
      * just returns the reference so the client can look it up.
      */
-    getStatus: publicProcedure
-      .input(z.object({
+    getStatus: driverProcedure(z.object({
         driverId: z.string(),
         date: z.string().optional(),
       }))
@@ -295,7 +301,7 @@ export const appRouter = router({
      * before it loads — not by per-request auth, since there's no user
      * session concept in this backend (see README).
      */
-    listForAdmin: publicProcedure
+    listForAdmin: administratorProcedure
       .input(z.object({
         dateFrom: z.string().optional(),
         dateTo: z.string().optional(),
@@ -352,7 +358,7 @@ export const appRouter = router({
      * Admin: Override a commission status manually.
      * Same PIN-gated access model as listForAdmin above.
      */
-    overrideStatus: publicProcedure
+    overrideStatus: administratorProcedure
       .input(z.object({
         commissionId: z.string(),
         newStatus: z.enum(['paid', 'failed', 'processing']),
@@ -373,8 +379,7 @@ export const appRouter = router({
         return { success: true, commission: updated };
       }),
 
-    checkPaidToday: publicProcedure
-      .input(z.object({
+    checkPaidToday: driverProcedure(z.object({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
@@ -448,17 +453,13 @@ export const appRouter = router({
     }),
 
     /** Administrator-only manual surge override, protected by the dashboard PIN. */
-    update: publicProcedure
+    update: administratorProcedure
       .input(z.object({
         enabled: z.boolean(),
         multiplier: z.number().min(1).max(2),
         adminPin: z.string().min(1),
       }))
       .mutation(async ({ input }) => {
-        const expectedPin = process.env.ADMIN_DASHBOARD_PIN;
-        if (!expectedPin || input.adminPin !== expectedPin) {
-          throw new Error('Administrator authorization is required to change surge pricing.');
-        }
         const updatedAt = new Date().toISOString();
         await adminFirestore.set('platform_settings', 'surge_pricing', {
           manual_enabled: input.enabled,
@@ -485,8 +486,7 @@ export const appRouter = router({
      * Sends a USSD prompt to the rider's phone.
      * The webhook at POST /api/hubtel/wallet-callback credits the wallet on success.
      */
-    topup: publicProcedure
-      .input(z.object({
+    topup: riderProcedure(z.object({
         riderId: z.string(),
         riderName: z.string(),
         momoNumber: z.string(),
@@ -556,8 +556,7 @@ export const appRouter = router({
     /**
      * Get a user's wallet balance.
      */
-    getBalance: publicProcedure
-      .input(z.object({ userId: z.string() }))
+    getBalance: userProcedure(z.object({ userId: z.string() }))
       .query(async ({ input }) => {
         const wallet = await adminFirestore.get(ADMIN_COLLECTIONS.WALLET, input.userId);
         return { balance: wallet?.balance ?? 0, currency: 'GHS' };
@@ -566,8 +565,7 @@ export const appRouter = router({
     /**
      * Get wallet transaction history for a user.
      */
-    getTransactions: publicProcedure
-      .input(z.object({
+    getTransactions: userProcedure(z.object({
         userId: z.string(),
         limit: z.number().optional(),
       }))
@@ -586,15 +584,9 @@ export const appRouter = router({
      * Settle a completed ride: deduct fare from rider wallet, credit driver wallet.
      * Called server-side when ride status changes to 'completed' with payment='wallet'.
      */
-    settleRide: publicProcedure
-      .input(z.object({
+    settleRide: riderProcedure(z.object({
         rideId: z.string(),
         riderId: z.string(),
-        driverId: z.string(),
-        driverName: z.string(),
-        riderName: z.string(),
-        pickup: z.string(),
-        destination: z.string(),
       }))
       .mutation(async ({ input }) => {
         const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId);
@@ -603,7 +595,7 @@ export const appRouter = router({
         }
         const rideRiderId = String(ride.rider_id || ride.riderId || ride.rider?.id || '');
         const rideDriverId = String(ride.driver_id || ride.driverId || ride.driver?.id || '');
-        if (rideRiderId !== input.riderId || rideDriverId !== input.driverId) {
+        if (rideRiderId !== input.riderId || !rideDriverId) {
           return { success: false, message: 'Ride payment details do not match this trip.' };
         }
         if (ride.wallet_settled_at) {
@@ -631,20 +623,20 @@ export const appRouter = router({
         });
         await recordWalletTransaction(
           input.riderId, 'debit', fare,
-          `Ride to ${input.destination}`,
+          `Ride to ${typeof ride.destination === 'string' ? ride.destination : ride.destination?.name || 'destination'}`,
           reference,
-          { ride_id: input.rideId, driver_id: input.driverId, date: now },
+          { ride_id: input.rideId, driver_id: rideDriverId, date: now },
         );
 
         // Credit driver wallet
-        const driverWallet = (await getOrCreateWallet(input.driverId, 'driver')) as any;
-        await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, input.driverId, {
+        const driverWallet = (await getOrCreateWallet(rideDriverId, 'driver')) as any;
+        await adminFirestore.set(ADMIN_COLLECTIONS.WALLET, rideDriverId, {
           balance: ((driverWallet.balance as number) ?? 0) + fare,
           total_earned: ((driverWallet.total_earned as number) ?? 0) + fare,
         });
         await recordWalletTransaction(
-          input.driverId, 'credit', fare,
-          `Ride fare from ${input.pickup}`,
+          rideDriverId, 'credit', fare,
+          `Ride fare from ${typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.name || 'pickup'}`,
           reference,
           { ride_id: input.rideId, rider_id: input.riderId, date: now },
         );
