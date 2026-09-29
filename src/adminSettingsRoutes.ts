@@ -7,6 +7,11 @@ import {
   setDailyPlatformFee,
   type DriverServiceType,
 } from './platformFee';
+import {
+  listFareRateConfigs,
+  normalizeFareCategory,
+  setFareRateConfig,
+} from './fareConfig';
 
 const OWNER_EMAIL = 'yawgad23@gmail.com';
 const ACCESS_COLLECTION = 'admin_access';
@@ -55,9 +60,11 @@ export function registerAdminSettingsRoutes(app: Express) {
 
     try {
       const fees = await Promise.all(SERVICE_TYPES.map((serviceType) => getDailyPlatformFee(serviceType)));
+      const fareRates = await listFareRateConfigs();
       response.json({
         administrator: { email: adminEmail, canManageAccess: isOwner(adminEmail) },
         platformFees: fees,
+        fareRates,
       });
     } catch (error) {
       console.error('[Admin settings] Failed to load settings:', error);
@@ -76,6 +83,34 @@ export function registerAdminSettingsRoutes(app: Express) {
       response.json({ fee });
     } catch (error: any) {
       response.status(400).json({ error: error?.message || 'Enter a valid daily platform fee.' });
+    }
+  });
+
+  /** Category fares are editable only through this authenticated, access-code protected API. */
+  app.get('/api/admin/settings/fares', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    try {
+      response.json({ fareRates: await listFareRateConfigs() });
+    } catch (error) {
+      console.error('[Admin settings] Failed to load category fares:', error);
+      response.status(503).json({ error: 'Category pricing is temporarily unavailable. Please refresh.' });
+    }
+  });
+
+  app.put('/api/admin/settings/fares/:category', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    const category = normalizeFareCategory(request.params.category);
+    if (category !== String(request.params.category || '').trim().toLowerCase()) {
+      response.status(400).json({ error: 'Choose a supported ride category.' });
+      return;
+    }
+    try {
+      const fareRate = await setFareRateConfig(category, request.body, adminEmail);
+      response.json({ fareRate });
+    } catch (error: any) {
+      response.status(400).json({ error: error?.message || 'Enter valid non-negative pricing values.' });
     }
   });
 

@@ -1,0 +1,118 @@
+import { describe, expect, it } from 'vitest';
+import {
+  makeRideQuoteSnapshot,
+  routeFingerprint,
+  validateRideQuote,
+  type QuoteRoute,
+} from './rideQuotes';
+
+const route: QuoteRoute = {
+  pickup: { lat: 5.6037, lng: -0.187 },
+  destination: { lat: 5.6501, lng: -0.1952 },
+  stops: [],
+  distanceKm: 7.1254,
+  durationMinutes: 21.37,
+};
+
+const originalRate = {
+  baseFare: 10,
+  pricePerKm: 3,
+  pricePerMinute: 0.5,
+  minFare: 16.5,
+  bookingFee: 2.5,
+  isActive: true,
+};
+
+describe('server-persisted ride quotes', () => {
+  it('accepts the exact owner route against the rate snapshot', () => {
+    const quote = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      fareRate: originalRate,
+      surgeMultiplier: 1.25,
+      now: Date.parse('2026-09-29T12:00:00.000Z'),
+    });
+
+    const result = validateRideQuote({
+      quote,
+      quoteId: 'quote-a',
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      now: Date.parse('2026-09-29T12:02:00.000Z'),
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.quote.quoted_fare).toBe(55);
+      expect(result.quote.fare_rate_snapshot.pricePerKm).toBe(3);
+    }
+  });
+
+  it('keeps the accepted quote unchanged after a later admin rate update', () => {
+    const quote = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      fareRate: originalRate,
+      surgeMultiplier: 1,
+      now: Date.parse('2026-09-29T12:00:00.000Z'),
+    });
+    const laterAdminRate = { ...originalRate, baseFare: 80, pricePerKm: 20 };
+
+    const result = validateRideQuote({
+      quote,
+      quoteId: 'quote-a',
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      now: Date.parse('2026-09-29T12:02:00.000Z'),
+    });
+
+    expect(laterAdminRate.baseFare).toBe(80);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.quote.quoted_fare).toBe(45);
+      expect(result.quote.fare_rate_snapshot.baseFare).toBe(originalRate.baseFare);
+      expect(result.quote.fare_rate_snapshot.pricePerKm).toBe(originalRate.pricePerKm);
+    }
+  });
+
+  it('rejects another rider, a changed route, and an expired quote', () => {
+    const quote = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      fareRate: originalRate,
+      surgeMultiplier: 1,
+      now: Date.parse('2026-09-29T12:00:00.000Z'),
+    });
+
+    const otherRider = validateRideQuote({ quote, quoteId: 'quote-a', riderId: 'rider-b', category: 'standard', route });
+    const changedRoute = validateRideQuote({
+      quote,
+      quoteId: 'quote-a',
+      riderId: 'rider-a',
+      category: 'standard',
+      route: { ...route, destination: { lat: 5.651, lng: -0.1952 } },
+      now: Date.parse('2026-09-29T12:02:00.000Z'),
+    });
+    const expired = validateRideQuote({
+      quote,
+      quoteId: 'quote-a',
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      now: Date.parse('2026-09-29T12:06:00.000Z'),
+    });
+
+    expect(otherRider.ok).toBe(false);
+    expect(changedRoute.ok).toBe(false);
+    expect(expired.ok).toBe(false);
+    if (!otherRider.ok) expect(otherRider.code).toBe('forbidden');
+    if (!changedRoute.ok) expect(changedRoute.code).toBe('mismatch');
+    if (!expired.ok) expect(expired.code).toBe('expired');
+    expect(routeFingerprint(route)).toContain('7.125');
+  });
+});

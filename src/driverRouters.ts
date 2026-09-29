@@ -662,6 +662,7 @@ export const driverTrips = router({
       durationMinutes: meteredDurationMinutes,
       waitingFee: ride.waiting_fee,
       surgeMultiplier: ride.surge_multiplier,
+      fareRate: ride.fare_rate_snapshot,
     });
     const meteredBreakdown = getMeteredFareBreakdown({
       category: ride.category,
@@ -669,6 +670,7 @@ export const driverTrips = router({
       durationMinutes: meteredDurationMinutes,
       waitingFee: ride.waiting_fee,
       surgeMultiplier: ride.surge_multiplier,
+      fareRate: ride.fare_rate_snapshot,
     });
     // Tips are a Rider-controlled post-trip action. Do not allow a Driver
     // completion request to add one to the amount charged or earned.

@@ -36,6 +36,29 @@ describe('metered trip fares', () => {
     expect(breakdown.total).toBe(60);
   });
 
+  it('uses a stored category rate snapshot instead of a later default rate', () => {
+    const breakdown = getMeteredFareBreakdown({
+      category: 'standard',
+      distanceKm: 5,
+      durationMinutes: 10,
+      surgeMultiplier: 1,
+      fareRate: {
+        baseFare: 20,
+        pricePerKm: 4,
+        pricePerMinute: 1,
+        minFare: 30,
+        bookingFee: 3,
+        isActive: true,
+      },
+    });
+
+    expect(breakdown.baseFare).toBe(20);
+    expect(breakdown.distanceRate).toBe(4);
+    expect(breakdown.timeRate).toBe(1);
+    expect(breakdown.bookingFee).toBe(3);
+    expect(breakdown.total).toBe(53);
+  });
+
   it('uses server time only after the recorded Start Trip timestamp', () => {
     expect(getTripDurationMinutes('2026-09-24T15:00:00.000Z', Date.parse('2026-09-24T15:15:00.000Z'))).toBe(15);
     expect(getTripDurationMinutes('not-a-date', Date.now())).toBe(0);

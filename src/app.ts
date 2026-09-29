@@ -15,6 +15,14 @@ import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
 import { roundGhsFare } from "./fareAuthority";
+import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } from './fareConfig';
+import {
+  consumeRideQuoteAndCreateRide,
+  createRideQuote,
+  getOpenRideQuoteForPayment,
+  makeRideQuoteSnapshot,
+  type QuoteRoute,
+} from './rideQuotes';
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
@@ -58,19 +66,25 @@ const riderRideRequestInput = z.object({
   stops: z.array(rideLocationInput).max(3).optional(),
   payment: z.string().min(1).max(50),
   paymentLabel: z.string().min(1).max(80).optional(),
-  fare: z.number().finite().nonnegative(),
-  baseFare: z.number().finite().nonnegative(),
-  surgeMultiplier: z.number().finite().positive(),
+  quoteId: z.string().min(8).max(160),
+  cardCheckoutTransactionId: z.string().min(8).max(160).optional(),
   distance: z.number().finite().nonnegative(),
   duration: z.number().finite().nonnegative(),
-  promoCode: z.string().max(50).optional(),
-  discount: z.number().finite().nonnegative().optional(),
   rideOptions: z.object({
     ac: z.boolean(),
     pet_friendly: z.boolean(),
     extra_luggage: z.boolean(),
     wheelchair_accessible: z.boolean(),
   }).optional(),
+});
+
+const riderQuoteInput = z.object({
+  categories: z.array(z.string().min(1).max(50)).min(1).max(6),
+  pickup: rideLocationInput,
+  destination: rideLocationInput,
+  stops: z.array(rideLocationInput).max(3).optional(),
+  distance: z.number().finite().nonnegative().max(300),
+  duration: z.number().finite().nonnegative().max(1440),
 });
 
 const driverSosInput = z.object({
@@ -103,6 +117,7 @@ const pushDeviceInput = z.object({
 const cardCheckoutInput = z.object({
   amount: z.number().finite().min(5).max(5000),
   purpose: z.enum(['ride_quote', 'wallet_top_up']).default('wallet_top_up'),
+  quoteId: z.string().min(8).max(160).optional(),
   description: z.string().min(3).max(180).optional(),
 });
 
@@ -440,7 +455,23 @@ export function createApp(): Express {
       return;
     }
 
-    const amount = roundGhsFare(parsed.data.amount);
+    let quoteId: string | null = null;
+    let amount = roundGhsFare(parsed.data.amount);
+    if (parsed.data.purpose === 'ride_quote') {
+      quoteId = String(parsed.data.quoteId || '');
+      if (!quoteId) {
+        res.status(400).json({ success: false, message: 'Refresh the fare quote before paying by card.' });
+        return;
+      }
+      const quoteValidation = await getOpenRideQuoteForPayment(riderId, quoteId);
+      if (!quoteValidation.ok) {
+        res.status(409).json({ success: false, message: quoteValidation.message });
+        return;
+      }
+      // A card checkout can only be issued for the persisted quote. Never
+      // create a Hubtel invoice for a client-supplied amount.
+      amount = quoteValidation.quote.quoted_fare;
+    }
     if (amount < 5) {
       res.status(400).json({ success: false, message: 'The minimum card payment is GH₵5.00.' });
       return;
@@ -472,6 +503,7 @@ export function createApp(): Express {
         payment_method: 'card',
         payment_provider: 'hubtel',
         checkout_purpose: parsed.data.purpose,
+        ride_quote_id: quoteId,
         status: 'processing',
         callback_url: returnUrl,
         date: new Date().toISOString(),
@@ -609,6 +641,76 @@ export function createApp(): Express {
   });
 
   /**
+   * Produces the quote that Rider clients display. Category rates and surge
+   * are loaded on the server; a device never supplies a trusted price.
+   */
+  app.post('/api/rides/quote', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in to view a ride quote.' });
+      return;
+    }
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+    const parsed = riderQuoteInput.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Please check the route details and try again.' });
+      return;
+    }
+    try {
+      const categories = [...new Set(parsed.data.categories.map(normalizeFareCategory))];
+      const surgeMultiplier = await getActiveSurgeMultiplier();
+      const quotes = await Promise.all(categories.map(async (category) => {
+        const fareRate = await getFareRateConfig(category);
+        if (!fareRate.isActive) {
+          return { category, available: false };
+        }
+        const route: QuoteRoute = {
+          pickup: parsed.data.pickup,
+          destination: parsed.data.destination,
+          stops: parsed.data.stops,
+          distanceKm: parsed.data.distance,
+          durationMinutes: parsed.data.duration,
+        };
+        const storedQuote = await createRideQuote(makeRideQuoteSnapshot({
+          riderId,
+          category,
+          route,
+          fareRate,
+          surgeMultiplier,
+        }));
+        const breakdown = storedQuote.quote_breakdown;
+        return {
+          category,
+          quoteId: storedQuote.id,
+          expiresAt: storedQuote.expires_at,
+          available: true,
+          total: breakdown.total,
+          baseFare: breakdown.baseFare,
+          distanceKm: breakdown.distanceKm,
+          durationMinutes: breakdown.durationMinutes,
+          surgeMultiplier: breakdown.surgeMultiplier,
+          breakdown,
+          fareRate,
+        };
+      }));
+      res.json({
+        success: true,
+        quotes,
+      });
+    } catch (error) {
+      console.error('[Ride quote] Failed:', error);
+      res.status(503).json({ success: false, message: 'Pricing is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /**
    * Creates a Rider request with Firebase ID-token authentication. A request
    * always remains unassigned until a real logged-in Driver explicitly accepts
    * it; the server must never assign a profile merely because it was last seen
@@ -651,11 +753,17 @@ export function createApp(): Express {
       const now = requestedAt.toISOString();
       const searchExpiresAt = new Date(requestedAt.getTime() + RIDE_SEARCH_TTL_MS).toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
-      // The Rider's accepted quote is locked here. A Driver app may report
-      // distance and duration for trip records, but it must never replace the
-      // amount the Rider agreed to pay at booking time.
-      const quotedFare = roundGhsFare(input.fare);
-      const quotedBaseFare = roundGhsFare(input.baseFare);
+      const route: QuoteRoute = {
+        pickup: input.pickup,
+        destination: input.destination,
+        stops: input.stops,
+        distanceKm: input.distance,
+        durationMinutes: input.duration,
+      };
+      if (input.cardCheckoutTransactionId && input.payment !== 'wallet') {
+        res.status(400).json({ success: false, message: 'A confirmed card payment must be used through the HY3N wallet.' });
+        return;
+      }
       const isDirectMomoPayment = input.payment === 'mobile_money';
       const paymentDisplayName = isDirectMomoPayment
         ? 'MoMo'
@@ -665,7 +773,16 @@ export function createApp(): Express {
         ? 'Rider pays the Driver directly by MoMo after the trip. HY3N has not initiated or collected a Hubtel payment.'
         : null;
 
-      const ride = await adminFirestore.create(ADMIN_COLLECTIONS.RIDES, {
+      // This transaction validates the one-time quote and writes its immutable
+      // rate/fare snapshot into the ride. A later dashboard edit, a new surge,
+      // or a client-supplied fare cannot change an already-displayed quote.
+      const { ride } = await consumeRideQuoteAndCreateRide({
+        quoteId: input.quoteId,
+        riderId: tokenUid,
+        category: input.category,
+        route,
+        cardCheckoutTransactionId: input.cardCheckoutTransactionId,
+        rideData: {
         rider_id: input.riderId,
         rider_name: input.riderName,
         rider_phone: input.riderPhone,
@@ -676,7 +793,6 @@ export function createApp(): Express {
         passenger_name: input.passengerName || input.riderName,
         passenger_phone: input.passengerPhone || input.riderPhone,
         passenger_pickup_note: input.passengerPickupNote || null,
-        category: input.category,
         pickup: input.pickup,
         pickup_address: input.pickup.address || input.pickup.name,
         destination: input.destination,
@@ -687,19 +803,8 @@ export function createApp(): Express {
         payment_display_name: paymentDisplayName,
         payment_collection: paymentCollection,
         payment_instructions: paymentInstructions,
-        fare: quotedFare,
-        fare_estimate: quotedFare,
-        quoted_fare: quotedFare,
-        base_fare: quotedBaseFare,
-        quote_accepted_at: now,
-        surge_multiplier: input.surgeMultiplier,
-        distance: input.distance,
-        distance_km: input.distance,
-        estimated_distance_km: input.distance,
-        duration: input.duration,
-        estimated_duration_minutes: input.duration,
-        promo_code: input.promoCode || null,
-        discount: input.discount || 0,
+        promo_code: null,
+        discount: 0,
         ride_options: input.rideOptions || { ac: true, pet_friendly: false, extra_luggage: false, wheelchair_accessible: false },
         pickup_code: pickupCode,
         ride_pin: pickupCode,
@@ -714,6 +819,7 @@ export function createApp(): Express {
         driver_colour_hex: null,
         matched_at: null,
         created_at: now,
+        },
       });
 
       try {
@@ -743,7 +849,11 @@ export function createApp(): Express {
         ride,
         message: 'Your request is now waiting for a driver to accept it.',
       });
-    } catch (error) {
+    } catch (error: any) {
+      if (['not_found', 'forbidden', 'consumed', 'expired', 'mismatch', 'payment_mismatch'].includes(String(error?.code || ''))) {
+        res.status(409).json({ success: false, message: error.message || 'Refresh pricing and try again.' });
+        return;
+      }
       console.error('[Ride Dispatch] Failed to create rider request:', error);
       res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
     }
