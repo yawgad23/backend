@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canCancelRideBeforeTrip,
+  cancelledRideNoChargePatch,
   getCappedCompatibilityDistanceKm,
+  getTripChargeTotal,
   getMeteredFareBreakdown,
   getMeteredTripFare,
   getTripDurationMinutes,
@@ -81,6 +84,23 @@ describe('metered trip fares', () => {
     expect(getCappedCompatibilityDistanceKm(0, 10)).toBe(0);
     expect(getCappedCompatibilityDistanceKm(100, 10)).toBe(14);
     expect(getCappedCompatibilityDistanceKm(undefined, 10)).toBeNull();
+  });
+
+  it('never charges a cancelled ride for waiting, a stored final fare, or a tip', () => {
+    const patch = cancelledRideNoChargePatch({
+      cancelledBy: 'rider',
+      reason: 'Plans changed',
+      cancelledAt: '2026-09-29T12:10:00.000Z',
+    });
+    expect(patch).toMatchObject({ status: 'cancelled', waiting_fee: 0, final_fare: 0, driver_earnings: 0 });
+    expect(getTripChargeTotal({ status: 'cancelled', waiting_fee: 25, final_fare: 100, tip_amount: 10 })).toBe(0);
+  });
+
+  it('allows cancellation only before Start Trip', () => {
+    expect(canCancelRideBeforeTrip({ status: 'driver_arrived' })).toBe(true);
+    expect(canCancelRideBeforeTrip({ status: 'in_progress', trip_started_at: '2026-09-29T12:00:00.000Z' })).toBe(false);
+    expect(canCancelRideBeforeTrip({ status: 'completed' })).toBe(false);
+    expect(canCancelRideBeforeTrip({ status: 'cancelled' })).toBe(false);
   });
 });
 

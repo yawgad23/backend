@@ -14,7 +14,7 @@ import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
-import { roundGhsFare } from "./fareAuthority";
+import { canCancelRideBeforeTrip, cancelledRideNoChargePatch, roundGhsFare } from "./fareAuthority";
 import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } from './fareConfig';
 import {
   consumeRideQuoteAndCreateRide,
@@ -76,6 +76,10 @@ const riderRideRequestInput = z.object({
     extra_luggage: z.boolean(),
     wheelchair_accessible: z.boolean(),
   }).optional(),
+});
+
+const riderRideCancellationInput = z.object({
+  reason: z.string().trim().min(1).max(500),
 });
 
 const riderQuoteInput = z.object({
@@ -924,6 +928,59 @@ export function createApp(): Express {
     } catch (error) {
       console.error('[Ride Dispatch] Unable to expire stale Rider search:', error);
       res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /** Cancels an unstarted ride for its authenticated Rider with no trip charge. */
+  app.post('/api/rides/:rideId/cancel', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before managing a ride request.' });
+      return;
+    }
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+    const rideId = String(req.params.rideId || '').trim();
+    const parsed = riderRideCancellationInput.safeParse(req.body);
+    if (!rideId || !parsed.success) {
+      res.status(400).json({ success: false, message: 'Please provide a cancellation reason.' });
+      return;
+    }
+    try {
+      const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+      if (!ride || String(ride.rider_id || '') !== riderId) {
+        res.status(404).json({ success: false, message: 'Ride request not found.' });
+        return;
+      }
+      if (!canCancelRideBeforeTrip(ride)) {
+        res.status(409).json({ success: false, message: 'A trip that has started or ended cannot be cancelled. Contact support for a fare dispute.' });
+        return;
+      }
+      const cancelledAt = new Date().toISOString();
+      const updated = await adminFirestore.updateRideIfStatus(
+        rideId,
+        ['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued'],
+        cancelledRideNoChargePatch({ cancelledBy: 'rider', reason: parsed.data.reason, cancelledAt }),
+      );
+      await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
+        ride_id: rideId,
+        event_type: 'ride_cancelled',
+        actor_id: riderId,
+        actor_role: 'rider',
+        ride_status: 'cancelled',
+        metadata: { cancellation_fee: 0, waiting_fee: 0 },
+        created_at: cancelledAt,
+      }).catch((error) => console.error('[RideEvents] Unable to record cancellation:', error));
+      res.json({ success: true, ride: updated });
+    } catch (error) {
+      console.error('[Ride Dispatch] Unable to cancel Rider request:', error);
+      res.status(409).json({ success: false, message: 'This ride is no longer eligible for cancellation.' });
     }
   });
 

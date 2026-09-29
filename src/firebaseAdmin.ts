@@ -243,6 +243,30 @@ export const adminFirestore = {
   },
 
   /**
+   * Writes a ride patch only while its current server state is in the supplied
+   * set. This prevents a cancellation request racing a Start Trip or Complete
+   * request from overwriting a chargeable trip with a terminal cancellation.
+   */
+  async updateRideIfStatus(rideId: string, allowedStatuses: string[], data: Record<string, any>): Promise<Record<string, any>> {
+    return withFirestoreErrorHandling(`updateRideIfStatus(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        const status = String(ride.status || '').trim().toLowerCase();
+        if (!allowedStatuses.includes(status)) {
+          throw new Error('This ride is no longer eligible for that action.');
+        }
+        const payload = { ...data, updated_date: new Date().toISOString() };
+        transaction.update(ref, payload);
+        return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
    * Claims a completed ride's receipt delivery before SMTP is called. The Rider
    * app and the Driver completion request can arrive at almost the same time,
    * so a normal read followed by a write can send two identical receipts.

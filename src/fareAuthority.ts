@@ -166,6 +166,37 @@ export function getTripDurationMinutes(startedAt: unknown, completedAt = Date.no
   return Math.max(0, (completedAt - startMs) / 60_000);
 }
 
+/** Only a ride that has not started may be cancelled without a trip charge. */
+export function canCancelRideBeforeTrip(ride: RideFareFields): boolean {
+  return ['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued']
+    .includes(String(ride.status || '').trim().toLowerCase());
+}
+
+/** Terminal cancellation records are deliberately non-chargeable. */
+export function cancelledRideNoChargePatch(input: {
+  cancelledBy: 'rider' | 'driver' | 'system';
+  reason: string;
+  cancelledAt: string;
+}): Record<string, unknown> {
+  return {
+    status: 'cancelled',
+    cancelled_by: input.cancelledBy,
+    cancellation_reason: input.reason,
+    cancelled_at: input.cancelledAt,
+    cancellation_fee: 0,
+    waiting_time_minutes: 0,
+    waiting_chargeable_minutes: 0,
+    waiting_fee_per_minute: 0,
+    waiting_fee: 0,
+    fare: 0,
+    fare_estimate: 0,
+    final_fare: 0,
+    tip_amount: 0,
+    driver_earnings: 0,
+    fare_authority: 'cancelled_no_charge',
+  };
+}
+
 /** Accept compatibility distance only in a narrow cap derived from the route estimate. */
 export function getCappedCompatibilityDistanceKm(reportedDistance: unknown, estimatedDistance: unknown): number | null {
   const reported = Number(reportedDistance);
@@ -177,6 +208,7 @@ export function getCappedCompatibilityDistanceKm(reportedDistance: unknown, esti
 
 /** Completed rides persist their server-calculated final fare. */
 export function getAuthoritativeFinalFare(ride: RideFareFields): number {
+  if (String(ride.status || '').trim().toLowerCase() === 'cancelled') return 0;
   const storedFinal = Number(ride.final_fare);
   if ((ride.status === 'completed' || ride.fare_authority === 'metered_trip') && Number.isFinite(storedFinal) && storedFinal >= 0) {
     return roundGhsFare(storedFinal);
@@ -185,6 +217,7 @@ export function getAuthoritativeFinalFare(ride: RideFareFields): number {
 }
 
 export function getTripChargeTotal(ride: RideFareFields): number {
+  if (String(ride.status || '').trim().toLowerCase() === 'cancelled') return 0;
   const tip = Number(ride.tip_amount ?? 0);
   const safeTip = Number.isFinite(tip) && tip > 0 ? tip : 0;
   return roundGhsFare(getAuthoritativeFinalFare(ride) + safeTip);

@@ -3,7 +3,7 @@ import { driverProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
-import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes, getWaitingCharge } from './fareAuthority';
+import { canCancelRideBeforeTrip, canCompleteTrip, canStartTrip, cancelledRideNoChargePatch, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes, getWaitingCharge } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
@@ -604,7 +604,7 @@ export const driverTrips = router({
       arrivedAt: ride.driver_arrived_at,
       tripStartedAt,
     });
-    const updated = withRide(ride, {
+    const startPatch = {
       driver_id: input.driverId,
       status: 'in_progress',
       trip_started_at: tripStartedAt,
@@ -615,8 +615,8 @@ export const driverTrips = router({
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
       waiting_fee_per_minute: waitingCharge.ratePerMinute,
       waiting_fee: waitingCharge.waitingFee,
-    });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    };
+    const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], startPatch);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
       waiting_time_minutes: waitingCharge.waitedMinutes,
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
@@ -738,7 +738,32 @@ export const driverTrips = router({
 
     return { success: true, ride: updated, driverEarnings: finalFare };
   }),
-  cancel: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string() })).mutation(async ({ input }) => { const ride = await rideFor(input.driverId, input.rideId); const updated = withRide(ride, { status: 'cancelled', cancelled_by: 'driver', cancellation_reason: input.reason, cancelled_at: now() }); await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); return { success: true, ride: updated }; }),
+  cancel: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string().trim().min(1).max(500) })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    if (!canCancelRideBeforeTrip(ride)) {
+      throw new Error('A trip that has started or ended cannot be cancelled. Contact support for a fare dispute.');
+    }
+    const cancellationPatch = cancelledRideNoChargePatch({
+      cancelledBy: 'driver',
+      reason: input.reason,
+      cancelledAt: now(),
+    });
+    const updated = await adminFirestore.updateRideIfStatus(
+      input.rideId,
+      ['driver_arriving', 'driver_arrived', 'driver_queued'],
+      cancellationPatch,
+    );
+    await publishLiveActivity(updated, true);
+    await recordRideEvent({
+      rideId: input.rideId,
+      type: 'ride_cancelled',
+      actorId: input.driverId,
+      actorRole: 'driver',
+      status: updated.status,
+      metadata: { cancellation_fee: 0, waiting_fee: 0 },
+    });
+    return { success: true, ride: updated };
+  }),
 });
 
 export const driverSafety = router({
