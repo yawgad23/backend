@@ -66,7 +66,7 @@ const riderRideRequestInput = z.object({
   stops: z.array(rideLocationInput).max(3).optional(),
   payment: z.string().min(1).max(50),
   paymentLabel: z.string().min(1).max(80).optional(),
-  quoteId: z.string().min(8).max(160),
+  quoteId: z.string().min(8).max(160).optional(),
   cardCheckoutTransactionId: z.string().min(8).max(160).optional(),
   distance: z.number().finite().nonnegative(),
   duration: z.number().finite().nonnegative(),
@@ -456,21 +456,25 @@ export function createApp(): Express {
     }
 
     let quoteId: string | null = null;
+    let checkoutPurpose = parsed.data.purpose;
     let amount = roundGhsFare(parsed.data.amount);
     if (parsed.data.purpose === 'ride_quote') {
       quoteId = String(parsed.data.quoteId || '');
       if (!quoteId) {
-        res.status(400).json({ success: false, message: 'Refresh the fare quote before paying by card.' });
-        return;
+        // Older Rider archives do not send a quote ID. Keep their existing
+        // card flow usable as an ordinary wallet top-up; only the new app may
+        // create a payment linked to a particular fare snapshot.
+        checkoutPurpose = 'wallet_top_up';
+      } else {
+        const quoteValidation = await getOpenRideQuoteForPayment(riderId, quoteId);
+        if (!quoteValidation.ok) {
+          res.status(409).json({ success: false, message: quoteValidation.message });
+          return;
+        }
+        // A card checkout can only be issued for the persisted quote. Never
+        // create a Hubtel invoice for a client-supplied amount.
+        amount = quoteValidation.quote.quoted_fare;
       }
-      const quoteValidation = await getOpenRideQuoteForPayment(riderId, quoteId);
-      if (!quoteValidation.ok) {
-        res.status(409).json({ success: false, message: quoteValidation.message });
-        return;
-      }
-      // A card checkout can only be issued for the persisted quote. Never
-      // create a Hubtel invoice for a client-supplied amount.
-      amount = quoteValidation.quote.quoted_fare;
     }
     if (amount < 5) {
       res.status(400).json({ success: false, message: 'The minimum card payment is GH₵5.00.' });
@@ -488,7 +492,7 @@ export function createApp(): Express {
       ))[0];
       const riderName = String(matchingProfile?.full_name || matchingProfile?.name || 'HY3N Rider').trim();
       const reference = createCardCheckoutReference();
-      const purposeLabel = parsed.data.purpose === 'ride_quote' ? 'Ride quote' : 'Wallet top-up';
+      const purposeLabel = checkoutPurpose === 'ride_quote' ? 'Ride quote' : 'Wallet top-up';
       const description = parsed.data.description || `${purposeLabel} by card`;
       const returnUrl = cardCheckoutReturnUrl(reference);
       const callbackUrl = cardCheckoutCallbackUrl();
@@ -502,7 +506,7 @@ export function createApp(): Express {
         reference,
         payment_method: 'card',
         payment_provider: 'hubtel',
-        checkout_purpose: parsed.data.purpose,
+        checkout_purpose: checkoutPurpose,
         ride_quote_id: quoteId,
         status: 'processing',
         callback_url: returnUrl,
@@ -772,12 +776,35 @@ export function createApp(): Express {
       const paymentInstructions = isDirectMomoPayment
         ? 'Rider pays the Driver directly by MoMo after the trip. HY3N has not initiated or collected a Hubtel payment.'
         : null;
+      let quoteId = input.quoteId;
+      if (!quoteId) {
+        // Legacy installed Rider clients submit route metrics but not a quote
+        // ID. The backend still creates and immediately consumes its own
+        // authoritative quote; it never accepts the old client fare fields.
+        const category = normalizeFareCategory(input.category);
+        const [fareRate, surgeMultiplier] = await Promise.all([
+          getFareRateConfig(category),
+          getActiveSurgeMultiplier(),
+        ]);
+        if (!fareRate.isActive) {
+          res.status(409).json({ success: false, message: 'This ride category is not currently available.' });
+          return;
+        }
+        quoteId = (await createRideQuote(makeRideQuoteSnapshot({
+          riderId: tokenUid,
+          category,
+          route,
+          fareRate,
+          surgeMultiplier,
+        }))).id;
+      }
+      if (!quoteId) throw new Error('Unable to prepare the ride quote.');
 
       // This transaction validates the one-time quote and writes its immutable
       // rate/fare snapshot into the ride. A later dashboard edit, a new surge,
       // or a client-supplied fare cannot change an already-displayed quote.
       const { ride } = await consumeRideQuoteAndCreateRide({
-        quoteId: input.quoteId,
+        quoteId,
         riderId: tokenUid,
         category: input.category,
         route,
