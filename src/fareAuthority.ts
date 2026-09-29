@@ -24,6 +24,15 @@ export type MeteredFareBreakdown = {
   total: number;
 };
 
+export const FREE_WAITING_MINUTES = 3;
+
+export type WaitingCharge = {
+  waitedMinutes: number;
+  chargeableMinutes: number;
+  ratePerMinute: number;
+  waitingFee: number;
+};
+
 function finiteNonNegative(value: unknown, fallback = 0): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : fallback;
@@ -62,6 +71,37 @@ export function getWaitingFee(ride: RideFareFields): number {
 
 export function getFareRate(category: unknown): FareRate {
   return getDefaultFareRate(category);
+}
+
+/**
+ * Waiting runs from the server-recorded Driver arrival to the server-recorded
+ * Start Trip time. A Driver can see a preview but cannot set the final charge.
+ */
+export function getWaitingCharge(input: {
+  category?: unknown;
+  fareRate?: unknown;
+  arrivedAt?: unknown;
+  tripStartedAt?: unknown;
+  freeMinutes?: unknown;
+}): WaitingCharge {
+  const arrivedAtMs = new Date(String(input.arrivedAt || '')).getTime();
+  const tripStartedAtMs = new Date(String(input.tripStartedAt || '')).getTime();
+  if (!Number.isFinite(arrivedAtMs) || !Number.isFinite(tripStartedAtMs) || tripStartedAtMs <= arrivedAtMs) {
+    return { waitedMinutes: 0, chargeableMinutes: 0, ratePerMinute: 0, waitingFee: 0 };
+  }
+  const rate = rateFor({ category: input.category, fareRate: input.fareRate });
+  const suppliedFreeMinutes = Number(input.freeMinutes);
+  const freeMinutes = Number.isFinite(suppliedFreeMinutes) && suppliedFreeMinutes >= 0
+    ? Math.min(suppliedFreeMinutes, 30)
+    : FREE_WAITING_MINUTES;
+  const waitedMinutes = (tripStartedAtMs - arrivedAtMs) / 60_000;
+  const chargeableMinutes = Math.max(0, waitedMinutes - freeMinutes);
+  return {
+    waitedMinutes: Number(waitedMinutes.toFixed(2)),
+    chargeableMinutes: Number(chargeableMinutes.toFixed(2)),
+    ratePerMinute: rate.waitingFeePerMinute,
+    waitingFee: Number((chargeableMinutes * rate.waitingFeePerMinute).toFixed(2)),
+  };
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   getMeteredFareBreakdown,
   getMeteredTripFare,
   getTripDurationMinutes,
+  getWaitingCharge,
 } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 
@@ -62,6 +63,18 @@ describe('metered trip fares', () => {
   it('uses server time only after the recorded Start Trip timestamp', () => {
     expect(getTripDurationMinutes('2026-09-24T15:00:00.000Z', Date.parse('2026-09-24T15:15:00.000Z'))).toBe(15);
     expect(getTripDurationMinutes('not-a-date', Date.now())).toBe(0);
+  });
+
+  it('charges only post-free waiting from server arrival and Start Trip timestamps', () => {
+    const charge = getWaitingCharge({
+      category: 'standard',
+      fareRate: { baseFare: 10, pricePerKm: 3.65, pricePerMinute: 0.43, minFare: 16.5, bookingFee: 2.5, waitingFeePerMinute: 0.6, isActive: true },
+      arrivedAt: '2026-09-29T12:00:00.000Z',
+      tripStartedAt: '2026-09-29T12:08:30.000Z',
+    });
+
+    expect(charge).toEqual({ waitedMinutes: 8.5, chargeableMinutes: 5.5, ratePerMinute: 0.6, waitingFee: 3.3 });
+    expect(getWaitingCharge({ category: 'standard', arrivedAt: 'not-a-date', tripStartedAt: '2026-09-29T12:08:30.000Z' }).waitingFee).toBe(0);
   });
 
   it('caps compatibility distance without ever turning zero into the booking estimate', () => {

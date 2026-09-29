@@ -17,6 +17,7 @@ export type FareRate = {
   pricePerMinute: number;
   minFare: number;
   bookingFee: number;
+  waitingFeePerMinute: number;
   isActive: boolean;
 };
 
@@ -30,12 +31,12 @@ const COLLECTION = 'fare_rate_config';
 const DEFAULT_CATEGORY: FareCategory = 'standard';
 
 const DEFAULTS: Record<FareCategory, FareRateConfig> = {
-  standard: { category: 'standard', label: 'Standard', baseFare: 10, pricePerKm: 3.65, pricePerMinute: 0.43, minFare: 16.5, bookingFee: 2.5, isActive: true },
-  comfort: { category: 'comfort', label: 'Comfort', baseFare: 16.2, pricePerKm: 4.95, pricePerMinute: 0.65, minFare: 27.5, bookingFee: 2.5, isActive: true },
-  kantanka: { category: 'kantanka', label: 'Kantanka', baseFare: 16.2, pricePerKm: 4.95, pricePerMinute: 0.65, minFare: 27.5, bookingFee: 2.5, isActive: true },
-  executive: { category: 'executive', label: 'Executive', baseFare: 27.5, pricePerKm: 6.6, pricePerMinute: 1.1, minFare: 44, bookingFee: 2.5, isActive: true },
-  okada: { category: 'okada', label: 'Okada', baseFare: 5.5, pricePerKm: 1.65, pricePerMinute: 0.33, minFare: 8.8, bookingFee: 2.5, isActive: true },
-  express_delivery: { category: 'express_delivery', label: 'Express Delivery', baseFare: 16.5, pricePerKm: 2.2, pricePerMinute: 0.55, minFare: 22, bookingFee: 2.5, isActive: true },
+  standard: { category: 'standard', label: 'Standard', baseFare: 10, pricePerKm: 3.65, pricePerMinute: 0.43, minFare: 16.5, bookingFee: 2.5, waitingFeePerMinute: 0.55, isActive: true },
+  comfort: { category: 'comfort', label: 'Comfort', baseFare: 16.2, pricePerKm: 4.95, pricePerMinute: 0.65, minFare: 27.5, bookingFee: 2.5, waitingFeePerMinute: 0.88, isActive: true },
+  kantanka: { category: 'kantanka', label: 'Kantanka', baseFare: 16.2, pricePerKm: 4.95, pricePerMinute: 0.65, minFare: 27.5, bookingFee: 2.5, waitingFeePerMinute: 0.88, isActive: true },
+  executive: { category: 'executive', label: 'Executive', baseFare: 27.5, pricePerKm: 6.6, pricePerMinute: 1.1, minFare: 44, bookingFee: 2.5, waitingFeePerMinute: 1.65, isActive: true },
+  okada: { category: 'okada', label: 'Okada', baseFare: 5.5, pricePerKm: 1.65, pricePerMinute: 0.33, minFare: 8.8, bookingFee: 2.5, waitingFeePerMinute: 0.33, isActive: true },
+  express_delivery: { category: 'express_delivery', label: 'Express Delivery', baseFare: 16.5, pricePerKm: 2.2, pricePerMinute: 0.55, minFare: 22, bookingFee: 2.5, waitingFeePerMinute: 0.55, isActive: true },
 };
 
 function finiteInRange(value: unknown, fallback: number, min: number, max: number): number {
@@ -67,6 +68,7 @@ export function normalizeFareRate(candidate: unknown, category: unknown): FareRa
     pricePerMinute: finiteInRange(raw.pricePerMinute ?? raw.per_minute_rate, fallback.pricePerMinute, 0, 50),
     minFare: finiteInRange(raw.minFare ?? raw.minimum_fare, fallback.minFare, 0, 1000),
     bookingFee: finiteInRange(raw.bookingFee ?? raw.booking_fee, fallback.bookingFee, 0, 100),
+    waitingFeePerMinute: finiteInRange(raw.waitingFeePerMinute ?? raw.waiting_fee_per_minute, fallback.waitingFeePerMinute, 0, 100),
     isActive: typeof activeValue === 'boolean' ? activeValue : fallback.isActive,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : (typeof raw.updated_at === 'string' ? raw.updated_at : null),
   };
@@ -101,6 +103,7 @@ export async function setFareRateConfig(category: unknown, input: unknown, updat
     pricePerMinute: rate.pricePerMinute,
     minFare: rate.minFare,
     bookingFee: rate.bookingFee,
+    waitingFeePerMinute: rate.waitingFeePerMinute,
     isActive: rate.isActive,
     updated_by: updatedBy,
   });

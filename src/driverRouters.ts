@@ -3,7 +3,7 @@ import { driverProcedure, router } from './trpc';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
-import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes } from './fareAuthority';
+import { canCompleteTrip, canStartTrip, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes, getWaitingCharge } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
@@ -587,6 +587,8 @@ export const driverTrips = router({
   start: driverProcedure(z.object({
     driverId: z.string(),
     rideId: z.string(),
+    // Kept only so older Driver versions do not fail validation. The server
+    // records its own timestamps and never accepts these values as charges.
     waitingTimeMinutes: z.number().optional(),
     waitingFee: z.number().optional(),
     startLocation: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
@@ -596,6 +598,12 @@ export const driverTrips = router({
     if (ride.pickup_code && !ride.pickup_verified_at) throw new Error('Pickup code must be verified before the trip can start.');
     const tripStartedAt = now();
     const tripMeter = initializeTripMeter(tripStartedAt, input.startLocation);
+    const waitingCharge = getWaitingCharge({
+      category: ride.category,
+      fareRate: ride.fare_rate_snapshot,
+      arrivedAt: ride.driver_arrived_at,
+      tripStartedAt,
+    });
     const updated = withRide(ride, {
       driver_id: input.driverId,
       status: 'in_progress',
@@ -603,11 +611,17 @@ export const driverTrips = router({
       trip_meter: tripMeter,
       trip_distance_source: 'server_gps_meter',
       actual_distance_km: 0,
-      waiting_time_minutes: input.waitingTimeMinutes || 0,
-      waiting_fee: input.waitingFee || 0,
+      waiting_time_minutes: waitingCharge.waitedMinutes,
+      waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
+      waiting_fee_per_minute: waitingCharge.ratePerMinute,
+      waiting_fee: waitingCharge.waitingFee,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
-    await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { waiting_time_minutes: input.waitingTimeMinutes || 0 } });
+    await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
+      waiting_time_minutes: waitingCharge.waitedMinutes,
+      waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
+      waiting_fee: waitingCharge.waitingFee,
+    } });
     await publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
