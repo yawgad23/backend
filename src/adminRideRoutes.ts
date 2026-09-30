@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { requireAdministrator } from './adminAuthorization';
+import { buildAdminTripDetail, rideParticipantIds } from './adminTripDetails';
 
 const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'in_progress']);
 const RECENT_STATUSES = new Set(['completed', 'cancelled']);
@@ -51,6 +52,41 @@ function normalizedRide(ride: Record<string, any>) {
 
 /** Read-only live operations feed for the protected HY3N administrator dashboard. */
 export function registerAdminRideRoutes(app: Express) {
+  /**
+   * Privacy-minimized operational dossier for a single ride. The administrator
+   * must supply both a Firebase identity and a server-issued access-code proof;
+   * Rider/Driver profile data is never placed in the list or map endpoints.
+   */
+  app.get('/api/admin/rides/:rideId/details', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+
+    const rideId = String(request.params.rideId || '').trim();
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(rideId)) {
+      response.status(400).json({ error: 'Trip reference is invalid.' });
+      return;
+    }
+
+    try {
+      const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+      if (!ride) {
+        response.status(404).json({ error: 'Trip not found.' });
+        return;
+      }
+
+      const { riderId, driverId } = rideParticipantIds(ride);
+      const [riderProfile, driverProfile] = await Promise.all([
+        riderId ? adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, riderId) : Promise.resolve(null),
+        driverId ? adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId) : Promise.resolve(null),
+      ]);
+
+      response.json(buildAdminTripDetail(ride, riderProfile, driverProfile));
+    } catch (error) {
+      console.error('[Admin ride details] Failed to load protected trip dossier:', error);
+      response.status(503).json({ error: 'Trip details are temporarily unavailable. Please refresh.' });
+    }
+  });
+
   app.get('/api/admin/rides/live', async (request: Request, response: Response) => {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;
