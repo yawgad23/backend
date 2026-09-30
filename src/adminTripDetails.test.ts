@@ -39,6 +39,17 @@ describe('administrator trip details', () => {
     expect(detail.driver).toBeNull();
   });
 
+  it('uses a legacy nested Driver snapshot when a profile or flat fields are absent', () => {
+    const detail = buildAdminTripDetail({
+      ...ride,
+      driver_name: null,
+      driver_vehicle: null,
+      driver_plate: null,
+      driver: { name: 'Nested Driver', phone: '0244333333', vehicle: 'Honda Civic', plate: 'GR 4321-25' },
+    }, null, null);
+    expect(detail.driver).toMatchObject({ name: 'Nested Driver', phone: '0244333333', vehicle: 'Honda Civic', plate: 'GR 4321-25' });
+  });
+
   it('accepts only safe stored participant identifiers', () => {
     expect(rideParticipantIds({ rider_id: 'rider-1', driver_id: 'driver_1' })).toEqual({ riderId: 'rider-1', driverId: 'driver_1' });
     expect(rideParticipantIds({ rider_id: '../other', driver_id: '<script>' })).toEqual({ riderId: null, driverId: null });

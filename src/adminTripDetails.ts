@@ -44,6 +44,9 @@ function participant(
   profile: RecordLike | null,
 ) {
   const isDriver = role === 'driver';
+  const nestedSnapshot = snapshot[role] && typeof snapshot[role] === 'object'
+    ? snapshot[role] as RecordLike
+    : null;
   const snapshotNameFields = isDriver ? ['driver_name'] : ['rider_name'];
   const snapshotPhoneFields = isDriver ? ['driver_phone'] : ['rider_phone'];
   const snapshotEmailFields = isDriver ? ['driver_email'] : ['rider_email'];
@@ -53,12 +56,15 @@ function participant(
     id,
     name: pickText(profile, ['full_name', 'name', 'display_name'], 120)
       || pickText(snapshot, snapshotNameFields, 120)
+      || pickText(nestedSnapshot, ['full_name', 'name', 'display_name'], 120)
       || null,
     phone: pickText(profile, profilePhoneFields, 40)
       || pickText(snapshot, snapshotPhoneFields, 40)
+      || pickText(nestedSnapshot, profilePhoneFields, 40)
       || null,
     email: pickText(profile, ['email'], 160)
       || pickText(snapshot, snapshotEmailFields, 160)
+      || pickText(nestedSnapshot, ['email'], 160)
       || null,
     accountStatus: pickText(profile, ['account_status'], 32) || null,
     ...(isDriver ? {
@@ -66,13 +72,14 @@ function participant(
         || pickText(snapshot, ['vehicle_type', 'category'], 48)
         || null,
       approvalStatus: pickText(profile, ['approval_status'], 32) || null,
-      vehicle: [
-        pickText(profile, ['vehicle_year'], 12),
-        pickText(profile, ['vehicle_make'], 60),
-        pickText(profile, ['vehicle_model'], 60),
-      ].filter(Boolean).join(' ') || pickText(snapshot, ['driver_vehicle'], 120) || null,
-      plate: pickText(profile, ['license_plate', 'vehicle_plate'], 40)
+        vehicle: [
+          pickText(profile, ['vehicle_year'], 12),
+          pickText(profile, ['vehicle_make'], 60),
+          pickText(profile, ['vehicle_model'], 60),
+        ].filter(Boolean).join(' ') || pickText(snapshot, ['driver_vehicle'], 120) || pickText(nestedSnapshot, ['vehicle'], 120) || null,
+        plate: pickText(profile, ['license_plate', 'vehicle_plate'], 40)
         || pickText(snapshot, ['driver_plate'], 40)
+        || pickText(nestedSnapshot, ['plate', 'license_plate'], 40)
         || null,
     } : {}),
   };
