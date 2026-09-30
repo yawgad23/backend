@@ -11,6 +11,7 @@ import { initializeApp, getApps, cert, type App } from 'firebase-admin/app';
 import { FieldPath, getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
+import { completedTripCountAfterCompletion, driverTripCountProfilePatch } from './driverTripCounts';
 
 // ─── App singleton ────────────────────────────────────────────────────────────
 
@@ -300,6 +301,58 @@ export const adminFirestore = {
         const payload = { ...data, updated_date: new Date().toISOString() };
         transaction.update(ref, payload);
         return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
+   * Completes a started ride and writes the Driver's lifetime trip total from
+   * completed ride records in the same transaction. A profile counter is never
+   * accepted from a mobile client, and a replay cannot increment it twice.
+   */
+  async completeRideAndSynchronizeDriverTripCount(
+    rideId: string,
+    driverId: string,
+    data: Record<string, any>,
+  ): Promise<{ ride: Record<string, any>; totalTrips: number }> {
+    return withFirestoreErrorHandling(`completeRideAndSynchronizeDriverTripCount(${rideId})`, async () => {
+      const db = getDb();
+      const rideRef = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      const driverRidesQuery = db.collection(ADMIN_COLLECTIONS.RIDES).where('driver_id', '==', driverId);
+      const driverProfilesQuery = db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).where('user_id', '==', driverId);
+
+      return db.runTransaction(async (transaction) => {
+        // All reads are performed before writes, as required by Firestore
+        // transactions. The queries make a historical profile counter repair
+        // part of every successful completion without relying on a client.
+        const [rideSnap, driverRidesSnap, driverProfilesSnap] = await Promise.all([
+          transaction.get(rideRef),
+          transaction.get(driverRidesQuery),
+          transaction.get(driverProfilesQuery),
+        ]);
+        if (!rideSnap.exists) throw new Error('Ride not found.');
+
+        const ride = { id: rideSnap.id, ...rideSnap.data() } as Record<string, any>;
+        if (String(ride.status || '').trim().toLowerCase() !== 'in_progress') {
+          throw new Error('This ride is no longer eligible for completion.');
+        }
+        if (String(ride.driver_id || '').trim() !== driverId) {
+          throw new Error('This ride is assigned to another driver.');
+        }
+
+        const historicalRides = driverRidesSnap.docs.map((document) => ({ id: document.id, ...document.data() }));
+        const totalTrips = completedTripCountAfterCompletion(historicalRides, driverId, rideId);
+        const timestamp = new Date().toISOString();
+        const ridePatch = { ...data, driver_id: driverId, updated_date: timestamp };
+        const profilePatch = driverTripCountProfilePatch(driverId, totalTrips, timestamp);
+        const profileIds = new Set<string>([driverId, ...driverProfilesSnap.docs.map((document) => document.id)]);
+
+        transaction.update(rideRef, ridePatch);
+        for (const profileId of profileIds) {
+          transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(profileId), profilePatch, { merge: true });
+        }
+
+        return { ride: { ...ride, ...ridePatch }, totalTrips };
       });
     });
   },

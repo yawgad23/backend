@@ -702,7 +702,7 @@ export const driverTrips = router({
     // Tips are a Rider-controlled post-trip action. Do not allow a Driver
     // completion request to add one to the amount charged or earned.
     const tip = 0;
-    const updated = withRide(ride, {
+    const completionPatch = {
       driver_id: input.driverId,
       status: 'completed',
       quoted_fare: quotedFare,
@@ -724,8 +724,12 @@ export const driverTrips = router({
         compatibility_distance_used: !hasServerMeteredDistance,
       },
       completed_at: completedAt,
-    });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    };
+    const { ride: updated, totalTrips } = await adminFirestore.completeRideAndSynchronizeDriverTripCount(
+      input.rideId,
+      input.driverId,
+      completionPatch,
+    );
     // An ActivityKit end event must complete before this request returns. A
     // fire-and-forget promise can be terminated with the function invocation,
     // leaving a completed trip visible on the Rider's Lock Screen.
@@ -740,6 +744,7 @@ export const driverTrips = router({
         final_fare: finalFare,
         actual_distance_km: actualDistanceKm,
         actual_duration_minutes: meteredDurationMinutes,
+        driver_total_trips: totalTrips,
         fare_authority: 'server_metered_distance_and_time',
       },
     });
@@ -749,7 +754,7 @@ export const driverTrips = router({
     // from racing this request and sending the same receipt twice.
     await sendCompletedRideReceipt(input.rideId, updated);
 
-    return { success: true, ride: updated, driverEarnings: finalFare };
+    return { success: true, ride: updated, driverEarnings: finalFare, totalTrips };
   }),
   cancel: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string().trim().min(1).max(500) })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
