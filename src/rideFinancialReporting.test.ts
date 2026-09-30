@@ -72,6 +72,29 @@ describe('ride financial reporting', () => {
     });
   });
 
+  it('keeps a legacy quote estimate separate from completed ride charges', () => {
+    const record = financialRideRecord({
+      id: 'legacy-quote-only',
+      status: 'completed',
+      fare_estimate: 88,
+      tip_amount: 4,
+    });
+    expect(record).toMatchObject({
+      fareSource: 'legacy_quote_estimate',
+      fareAmount: 0,
+      legacyQuoteEstimate: 88,
+      tipAmount: 0,
+      totalRideCharge: 0,
+    });
+    expect(summarizeRideFinancials([record!])).toMatchObject({
+      completedRides: 1,
+      confirmedCompletedRides: 0,
+      legacyQuoteEstimateRides: 1,
+      totalRideCharge: 0,
+      legacyQuoteEstimateTotal: 88,
+    });
+  });
+
   it('omits non-terminal rides from financial reports', () => {
     expect(financialRideRecord({ id: 'active', status: 'in_progress', fare: 999 })).toBeNull();
   });

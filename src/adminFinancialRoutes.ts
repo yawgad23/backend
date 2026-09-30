@@ -46,6 +46,7 @@ export function registerAdminFinancialRoutes(app: Express) {
         filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
         accountingBasis: {
           fareAmount: 'Persisted completed final fare; current rides are server-authoritative, while legacy stored values are preserved for reconciliation. It includes waiting fee and excludes any separately stored tip.',
+          legacyQuoteEstimate: 'A historical quote/estimate with no persisted final fare. It is shown separately and excluded from completed ride charges until a final amount is available.',
           waitingFee: 'Component of fareAmount and totalRideCharge; do not add it a second time.',
           totalRideCharge: 'Completed fare amount plus tip, where a server-confirmed tip exists.',
           cancellationPenalty: 'Separate cancellation fee only. Current pre-start cancellation policy records zero.',
