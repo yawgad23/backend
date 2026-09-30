@@ -6,6 +6,21 @@ import { buildAdminTripDetail, rideParticipantIds } from './adminTripDetails';
 const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'in_progress']);
 const RECENT_STATUSES = new Set(['completed', 'cancelled']);
 
+function rideTimestamp(ride: Record<string, any>): number {
+  const value = ride.updated_date || ride.updated_at || ride.completed_at || ride.cancelled_at || ride.created_date || ride.created_at;
+  if (value && typeof value === 'object' && typeof value.toDate === 'function') return value.toDate().getTime();
+  const timestamp = new Date(String(value || '')).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+async function operationalRideRecords() {
+  // Firestore excludes legacy records that lack a field used by `orderBy`.
+  // Read the bounded server-only collection without an order, then sort the
+  // normalized operational view in memory by its first available timestamp.
+  const records = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 1_000);
+  return records.sort((left, right) => rideTimestamp(right) - rideTimestamp(left));
+}
+
 function coordinate(value: unknown): number | null {
   const number = Number(value);
   return Number.isFinite(number) && number >= -90 && number <= 90 ? number : null;
@@ -35,7 +50,7 @@ function normalizedRide(ride: Record<string, any>) {
 
   return {
     id: String(ride.id),
-    status: String(ride.status || '').toLowerCase(),
+    status: String(ride.status || '').toLowerCase().replace(/-/g, '_'),
     rider_name: String(ride.rider_name || ride.rider?.name || 'Rider'),
     driver_name: ride.driver_name || ride.driver?.name || null,
     vehicle_type: ride.vehicle_type || ride.category || null,
@@ -91,7 +106,7 @@ export function registerAdminRideRoutes(app: Express) {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;
     try {
-      const records = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'updated_date', 'desc', 500);
+      const records = await operationalRideRecords();
       const rides = records.map(normalizedRide);
       response.json({
         active: rides.filter((ride) => ACTIVE_STATUSES.has(ride.status)),
