@@ -1,4 +1,4 @@
-import { getAuthoritativeFinalFare, getTripChargeTotal, getWaitingFee } from './fareAuthority';
+import { getAuthoritativeFinalFare, getWaitingFee } from './fareAuthority';
 
 export type RideFinancialRecord = {
   id: string;
@@ -50,6 +50,26 @@ function stringOrNull(value: unknown): string | null {
 }
 
 /**
+ * Current rides persist a server-rounded final amount. Some legacy completed
+ * records retain pesewa amounts, so reports preserve the recorded amount for
+ * reconciliation rather than applying the current display-rounding rule again.
+ */
+function recordedFinalFare(ride: Record<string, any>): number {
+  const storedFinal = Number(ride.final_fare);
+  if (Number.isFinite(storedFinal) && storedFinal > 0) return reportMoney(storedFinal);
+
+  const legacyFare = Number(ride.fare);
+  if (Number.isFinite(legacyFare) && legacyFare >= 0) return reportMoney(legacyFare);
+
+  return reportMoney(getAuthoritativeFinalFare(ride));
+}
+
+function recordedTripChargeTotal(ride: Record<string, any>, fareAmount: number): number {
+  const tip = nonNegative(ride.tip_amount);
+  return reportMoney(fareAmount + tip);
+}
+
+/**
  * Converts only completed and cancelled server ride records into finance-safe
  * report rows. `totalRideCharge` already includes `waitingFee`; reports must
  * display the latter as a component and never add it to this total again.
@@ -63,8 +83,8 @@ export function financialRideRecord(ride: Record<string, any>): RideFinancialRec
   const chargeableWaitingMinutes = status === 'completed' ? nonNegative(ride.waiting_chargeable_minutes) : 0;
   const waitingFeeRate = status === 'completed' ? nonNegative(ride.waiting_fee_per_minute) : 0;
   const tipAmount = status === 'completed' ? nonNegative(ride.tip_amount) : 0;
-  const fareAmount = status === 'completed' ? getAuthoritativeFinalFare(ride) : 0;
-  const totalRideCharge = status === 'completed' ? getTripChargeTotal(ride) : 0;
+  const fareAmount = status === 'completed' ? recordedFinalFare(ride) : 0;
+  const totalRideCharge = status === 'completed' ? recordedTripChargeTotal(ride, fareAmount) : 0;
   // Current cancellation policy writes zero. Preserve a valid historic value
   // for audit instead of silently changing historical books.
   const cancellationPenalty = status === 'cancelled' ? reportMoney(nonNegative(ride.cancellation_fee)) : 0;

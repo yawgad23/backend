@@ -30,7 +30,9 @@ export function registerAdminFinancialRoutes(app: Express) {
     }
 
     try {
-      const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'updated_date', 'desc', 1_000);
+      // Do not order by `updated_date`: legacy terminal rides without that
+      // field are excluded by Firestore ordering and must remain auditable.
+      const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 1_000);
       const records = rides
         .map(financialRideRecord)
         .filter((record): record is NonNullable<typeof record> => record !== null)
@@ -43,7 +45,7 @@ export function registerAdminFinancialRoutes(app: Express) {
         requestedBy: adminEmail,
         filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
         accountingBasis: {
-          fareAmount: 'Completed server-authoritative final fare; includes waiting fee and excludes any separately stored tip.',
+          fareAmount: 'Persisted completed final fare; current rides are server-authoritative, while legacy stored values are preserved for reconciliation. It includes waiting fee and excludes any separately stored tip.',
           waitingFee: 'Component of fareAmount and totalRideCharge; do not add it a second time.',
           totalRideCharge: 'Completed fare amount plus tip, where a server-confirmed tip exists.',
           cancellationPenalty: 'Separate cancellation fee only. Current pre-start cancellation policy records zero.',

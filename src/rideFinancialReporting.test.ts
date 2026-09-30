@@ -58,6 +58,20 @@ describe('ride financial reporting', () => {
     });
   });
 
+  it('preserves a legacy recorded final fare instead of applying current fare rounding again', () => {
+    const record = financialRideRecord({
+      id: 'legacy-pesewa-fare',
+      status: 'completed',
+      final_fare: 42.5,
+      tip_amount: 1.25,
+    });
+    expect(record).toMatchObject({
+      fareAmount: 42.5,
+      tipAmount: 1.25,
+      totalRideCharge: 43.75,
+    });
+  });
+
   it('omits non-terminal rides from financial reports', () => {
     expect(financialRideRecord({ id: 'active', status: 'in_progress', fare: 999 })).toBeNull();
   });
