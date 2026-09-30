@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { adminFirestore, ADMIN_COLLECTIONS } from "./firebaseAdmin";
 import { transactionStatusCheck } from "./hubtel";
+import { hubtelPaymentState, isHubtelStatusResponseAccepted, readHubtelPaymentDetails } from './hubtelPaymentStatus';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 
 export function registerCronRoutes(app: Express) {
@@ -70,17 +71,19 @@ export function registerCronRoutes(app: Express) {
             stats.commissionsChecked++;
             try {
               const response = await transactionStatusCheck(ref);
-              if (response && response.responseCode === "0000" && response.data) {
-                const status = response.data.status;
-                const transactionId = response.data.transactionId;
-                if (status === 'Paid') {
+              if (response && isHubtelStatusResponseAccepted(response)) {
+                const details = readHubtelPaymentDetails(response);
+                const status = details.status || 'Pending';
+                const transactionId = details.transactionId;
+                const state = hubtelPaymentState(response);
+                if (state === 'paid') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, record.id, {
                     status: 'paid',
                     hubtel_transaction_id: transactionId,
                     hubtel_status: status,
                   });
                   stats.commissionsUpdated++;
-                } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
+                } else if (state === 'failed') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, record.id, {
                     status: 'failed',
                     hubtel_transaction_id: transactionId,
@@ -122,16 +125,18 @@ export function registerCronRoutes(app: Express) {
             stats.walletsChecked++;
             try {
               const response = await transactionStatusCheck(ref);
-              if (response && response.responseCode === "0000" && response.data) {
-                const status = response.data.status;
-                const transactionId = response.data.transactionId;
-                if (status === 'Paid') {
+              if (response && isHubtelStatusResponseAccepted(response)) {
+                const details = readHubtelPaymentDetails(response);
+                const status = details.status || 'Pending';
+                const transactionId = details.transactionId;
+                const state = hubtelPaymentState(response);
+                if (state === 'paid') {
                   const settlement = await adminFirestore.settleWalletTopUp(ref, {
                     transactionId,
                     status,
                   });
                   if (settlement.settled) stats.walletsUpdated++;
-                } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
+                } else if (state === 'failed') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, record.id, {
                     status: 'failed',
                     hubtel_status: status,
@@ -172,17 +177,19 @@ export function registerCronRoutes(app: Express) {
             stats.paymentsChecked++;
             try {
               const response = await transactionStatusCheck(ref);
-              if (response && response.responseCode === "0000" && response.data) {
-                const status = response.data.status;
-                const transactionId = response.data.transactionId;
-                if (status === 'Paid') {
+              if (response && isHubtelStatusResponseAccepted(response)) {
+                const details = readHubtelPaymentDetails(response);
+                const status = details.status || 'Pending';
+                const transactionId = details.transactionId;
+                const state = hubtelPaymentState(response);
+                if (state === 'paid') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.PAYMENTS, record.id, {
                     status: 'paid',
                     hubtel_transaction_id: transactionId,
-                    hubtel_message: 'Success',
+                    hubtel_message: status,
                   });
                   stats.paymentsUpdated++;
-                } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
+                } else if (state === 'failed') {
                   await adminFirestore.update(ADMIN_COLLECTIONS.PAYMENTS, record.id, {
                     status: 'failed',
                     hubtel_transaction_id: transactionId,

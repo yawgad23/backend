@@ -125,7 +125,7 @@ export function registerPublicPaymentsApi(app: Express) {
 
     const input = parsed.data;
     const clientReference = generateReference();
-    console.log(`[PublicPaymentsApi] charge request: ${clientReference} amount=${input.amount} msisdn=${input.customerMsisdn} name=${input.customerName} network=${input.network || "mtn"}`);
+    console.log('[PublicPaymentsApi] Starting authenticated Direct Receive request.');
     try {
       const existing = await adminFirestore.list(ADMIN_COLLECTIONS.PAYMENTS, { reference: clientReference });
       if (existing.length > 0) {
@@ -164,7 +164,7 @@ export function registerPublicPaymentsApi(app: Express) {
       });
 
       await adminFirestore.update(ADMIN_COLLECTIONS.PAYMENTS, record.id, {
-        status: result.success ? "pending" : "failed",
+        status: result.success ? (result.status === 'paid' ? 'paid' : 'pending') : "failed",
         hubtel_transaction_id: result.transactionId || null,
         hubtel_message: result.message || null,
       });
@@ -181,7 +181,7 @@ export function registerPublicPaymentsApi(app: Express) {
 
       res.status(202).json({
         success: true,
-        status: "pending",
+        status: result.status === 'paid' ? 'paid' : 'pending',
         transactionId: result.transactionId || null,
         clientReference,
         amount: input.amount,

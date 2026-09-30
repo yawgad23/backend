@@ -12,6 +12,8 @@ import { generateReference } from "./publicPaymentsApi";
 import { driverOperations, driverTrips, driverSafety, driverFinance, driverPerformance, driverScheduling, driverSupport, sendCompletedRideReceipt } from "./driverRouters";
 import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } from "./platformFee";
 import { getTripChargeTotal } from "./fareAuthority";
+import { hubtelPaymentState, isHubtelStatusResponseAccepted, readHubtelPaymentDetails } from './hubtelPaymentStatus';
+import { isDriverFeeBypassActive } from './driverFeeBypass';
 
 function hasDriverFeeTestBypass(driverId: string) {
   return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
@@ -99,18 +101,12 @@ export const appRouter = router({
         const response = await transactionStatusCheck(input.clientReference);
 
         // Sync to Firestore if the status check succeeded
-        if (response && response.responseCode === "0000" && response.data) {
-          const hubtelTx = response.data;
+        if (response && isHubtelStatusResponseAccepted(response)) {
+          const hubtelTx = readHubtelPaymentDetails(response);
           const ref = hubtelTx.clientReference || input.clientReference;
-          const status = hubtelTx.status;
+          const status = hubtelTx.status || 'Pending';
           const transactionId = hubtelTx.transactionId;
-
-          let dbStatus: 'paid' | 'failed' | 'processing' = 'processing';
-          if (status === 'Paid') {
-            dbStatus = 'paid';
-          } else if (status === 'Failed' || status === 'Expired' || status === 'Cancelled' || status === 'Declined') {
-            dbStatus = 'failed';
-          }
+          const dbStatus = hubtelPaymentState(response);
 
           // 1. Try Daily Commission
           const commissionRecords = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
@@ -131,7 +127,6 @@ export const appRouter = router({
 
             if (walletRecords && walletRecords.length > 0) {
               const txRecord = walletRecords[0];
-              const userId = txRecord.user_id;
 
               if (dbStatus === 'paid') {
                 // Hubtel can retry callbacks while the mobile app also polls.
@@ -230,7 +225,7 @@ export const appRouter = router({
             momo_network: input.momoNetwork || 'mtn-gh',
             hubtel_transaction_id: result.transactionId,
             hubtel_reference: clientReference,
-            status: 'processing',
+            status: result.status === 'paid' ? 'paid' : 'processing',
             charge_method: 'hubtel_auto',
             submitted_at: new Date().toISOString(),
           });
@@ -383,6 +378,7 @@ export const appRouter = router({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
+        const today = new Date().toISOString().split('T')[0];
         // The mobile app can be opened for supervised dispatch testing without
         // charging a driver. Production remains gated unless Railway explicitly
         // sets DRIVER_PLATFORM_FEE_GATE_ENABLED=false.
@@ -391,6 +387,11 @@ export const appRouter = router({
         }
         if (hasDriverFeeTestBypass(input.driverId)) {
           return { isPaid: true, testAccessGranted: true };
+        }
+
+        const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId);
+        if (isDriverFeeBypassActive(driverProfile, today)) {
+          return { isPaid: true, adminFeeBypassGranted: true, bypassDate: today };
         }
 
         // Fetch all commission records for this driver to process in memory
@@ -536,16 +537,24 @@ export const appRouter = router({
           return { success: false, message: result.message || 'Top-up failed', reference, txId: txRecord.id };
         }
 
-        await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
-          status: 'processing',
-          hubtel_transaction_id: result.transactionId || null,
-          hubtel_status: result.status || 'Pending',
-          hubtel_message: result.message || null,
-        });
+        if (result.status === 'paid') {
+          await adminFirestore.settleWalletTopUp(reference, {
+            transactionId: result.transactionId,
+            status: 'Completed',
+            message: result.message,
+          });
+        } else {
+          await adminFirestore.update(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, txRecord.id, {
+            status: 'processing',
+            hubtel_transaction_id: result.transactionId || null,
+            hubtel_status: result.status || 'Pending',
+            hubtel_message: result.message || null,
+          });
+        }
 
         return {
           success: true,
-          status: 'processing',
+          status: result.status === 'paid' ? 'completed' : 'processing',
           message: 'USSD prompt sent. Please approve on your phone.',
           reference,
           txId: txRecord.id,

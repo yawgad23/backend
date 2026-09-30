@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 import { requireAdministrator } from './adminAuthorization';
 import { accountIsDisabled, accountStatusPatch, type AccountStatus } from './accountLifecycle';
+import { buildDriverFeeBypass, revokeDriverFeeBypass, visibleDriverFeeBypass } from './driverFeeBypass';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -66,6 +67,9 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
       reactivatedAt: profile.account_reactivated_at || null,
       reactivatedBy: profile.account_reactivated_by || null,
     },
+    driverFeeBypass: accountRole === 'driver'
+      ? visibleDriverFeeBypass(profile, new Date().toISOString().slice(0, 10))
+      : null,
     documents: accountRole === 'driver'
       ? {
           profilePhoto: profile.profile_photo_url || profile.photo_url || profile.avatar_url || null,
@@ -323,6 +327,75 @@ export function registerAdminAccountRoutes(app: Express) {
     } catch (error) {
       console.error('[Admin accounts] Failed to update Driver approval:', error);
       response.status(503).json({ error: 'Driver approval could not be updated.' });
+    }
+  });
+
+  /**
+   * A narrow, auditable fee-gate waiver for supervised operations. It does not
+   * create a paid commission, alter the configured GH₵ fee, or bypass Hubtel
+   * confirmation for a real collection; it only permits this approved Driver
+   * to pass today's gate while the waiver is active.
+   */
+  app.patch('/api/admin/drivers/:userId/fee-bypass', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    const userId = validUserId(request.params.userId);
+    if (!userId) {
+      response.status(400).json({ error: 'Invalid Driver account.' });
+      return;
+    }
+
+    const enabled = request.body?.enabled === true;
+    const reason = String(request.body?.reason || '').trim();
+    if (enabled && !reason) {
+      response.status(400).json({ error: 'Enter a reason for the temporary Driver fee bypass.' });
+      return;
+    }
+    if (reason.length > 500) {
+      response.status(400).json({ error: 'The bypass reason must be 500 characters or fewer.' });
+      return;
+    }
+
+    try {
+      const profiles = await profilesForUser('driver', userId);
+      if (!profiles.length) {
+        response.status(404).json({ error: 'Driver account was not found.' });
+        return;
+      }
+      const now = new Date().toISOString();
+      const date = now.slice(0, 10);
+      const current = visibleDriverFeeBypass(profiles[0], date);
+      const bypass = enabled
+        ? buildDriverFeeBypass(date, reason, adminEmail, now)
+        : revokeDriverFeeBypass(current, adminEmail, now);
+      await Promise.all(profiles.map((profile) => adminFirestore.set(
+        ADMIN_COLLECTIONS.DRIVER_PROFILES,
+        String(profile.id),
+        { user_id: userId, driver_fee_bypass: bypass },
+      )));
+      // The Driver fee gate reads the UID-keyed canonical profile. Keep it in
+      // sync with any retained legacy profile documents above.
+      await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, userId, {
+        user_id: userId,
+        driver_fee_bypass: bypass,
+      });
+      await adminFirestore.create('account_lifecycle_events', {
+        user_id: userId,
+        account_role: 'driver',
+        action: enabled ? 'driver_fee_bypass_granted' : 'driver_fee_bypass_revoked',
+        actor_type: 'administrator',
+        actor_id: adminEmail,
+        fee_bypass_date: date,
+        fee_bypass_reason: enabled ? bypass.reason : null,
+      });
+      response.json({
+        success: true,
+        bypass: enabled ? bypass : null,
+        account: normalizedProfile({ ...newest(profiles[0], profiles[profiles.length - 1]), driver_fee_bypass: bypass }, 'driver'),
+      });
+    } catch (error) {
+      console.error('[Admin Driver fee bypass] Failed to update fee gate bypass:', error);
+      response.status(503).json({ error: 'The Driver fee bypass could not be updated. Please try again.' });
     }
   });
 

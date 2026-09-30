@@ -206,6 +206,11 @@ export function createApp(): Express {
   app.use((req, res, next) => {
     const start = Date.now();
     const { method, originalUrl } = req;
+    const paymentRequestPath = originalUrl.startsWith('/api/trpc/wallet.topup')
+      || originalUrl.startsWith('/api/trpc/commission.charge')
+      || originalUrl.startsWith('/api/public/v1/payments/charge')
+      || originalUrl.startsWith('/api/card-checkout')
+      || originalUrl.startsWith('/api/hubtel/');
 
     const headers = { ...req.headers };
     if (headers.authorization) {
@@ -214,7 +219,9 @@ export function createApp(): Express {
     if (headers['x-hy3n-admin-access']) {
       headers['x-hy3n-admin-access'] = "[REDACTED]";
     }
-    const requestBody = originalUrl.startsWith('/api/notifications/push-device')
+    const requestBody = paymentRequestPath
+      ? '[REDACTED_PAYMENT_REQUEST]'
+      : originalUrl.startsWith('/api/notifications/push-device')
       ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
       : originalUrl.startsWith('/api/live-activities/token')
         ? {
@@ -273,6 +280,7 @@ export function createApp(): Express {
           accessProof: parsedBody.accessProof ? '[REDACTED]' : undefined,
         };
       }
+      if (paymentRequestPath) parsedBody = '[REDACTED_PAYMENT_RESPONSE]';
 
       console.log(`[API Response] <<< ${method} ${originalUrl} | Status: ${res.statusCode} (Duration: ${Date.now() - start}ms)`, JSON.stringify({
         timestamp: new Date().toISOString(),
