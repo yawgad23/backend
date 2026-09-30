@@ -1,7 +1,9 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
 import { sendRideChatPush } from "./pushNotifications";
+import { runDailyFinancialReconciliation } from './financialReconciliation';
 
 // Force deploy: 2026-07-18T17:10:00Z
 // Same unhandledRejection/uncaughtException risk as src/index.ts applies here
@@ -72,5 +74,28 @@ export const chatMessagePush = onDocumentCreated(
   async (event) => {
     if (!event.data) return;
     await sendRideChatPush(event.params.messageId, event.data.data());
+  },
+);
+
+/**
+ * Daily, read-only reconciliation of confirmed ride charges against wallet
+ * settlement records. The job writes one aggregate audit per Ghana calendar
+ * day and is idempotent across scheduler retries.
+ */
+export const dailyFinancialLedgerWalletReconciliation = onSchedule(
+  {
+    schedule: '15 2 * * *',
+    timeZone: 'Africa/Accra',
+    region: 'europe-west1',
+    timeoutSeconds: 540,
+    memory: '256MiB',
+    maxInstances: 1,
+    retryCount: 3,
+    maxRetrySeconds: 3_600,
+    minBackoffSeconds: 60,
+    maxBackoffSeconds: 600,
+  },
+  async () => {
+    await runDailyFinancialReconciliation();
   },
 );

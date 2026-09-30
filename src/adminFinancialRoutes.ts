@@ -18,6 +18,33 @@ function reportDate(record: { completedAt: string | null; cancelledAt: string | 
  * server-authoritative ride charge and separately exposes its waiting component.
  */
 export function registerAdminFinancialRoutes(app: Express) {
+  app.get('/api/admin/financials/reconciliation/latest', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+
+    try {
+      const audits = await adminFirestore.list(
+        ADMIN_COLLECTIONS.FINANCIAL_RECONCILIATION_AUDITS,
+        {},
+        'runDate',
+        'desc',
+        1,
+      );
+      response.json({
+        generatedAt: new Date().toISOString(),
+        schedule: {
+          frequency: 'daily',
+          localTime: '02:15',
+          timeZone: 'Africa/Accra',
+        },
+        audit: audits[0] || null,
+      });
+    } catch (error) {
+      console.error('[Admin financials] Failed to read daily reconciliation audit:', error);
+      response.status(503).json({ error: 'Daily reconciliation status is temporarily unavailable. Please refresh.' });
+    }
+  });
+
   app.get('/api/admin/financials/rides', async (request: Request, response: Response) => {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;

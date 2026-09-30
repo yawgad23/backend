@@ -8,7 +8,7 @@
  */
 
 import { initializeApp, getApps, cert, type App } from 'firebase-admin/app';
-import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { FieldPath, getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 
@@ -86,6 +86,7 @@ export const ADMIN_COLLECTIONS = {
   PUSH_DEVICES: 'push_devices',
   PUSH_DELIVERIES: 'push_deliveries',
   PASSWORD_RESET_LIMITS: 'password_reset_limits',
+  FINANCIAL_RECONCILIATION_AUDITS: 'financial_reconciliation_audits',
 };
 
 // ─── Firestore helpers ────────────────────────────────────────────────────────
@@ -136,6 +137,43 @@ export const adminFirestore = {
       if (limitNum) q = q.limit(limitNum);
       const snap = await q.get();
       return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
+  },
+
+  /**
+   * Reads an entire server-owned collection in stable pages for an audit job.
+   * The explicit cap prevents a silently partial reconciliation when data grows.
+   */
+  async listAll(
+    collectionName: string,
+    pageSize = 500,
+    maxRecords = 50_000,
+  ): Promise<{ records: Array<Record<string, any>>; truncated: boolean }> {
+    return withFirestoreErrorHandling(`listAll(${collectionName})`, async () => {
+      const records: Array<Record<string, any>> = [];
+      let lastDocument: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+
+      while (records.length < maxRecords) {
+        const remaining = maxRecords - records.length;
+        let query: FirebaseFirestore.Query = getDb()
+          .collection(collectionName)
+          .orderBy(FieldPath.documentId())
+          .limit(Math.min(pageSize, remaining));
+        if (lastDocument) query = query.startAfter(lastDocument);
+        const snapshot = await query.get();
+        if (snapshot.empty) return { records, truncated: false };
+        records.push(...snapshot.docs.map((document) => ({ id: document.id, ...document.data() })));
+        lastDocument = snapshot.docs[snapshot.docs.length - 1];
+        if (snapshot.size < Math.min(pageSize, remaining)) return { records, truncated: false };
+      }
+
+      let nextQuery: FirebaseFirestore.Query = getDb()
+        .collection(collectionName)
+        .orderBy(FieldPath.documentId())
+        .limit(1);
+      if (lastDocument) nextQuery = nextQuery.startAfter(lastDocument);
+      const nextPage = await nextQuery.get();
+      return { records, truncated: !nextPage.empty };
     });
   },
 
