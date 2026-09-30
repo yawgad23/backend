@@ -8,6 +8,7 @@ import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
 import { isOnlineWithFreshLocation, profilePresencePatch } from './driverPresence';
+import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
   approvalRequiredError,
   driverProfileForUserId,
@@ -226,12 +227,23 @@ function hasDriverFeeTestBypass(driverId: string) {
     .includes(driverId);
 }
 
-async function hasCurrentPlatformFee(driverId: string) {
+/** True only when the Driver has a confirmed fee or a current auditable admin waiver. */
+export function canPassDriverPlatformFeeGate(
+  driverProfile: Record<string, any> | null | undefined,
+  hasConfirmedFee: boolean,
+  date = dateKey(),
+) {
+  return hasConfirmedFee || isDriverFeeBypassActive(driverProfile, date);
+}
+
+async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<string, any> | null) {
   // Keep the offer listener aligned with the app's payment gate. When a test
   // environment explicitly disables the gate, offers are still allowed; in
   // production, a paid commission remains valid for 24 hours.
   if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') return true;
   if (hasDriverFeeTestBypass(driverId)) return true;
+  const driverProfile = knownProfile ?? await profile(driverId);
+  if (canPassDriverPlatformFeeGate(driverProfile, false)) return true;
   const records = await adminFirestore.list(
     ADMIN_COLLECTIONS.DAILY_COMMISSION,
     { driver_id: driverId },
@@ -239,12 +251,13 @@ async function hasCurrentPlatformFee(driverId: string) {
     'desc',
     100,
   );
-  return records.some((record: any) => {
+  const hasConfirmedFee = records.some((record: any) => {
     if (record.status !== 'paid' && record.status !== 'confirmed' && record.status !== 'completed') return false;
     const paidAt = record.submitted_at || record.admin_override_at || record.created_date || record.date;
     const paidTime = new Date(paidAt || 0).getTime();
     return Number.isFinite(paidTime) && Date.now() - paidTime < 24 * 60 * 60 * 1000;
   });
+  return canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee);
 }
 
 const CATEGORY_ALIASES: Record<string, string> = {
@@ -454,7 +467,7 @@ export const driverTrips = router({
   availableOffers: driverProcedure(driverIdInput).query(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
     if (!isApprovedDriverProfile(driverProfile) || !isOnline(driverProfile)) return { offers: [] };
-    if (!(await hasCurrentPlatformFee(input.driverId))) return { offers: [] };
+    if (!(await hasCurrentPlatformFee(input.driverId, driverProfile))) return { offers: [] };
 
     const preferences = driverProfile.driver_preferences || {};
     const radiusKm = Number(preferences.pickupRadiusKm ?? driverProfile.pickup_radius_km ?? 10);
@@ -484,7 +497,7 @@ export const driverTrips = router({
     const driverProfile = await profile(input.driverId);
     if (!isApprovedDriverProfile(driverProfile)) throw approvalRequiredError();
     if (!isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
-    if (input.decision === 'accept' && !(await hasCurrentPlatformFee(input.driverId))) {
+    if (input.decision === 'accept' && !(await hasCurrentPlatformFee(input.driverId, driverProfile))) {
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }
     const ride = await rideFor(input.driverId, input.rideId);
