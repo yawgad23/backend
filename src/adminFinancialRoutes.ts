@@ -1,0 +1,60 @@
+import type { Express, Request, Response } from 'express';
+import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
+import { requireAdministrator } from './adminAuthorization';
+import { financialRideRecord, summarizeRideFinancials } from './rideFinancialReporting';
+
+function queryDate(value: unknown): string | undefined {
+  const date = String(value || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined;
+}
+
+function reportDate(record: { completedAt: string | null; cancelledAt: string | null; updatedAt: string | null }): string {
+  return String(record.completedAt || record.cancelledAt || record.updatedAt || '').slice(0, 10);
+}
+
+/**
+ * Provides a protected, accounting-oriented view of completed and cancelled
+ * rides. It does not claim that a cash fare has been collected; it reports the
+ * server-authoritative ride charge and separately exposes its waiting component.
+ */
+export function registerAdminFinancialRoutes(app: Express) {
+  app.get('/api/admin/financials/rides', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+
+    const dateFrom = queryDate(request.query.dateFrom);
+    const dateTo = queryDate(request.query.dateTo);
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      response.status(400).json({ error: 'The start date must be before the end date.' });
+      return;
+    }
+
+    try {
+      const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'updated_date', 'desc', 1_000);
+      const records = rides
+        .map(financialRideRecord)
+        .filter((record): record is NonNullable<typeof record> => record !== null)
+        .filter((record) => {
+          const date = reportDate(record);
+          return (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo);
+        });
+      response.json({
+        generatedAt: new Date().toISOString(),
+        requestedBy: adminEmail,
+        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+        accountingBasis: {
+          fareAmount: 'Completed server-authoritative final fare; includes waiting fee and excludes any separately stored tip.',
+          waitingFee: 'Component of fareAmount and totalRideCharge; do not add it a second time.',
+          totalRideCharge: 'Completed fare amount plus tip, where a server-confirmed tip exists.',
+          cancellationPenalty: 'Separate cancellation fee only. Current pre-start cancellation policy records zero.',
+          collectionStatus: 'Ride charges are not proof of payment collection. Reconcile payment-provider records separately.',
+        },
+        summary: summarizeRideFinancials(records),
+        records,
+      });
+    } catch (error) {
+      console.error('[Admin financials] Failed to read ride financial ledger:', error);
+      response.status(503).json({ error: 'Ride financial records are temporarily unavailable. Please refresh.' });
+    }
+  });
+}

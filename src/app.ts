@@ -29,6 +29,7 @@ import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
 import { registerAdminAccountRoutes } from "./adminAccountRoutes";
 import { registerAdminSettingsRoutes } from "./adminSettingsRoutes";
 import { registerAdminRideRoutes } from "./adminRideRoutes";
+import { registerAdminFinancialRoutes } from "./adminFinancialRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { registerPasswordResetRoutes } from './passwordReset';
@@ -298,6 +299,7 @@ export function createApp(): Express {
   registerAdminAccountRoutes(app);
   registerAdminSettingsRoutes(app);
   registerAdminRideRoutes(app);
+  registerAdminFinancialRoutes(app);
   registerAdminNotificationRoutes(app);
   registerPasswordResetRoutes(app);
 
