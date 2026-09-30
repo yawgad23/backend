@@ -14,7 +14,7 @@ import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
-import { canCancelRideBeforeTrip, cancelledRideNoChargePatch, roundGhsFare } from "./fareAuthority";
+import { canCancelRideBeforeTrip, cancelledRideNoChargePatch, requiresRiderCancellationReason, roundGhsFare } from "./fareAuthority";
 import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } from './fareConfig';
 import {
   consumeRideQuoteAndCreateRide,
@@ -80,7 +80,7 @@ const riderRideRequestInput = z.object({
 });
 
 const riderRideCancellationInput = z.object({
-  reason: z.string().trim().min(1).max(500),
+  reason: z.string().trim().min(1).max(500).optional(),
 });
 
 const riderQuoteInput = z.object({
@@ -951,7 +951,7 @@ export function createApp(): Express {
     const rideId = String(req.params.rideId || '').trim();
     const parsed = riderRideCancellationInput.safeParse(req.body);
     if (!rideId || !parsed.success) {
-      res.status(400).json({ success: false, message: 'Please provide a cancellation reason.' });
+      res.status(400).json({ success: false, message: 'Ride cancellation details are invalid.' });
       return;
     }
     try {
@@ -964,11 +964,16 @@ export function createApp(): Express {
         res.status(409).json({ success: false, message: 'A trip that has started or ended cannot be cancelled. Contact support for a fare dispute.' });
         return;
       }
+      const reason = parsed.data.reason?.trim();
+      if (requiresRiderCancellationReason(ride) && !reason) {
+        res.status(422).json({ success: false, code: 'cancellation_reason_required', message: 'Please select a cancellation reason after a Driver has been assigned.' });
+        return;
+      }
       const cancelledAt = new Date().toISOString();
       const updated = await adminFirestore.updateRideIfStatus(
         rideId,
         ['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued'],
-        cancelledRideNoChargePatch({ cancelledBy: 'rider', reason: parsed.data.reason, cancelledAt }),
+        cancelledRideNoChargePatch({ cancelledBy: 'rider', reason: reason || 'Cancelled before Driver assignment', cancelledAt }),
       );
       await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
         ride_id: rideId,

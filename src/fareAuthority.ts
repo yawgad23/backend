@@ -172,6 +172,22 @@ export function canCancelRideBeforeTrip(ride: RideFareFields): boolean {
     .includes(String(ride.status || '').trim().toLowerCase());
 }
 
+/**
+ * A Rider may withdraw a still-searching request without giving a reason.
+ * Once a Driver is assigned, retain a concise cancellation reason for the
+ * Driver-facing operational record. Status is included as a defensive fallback
+ * for legacy records whose driver identifier was not persisted correctly.
+ */
+export function requiresRiderCancellationReason(ride: RideFareFields): boolean {
+  const status = String(ride.status || '').trim().toLowerCase();
+  const embeddedDriver = ride.driver;
+  const embeddedDriverId = embeddedDriver && typeof embeddedDriver === 'object'
+    ? (embeddedDriver as Record<string, unknown>).id
+    : undefined;
+  const driverId = String(ride.driver_id ?? ride.driverId ?? embeddedDriverId ?? '').trim();
+  return Boolean(driverId) || ['matched', 'driver_arriving', 'driver_arrived', 'driver_queued'].includes(status);
+}
+
 /** Terminal cancellation records are deliberately non-chargeable. */
 export function cancelledRideNoChargePatch(input: {
   cancelledBy: 'rider' | 'driver' | 'system';

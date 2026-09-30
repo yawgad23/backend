@@ -8,6 +8,7 @@ import {
   getMeteredTripFare,
   getTripDurationMinutes,
   getWaitingCharge,
+  requiresRiderCancellationReason,
 } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 
@@ -101,6 +102,14 @@ describe('metered trip fares', () => {
     expect(canCancelRideBeforeTrip({ status: 'in_progress', trip_started_at: '2026-09-29T12:00:00.000Z' })).toBe(false);
     expect(canCancelRideBeforeTrip({ status: 'completed' })).toBe(false);
     expect(canCancelRideBeforeTrip({ status: 'cancelled' })).toBe(false);
+  });
+
+  it('requires a Rider cancellation reason only after a Driver is connected', () => {
+    expect(requiresRiderCancellationReason({ status: 'searching', driver_id: null })).toBe(false);
+    expect(requiresRiderCancellationReason({ status: 'searching', driver_id: 'driver-1' })).toBe(true);
+    expect(requiresRiderCancellationReason({ status: 'matched', driver_id: null })).toBe(true);
+    expect(requiresRiderCancellationReason({ status: 'driver_arriving', driver: { id: 'driver-2' } })).toBe(true);
+    expect(requiresRiderCancellationReason({ status: 'in_progress' })).toBe(false);
   });
 });
 
