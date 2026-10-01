@@ -1,8 +1,8 @@
 import { onRequest } from "firebase-functions/v2/https";
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
-import { sendRideChatPush } from "./pushNotifications";
+import { sendRideChatPush, sendRideStatusPush } from "./pushNotifications";
 import { runDailyFinancialReconciliation } from './financialReconciliation';
 
 // Force deploy: 2026-07-18T17:10:00Z
@@ -74,6 +74,22 @@ export const chatMessagePush = onDocumentCreated(
   async (event) => {
     if (!event.data) return;
     await sendRideChatPush(event.params.messageId, event.data.data());
+  },
+);
+
+/**
+ * Ride state transitions are server-owned notifications. The handler only
+ * dispatches when the persisted status actually changes, so GPS/location and
+ * fare updates cannot generate extra Rider alerts.
+ */
+export const rideStatusPush = onDocumentUpdated(
+  {
+    document: 'rides/{rideId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    if (!event.data) return;
+    await sendRideStatusPush(event.params.rideId, event.data.before.data(), event.data.after.data());
   },
 );
 

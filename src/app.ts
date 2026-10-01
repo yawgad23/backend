@@ -13,7 +13,7 @@ import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
-import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from "./firebaseAdmin";
+import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth, getAdminDb } from "./firebaseAdmin";
 import { canCancelRideBeforeTrip, cancelledRideNoChargePatch, requiresRiderCancellationReason, roundGhsFare } from "./fareAuthority";
 import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } from './fareConfig';
 import {
@@ -35,6 +35,8 @@ import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { registerPasswordResetRoutes } from './passwordReset';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
+import { driverProfileForUserId } from './driverApproval';
+import { authorizeRiderDriverRating, driverRatingSummary } from './riderDriverRatings';
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -81,6 +83,12 @@ const riderRideRequestInput = z.object({
 
 const riderRideCancellationInput = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
+});
+
+const riderDriverRatingInput = z.object({
+  rating: z.number().int().min(1).max(5),
+  feedback: z.string().trim().max(2000).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(8).optional(),
 });
 
 const riderQuoteInput = z.object({
@@ -996,6 +1004,101 @@ export function createApp(): Express {
     } catch (error) {
       console.error('[Ride Dispatch] Unable to cancel Rider request:', error);
       res.status(409).json({ success: false, message: 'This ride is no longer eligible for cancellation.' });
+    }
+  });
+
+  /**
+   * Records one Rider-to-Driver rating after a completed trip. The authenticated
+   * Rider identity, ride ownership, completion state, and prior rating are all
+   * checked server-side; a mobile client never updates Driver reputation itself.
+   */
+  app.post('/api/rides/:rideId/rate-driver', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in before rating your Driver.' });
+      return;
+    }
+
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again before rating your Driver.' });
+      return;
+    }
+
+    const rideId = String(req.params.rideId || '').trim();
+    const parsed = riderDriverRatingInput.safeParse(req.body);
+    if (!rideId || !parsed.success) {
+      res.status(400).json({ success: false, message: 'Please choose a rating from 1 to 5 and try again.' });
+      return;
+    }
+
+    try {
+      const submittedAt = new Date().toISOString();
+      const rideRef = getAdminDb().collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      const rated = await getAdminDb().runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(rideRef);
+        const ride = snapshot.exists ? { id: snapshot.id, ...snapshot.data() } as Record<string, unknown> : null;
+        const decision = authorizeRiderDriverRating(ride, riderId);
+        if (!decision.ok) {
+          throw Object.assign(new Error(decision.message), { ratingDecision: decision });
+        }
+        transaction.update(rideRef, {
+          rider_rating: parsed.data.rating,
+          rider_feedback: parsed.data.feedback || '',
+          rider_feedback_tags: parsed.data.tags || [],
+          rated_at: submittedAt,
+          updated_date: submittedAt,
+        });
+        return { driverId: decision.driverId };
+      });
+
+      const warnings: string[] = [];
+      let driverRating = 0;
+      let ratingCount = 0;
+      try {
+        const driverRides = await adminFirestore.list(
+          ADMIN_COLLECTIONS.RIDES,
+          { driver_id: rated.driverId },
+          null,
+          'desc',
+          500,
+        );
+        const summary = driverRatingSummary(driverRides);
+        driverRating = summary.average;
+        ratingCount = summary.count;
+        const profile = await driverProfileForUserId(rated.driverId);
+        if (!profile?.id) {
+          warnings.push('driver_profile_not_found');
+        } else {
+          await adminFirestore.update(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, {
+            rating: summary.average,
+            rating_count: summary.count,
+            rating_updated_at: submittedAt,
+          });
+        }
+      } catch (error) {
+        console.error('[Ratings] Driver rating summary refresh failed after primary write:', error);
+        warnings.push('driver_rating_summary_not_refreshed');
+      }
+
+      res.status(201).json({
+        success: true,
+        rating: parsed.data.rating,
+        driverRating,
+        ratingCount,
+        warnings,
+      });
+    } catch (error) {
+      const decision = (error as { ratingDecision?: { status?: number; message?: string } }).ratingDecision;
+      if (decision?.status && decision.message) {
+        res.status(decision.status).json({ success: false, message: decision.message });
+        return;
+      }
+      console.error('[Ratings] Unable to save Rider Driver rating:', error);
+      res.status(503).json({ success: false, message: 'Your rating could not be submitted right now. Please try again.' });
     }
   });
 

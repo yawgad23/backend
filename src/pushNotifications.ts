@@ -100,6 +100,7 @@ async function pushDevicesForRecipient(uid: string, role: PushRole): Promise<Pus
 }
 
 async function recordDelivery(input: {
+  type?: 'chat_message' | 'ride_status';
   messageId: string;
   rideId: string;
   recipientUid: string;
@@ -108,7 +109,7 @@ async function recordDelivery(input: {
   ticket?: ExpoTicket;
 }) {
   await adminFirestore.create(ADMIN_COLLECTIONS.PUSH_DELIVERIES, {
-    type: 'chat_message',
+    type: input.type || 'chat_message',
     message_id: input.messageId,
     ride_id: input.rideId,
     recipient_uid: input.recipientUid,
@@ -119,6 +120,40 @@ async function recordDelivery(input: {
     provider_error: input.ticket?.details?.error || input.ticket?.message || null,
     sent_at: isoNow(),
   });
+}
+
+export type RideStatusPush = {
+  title: string;
+  body: string;
+  status: string;
+};
+
+function normalizedStatus(value: unknown): string {
+  return cleanText(value, '').toLowerCase();
+}
+
+/** Builds a privacy-safe Rider push only for an actionable ride-status change. */
+export function buildRideStatusPush(ride: Record<string, any>): RideStatusPush | null {
+  const status = normalizedStatus(ride.status);
+  const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your Driver').slice(0, 60);
+  const destination = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_address, 'your destination').slice(0, 80);
+
+  switch (status) {
+    case 'matched':
+      return { status, title: 'Driver found', body: `${driverName} accepted your ride request.` };
+    case 'driver_arriving':
+      return { status, title: 'Driver is on the way', body: `${driverName} is heading to your pickup.` };
+    case 'driver_arrived':
+      return { status, title: 'Driver has arrived', body: `${driverName} is waiting at your pickup.` };
+    case 'in_progress':
+      return { status, title: 'Trip started', body: `You are on the way to ${destination}.` };
+    case 'completed':
+      return { status, title: 'Trip complete', body: 'Your trip is complete. Rate your Driver in HY3N.' };
+    case 'cancelled':
+      return { status, title: 'Ride cancelled', body: 'This ride is no longer active. Open HY3N to book another ride.' };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -203,6 +238,80 @@ export async function sendRideChatPush(messageId: string, rawMessage: Record<str
     return { attempted: devices.length, sent };
   } catch (error) {
     console.error('[Push] Expo chat notification dispatch failed', { messageId, rideId, error });
+    return { attempted: devices.length, sent: 0 };
+  }
+}
+
+/**
+ * Delivers a status transition to the Rider from the server. This avoids a
+ * backgrounded mobile app being solely responsible for scheduling its own
+ * status alert after a Firestore listener fires.
+ */
+export async function sendRideStatusPush(
+  rideId: string,
+  before: Record<string, any>,
+  after: Record<string, any>,
+) {
+  const previousStatus = normalizedStatus(before.status);
+  const nextStatus = normalizedStatus(after.status);
+  if (!rideId || !nextStatus || previousStatus === nextStatus) return { attempted: 0, sent: 0 };
+
+  const notification = buildRideStatusPush(after);
+  const riderId = cleanText(after.rider_id || after.riderId || after.rider?.id, '');
+  if (!notification || !riderId) return { attempted: 0, sent: 0 };
+
+  const devices = await pushDevicesForRecipient(riderId, 'rider');
+  if (devices.length === 0) return { attempted: 0, sent: 0 };
+
+  const payload = devices.map((device) => ({
+    to: device.token,
+    title: notification.title,
+    body: notification.body,
+    sound: 'default',
+    priority: 'high',
+    channelId: 'rides',
+    data: { type: 'ride_status', rideId, status: notification.status },
+  }));
+
+  try {
+    const response = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({})) as { data?: ExpoTicket[]; errors?: unknown[] };
+    if (!response.ok || !Array.isArray(result.data)) {
+      console.error('[Push] Expo rejected ride status notifications', { rideId, status: nextStatus, responseStatus: response.status, errors: result.errors || null });
+      return { attempted: devices.length, sent: 0 };
+    }
+
+    let sent = 0;
+    await Promise.all(result.data.map(async (ticket, index) => {
+      const device = devices[index];
+      if (!device) return;
+      await recordDelivery({
+        type: 'ride_status',
+        messageId: `ride-status:${rideId}:${nextStatus}`,
+        rideId,
+        recipientUid: riderId,
+        recipientRole: 'rider',
+        device,
+        ticket,
+      });
+      if (ticket.status === 'ok') {
+        sent += 1;
+      } else if (ticket.details?.error === 'DeviceNotRegistered') {
+        await retirePushDevice(device, 'DeviceNotRegistered');
+      }
+    }));
+    console.info('[Push] Ride status notification dispatch complete', { rideId, status: nextStatus, attempted: devices.length, sent });
+    return { attempted: devices.length, sent };
+  } catch (error) {
+    console.error('[Push] Ride status notification dispatch failed', { rideId, status: nextStatus, error });
     return { attempted: devices.length, sent: 0 };
   }
 }

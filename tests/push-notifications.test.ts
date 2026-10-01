@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isExpoPushToken } from '../src/pushNotifications';
+import { buildRideStatusPush, isExpoPushToken } from '../src/pushNotifications';
 
 describe('Expo push token validation', () => {
   it('accepts Expo and Exponent project tokens', () => {
@@ -11,5 +11,18 @@ describe('Expo push token validation', () => {
     expect(isExpoPushToken('')).toBe(false);
     expect(isExpoPushToken('not-a-push-token')).toBe(false);
     expect(isExpoPushToken('ExpoPushToken[]')).toBe(false);
+  });
+
+  it('builds privacy-safe messages for Rider-visible status transitions only', () => {
+    expect(buildRideStatusPush({ status: 'driver_arriving', driver_name: 'Kofi' })).toEqual({
+      status: 'driver_arriving',
+      title: 'Driver is on the way',
+      body: 'Kofi is heading to your pickup.',
+    });
+    expect(buildRideStatusPush({ status: 'completed' })).toMatchObject({
+      status: 'completed',
+      title: 'Trip complete',
+    });
+    expect(buildRideStatusPush({ status: 'searching' })).toBeNull();
   });
 });
