@@ -8,6 +8,7 @@ import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
+import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverPayoutRequest } from './driverCashCollectionPolicy';
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
@@ -861,6 +862,7 @@ export const driverFinance = router({
       const completedRides = completedRidesForPeriod(rides, period);
       const gross = completedRides.reduce((sum, ride) => sum + numericRideFare(ride), 0);
       const tips = completedRides.reduce((sum, ride) => sum + numericTip(ride), 0);
+      const directCollected = directDriverCollectionTotal(completedRides, numericRideFare, numericTip);
       // `daily_commissions` has no driver_id/date composite index in
       // production. A no-order Driver-only read remains index-safe.
       const fees = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, null, 'desc', 100);
@@ -883,13 +885,17 @@ export const driverFinance = router({
       return {
         totals: {
           gross,
-          net: total - dailyPlatformFee,
+          // Fares are paid directly to the Driver. The platform fee is a
+          // separate MoMo charge and must never be silently deducted here.
+          net: total,
           tips,
           dailyPlatformFee,
           dailyFeeDays: periodFees.length,
           tripCount: completedRides.length,
           averagePerTrip: completedRides.length ? total / completedRides.length : 0,
-          availableBalance: total - dailyPlatformFee,
+          directCollected,
+          // No completed trip amount is held by HY3N for Driver withdrawal.
+          availableBalance: 0,
         },
         dailyFee: {
           amount: currentFee.amount,
@@ -904,13 +910,14 @@ export const driverFinance = router({
         },
         goals: [],
         goal,
+        payout: disabledDriverPayoutSummary(),
         payoutMethod: (await profile(input.driverId))?.payout_method || null,
       };
     }),
   listIncentives: driverProcedure(driverIdInput).query(async () => ({ incentives: await adminFirestore.list('driver_incentives', { status: 'active' }, 'created_date', 'desc', 50) })),
   saveGoal: driverProcedure(z.object({ driverId: z.string(), period: z.enum(['today', 'week', 'month']), targetAmount: z.number().min(0) })).mutation(async ({ input }) => ({ success: true, goal: await adminFirestore.set('driver_goals', `${input.driverId}_${input.period}`, input) })),
   savePayoutMethod: driverProcedure(z.object({ driverId: z.string(), provider: z.string(), accountNumber: z.string(), accountHolder: z.string() })).mutation(async ({ input }) => { const digits = input.accountNumber.replace(/\D/g, ''); const method = { provider: input.provider, accountHolder: input.accountHolder, accountNumberMasked: `${digits.slice(0, 3)}****${digits.slice(-2)}`, updatedAt: now() }; await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, { payout_method: method, momo_provider: input.provider, momo_account_holder: input.accountHolder, momo_number_masked: method.accountNumberMasked }); return { success: true, payoutMethod: method }; }),
-  requestPayout: driverProcedure(z.object({ driverId: z.string(), amount: z.number().min(10) })).mutation(async ({ input }) => { const request = await adminFirestore.create('driver_payouts', { ...input, status: 'pending', requested_at: now() }); return { success: true, request }; }),
+  requestPayout: driverProcedure(z.object({ driverId: z.string(), amount: z.number().min(10) })).mutation(async () => rejectDriverPayoutRequest()),
 });
 
 export const driverPerformance = router({ getOverview: driverProcedure(driverIdInput).query(async ({ input }) => { const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: input.driverId }, 'created_date', 'desc', 500); const completed = rides.filter(r => r.status === 'completed').length; const cancelled = rides.filter(r => r.cancelled_by === 'driver').length; const offered = rides.filter(r => r.driver_id === input.driverId).length; const ratings = rides.map(r => Number(r.driver_rating)).filter(n => Number.isFinite(n) && n > 0); return { metrics: { acceptanceRate: offered ? Number((completed / offered * 100).toFixed(1)) : 0, cancellationRate: rides.length ? Number((cancelled / rides.length * 100).toFixed(1)) : 0, rating: ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0, ratingsCount: ratings.length, completedTrips: completed } }; }) });
