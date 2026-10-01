@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendDriverLocationLiveActivityUpdates } from './liveActivities';
+import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
 import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
 import { mapSafeDriverPresenceMetadata } from './driverPresence';
 
@@ -111,6 +112,15 @@ export function registerDriverLocationRoutes(app: Express) {
       // Location persistence remains successful if Apple/FCM is delayed.
       console.error('[LiveActivity] Background Driver location push failed:', error);
     }
+
+    // Route metrics are server-owned and refreshed independently of the
+    // presence write. A routing outage must never reject a valid GPS update.
+    void refreshDriverActiveRideRoutes(driverId, {
+      latitude: input.latitude,
+      longitude: input.longitude,
+    }).catch((error) => {
+      console.error('[RoadRoute] Driver route refresh failed:', error);
+    });
 
     res.json({ success: true, location });
   });

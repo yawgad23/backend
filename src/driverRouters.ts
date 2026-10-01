@@ -6,6 +6,7 @@ import { getDailyPlatformFee } from './platformFee';
 import { canCancelRideBeforeTrip, canCompleteTrip, canStartTrip, cancelledRideNoChargePatch, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes, getWaitingCharge } from './fareAuthority';
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
+import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
@@ -395,6 +396,12 @@ export const driverOperations = router({
     await setDriverProfilePresence(input.driverId, patch);
     void sendDriverLocationLiveActivityUpdates(input.driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
       console.error('[LiveActivity] Foreground Driver location push failed:', error);
+    });
+    void refreshDriverActiveRideRoutes(input.driverId, {
+      latitude: input.latitude,
+      longitude: input.longitude,
+    }).catch((error) => {
+      console.error('[RoadRoute] Driver route refresh failed:', error);
     });
     return { success: true, location };
   }),
