@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { driverProcedure, router } from './trpc';
-import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
+import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth, getAdminDb } from './firebaseAdmin';
 import { sendTripReceiptEmail } from './email';
 import { getDailyPlatformFee } from './platformFee';
 import { canCancelRideBeforeTrip, canCompleteTrip, canStartTrip, cancelledRideNoChargePatch, getCappedCompatibilityDistanceKm, getMeteredFareBreakdown, getMeteredTripFare, getQuotedRideFare, getTripChargeTotal, getTripDurationMinutes, getWaitingCharge } from './fareAuthority';
@@ -15,6 +15,7 @@ import {
   isApprovedDriverProfile,
 } from './driverApproval';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
+import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -29,6 +30,23 @@ async function rideFor(driverId: string, rideId: string) {
   if (!ride) throw new Error('Ride not found.');
   if (ride.driver_id && ride.driver_id !== driverId) throw new Error('This ride is assigned to another driver.');
   return ride;
+}
+
+/** Return only the Rider reputation fields that are relevant to a Driver offer. */
+async function riderReputation(riderId: unknown) {
+  const uid = String(riderId || '').trim();
+  if (!uid) return { rating: null, ratingCount: 0 };
+  const directProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, uid);
+  const profileByUserId = directProfile
+    ? null
+    : (await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: uid }, null, 'desc', 1))[0];
+  const profileData = directProfile || profileByUserId;
+  const rating = Number(profileData?.rating);
+  const ratingCount = Math.max(0, Math.floor(Number(profileData?.rating_count) || 0));
+  return {
+    rating: Number.isFinite(rating) && rating >= 1 && rating <= 5 && ratingCount > 0 ? rating : null,
+    ratingCount,
+  };
 }
 
 function withRide(ride: Record<string, any>, patch: Record<string, any>): Record<string, any> {
@@ -411,15 +429,23 @@ export const driverTrips = router({
     foundItem: z.string().max(2000).optional(),
     safetyReport: z.string().max(2000).optional(),
   })).mutation(async ({ input }) => {
-    const ride = await rideFor(input.driverId, input.rideId);
-    const rideDriverId = String(ride.driver_id || ride.driverId || ride.driver?.id || '');
-    const rideRiderId = String(ride.rider_id || ride.riderId || ride.rider?.id || '');
-    if (rideDriverId !== input.driverId || rideRiderId !== input.riderId) throw new Error('This ride is not eligible for rating.');
-    if (ride.status !== 'completed') throw new Error('Complete the ride before submitting a rating.');
-
-    // This primary write is the rating submission itself. It must never be
-    // blocked by a secondary, non-critical average-rating refresh.
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, { driver_rating: input.rating, driver_feedback: input.feedback || '', driver_rated_at: now() });
+    // Store exactly one Driver rating for a completed matched ride. A
+    // transaction prevents repeated taps or retries from inflating the Rider
+    // reputation count.
+    const ratedAt = now();
+    const rideRef = getAdminDb().collection(ADMIN_COLLECTIONS.RIDES).doc(input.rideId);
+    await getAdminDb().runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(rideRef);
+      const ride = snapshot.exists ? { id: snapshot.id, ...snapshot.data() } as Record<string, unknown> : null;
+      const decision = authorizeDriverRiderRating(ride, input.driverId, input.riderId);
+      if (!decision.ok) throw Object.assign(new Error(decision.message), { ratingDecision: decision });
+      transaction.update(rideRef, {
+        driver_rating: input.rating,
+        driver_feedback: input.feedback || '',
+        driver_rated_at: ratedAt,
+        updated_date: ratedAt,
+      });
+    });
 
     const warnings: string[] = [];
     try {
@@ -428,17 +454,14 @@ export const driverTrips = router({
       // rider's completed rides without an order and calculate locally. This
       // keeps the flow compatible with existing production data.
       const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: input.riderId }, null, 'desc', 500);
-      const rated = riderRides
-        .filter((item) => item.status === 'completed')
-        .map((item) => Number(item.driver_rating || 0))
-        .filter((value) => value > 0);
+      const summary = riderRatingSummary(riderRides);
       const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: input.riderId }, null, 'desc', 5);
       const riderProfile = riderProfiles[0] || await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, input.riderId);
-      if (riderProfile && rated.length) {
+      if (riderProfile && summary.count) {
         await adminFirestore.update(
           ADMIN_COLLECTIONS.RIDER_PROFILES,
           riderProfile.id,
-          { rating: Number((rated.reduce((sum, value) => sum + value, 0) / rated.length).toFixed(2)), rating_count: rated.length },
+          { rating: summary.average, rating_count: summary.count, rating_updated_at: ratedAt },
         );
       }
     } catch (error) {
@@ -476,7 +499,7 @@ export const driverTrips = router({
     if (!driverLocation) return { offers: [] };
 
     const recentRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
-    const offers = recentRides
+    const nearbyOffers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
       .filter((ride) => !isRideSearchExpired(ride))
       .filter((ride) => !Array.isArray(ride.declined_by_driver_ids) || !ride.declined_by_driver_ids.includes(input.driverId))
@@ -485,6 +508,15 @@ export const driverTrips = router({
       .filter((ride) => ride.pickup_distance_km !== null && ride.pickup_distance_km <= radiusKm)
       .sort((left, right) => Number(left.pickup_distance_km) - Number(right.pickup_distance_km))
       .slice(0, 5);
+    const offers = await Promise.all(nearbyOffers.map(async (ride) => {
+      const rideRecord = ride as Record<string, unknown>;
+      const reputation = await riderReputation(rideRecord.rider_id || rideRecord.riderId);
+      return {
+        ...rideRecord,
+        rider_rating: reputation.rating,
+        rider_rating_count: reputation.ratingCount,
+      };
+    }));
     return { offers };
   }),
   activateQueued: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), completedRideId: z.string().optional() })).mutation(async ({ input }) => {
@@ -542,6 +574,7 @@ export const driverTrips = router({
     const acceptedAt = now();
     const isDirectMomoRide = ride.payment_method === 'mobile_money' || ride.payment === 'mobile_money';
     const momoNumber = isDirectMomoRide ? directMomoNumber(driverProfile.momo_number) : null;
+    const reputation = await riderReputation(ride.rider_id || ride.riderId);
     const driver = {
       id: input.driverId,
       name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
@@ -572,6 +605,11 @@ export const driverTrips = router({
       // verified count flat for older Rider clients that read flat ride fields.
       driver_total_trips: driver.total_trips,
       driver_rating_count: driver.rating_count,
+      // A completed-trip-only aggregate from the canonical Rider profile. The
+      // Driver app can display it while offline during the accepted trip, but
+      // a Driver cannot edit the profile or its reputation fields.
+      rider_rating: reputation.rating,
+      rider_rating_count: reputation.ratingCount,
       driver_momo_number: momoNumber,
       driver_momo_network: momoNumber ? (driverProfile.momo_network || '') : null,
       status,
