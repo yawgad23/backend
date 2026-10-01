@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth } from './firebaseAdmin';
 import { sendDriverLocationLiveActivityUpdates } from './liveActivities';
 import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
+import { mapSafeDriverPresenceMetadata } from './driverPresence';
 
 const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
@@ -97,6 +98,7 @@ export function registerDriverLocationRoutes(app: Express) {
       license_plate: approvedProfile?.license_plate || approvedProfile?.vehicle_plate || '',
       vehicle_plate: approvedProfile?.vehicle_plate || approvedProfile?.license_plate || '',
       rating: Number(approvedProfile?.rating || 0),
+      ...mapSafeDriverPresenceMetadata({ ...approvedProfile, ...patch }),
       ...patch,
     });
 

@@ -7,7 +7,7 @@ import { canCancelRideBeforeTrip, canCompleteTrip, canStartTrip, cancelledRideNo
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
-import { isOnlineWithFreshLocation, profilePresencePatch } from './driverPresence';
+import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
   approvalRequiredError,
@@ -215,6 +215,7 @@ async function setDriverProfilePresence(driverId: string, patch: Record<string, 
     license_plate: canonical?.license_plate || canonical?.vehicle_plate || '',
     vehicle_plate: canonical?.vehicle_plate || canonical?.license_plate || '',
     rating: Number(canonical?.rating || 0),
+    ...mapSafeDriverPresenceMetadata({ ...canonical, ...patch }),
     ...patch,
   });
 }
@@ -349,7 +350,7 @@ export const driverOperations = router({
     const old = previous.destination;
     if (input.destination && (!old || old.label !== input.destination.label || old.latitude !== input.destination.latitude || old.longitude !== input.destination.longitude)) uses = Math.max(0, uses - 1);
     const preferences = { ...previous, rideCategories: input.rideCategories, pickupRadiusKm: input.pickupRadiusKm, autoAccept: input.autoAccept, destination: input.destination || null, destinationUsesRemaining: uses };
-    await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId, { driver_preferences: preferences, ride_categories: input.rideCategories, pickup_radius_km: input.pickupRadiusKm, auto_accept: input.autoAccept });
+    await setDriverProfilePresence(input.driverId, { driver_preferences: preferences, ride_categories: input.rideCategories, pickup_radius_km: input.pickupRadiusKm, auto_accept: input.autoAccept });
     return { preferences, destinationUsesRemaining: uses };
   }),
   clearDestinationFilter: driverProcedure(driverIdInput).mutation(async ({ input }) => {
