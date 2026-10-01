@@ -548,7 +548,7 @@ export const driverTrips = router({
       phone: driverProfile.phone || driverProfile.phone_number || '',
       photo_url: driverProfile.avatar_url || driverProfile.photo_url || '',
       rating: Number(driverProfile.rating ?? 5),
-      total_trips: Number(driverProfile.total_trips ?? 0),
+      total_trips: Number(driverProfile.total_trips ?? driverProfile.total_rides ?? 0),
       vehicle_make: vehicleMake,
       vehicle_model: vehicleModel,
       vehicle_colour: vehicleColour,
@@ -567,6 +567,9 @@ export const driverTrips = router({
       driver_plate: vehiclePlate,
       driver_colour: vehicleColour,
       driver_colour_hex: vehicleColourHex,
+      // The nested snapshot is the primary Rider contract; retain the same
+      // verified count flat for older Rider clients that read flat ride fields.
+      driver_total_trips: driver.total_trips,
       driver_momo_number: momoNumber,
       driver_momo_network: momoNumber ? (driverProfile.momo_network || '') : null,
       status,
