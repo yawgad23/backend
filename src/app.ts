@@ -36,7 +36,12 @@ import { registerPasswordResetRoutes } from './passwordReset';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
 import { driverProfileForUserId } from './driverApproval';
-import { authorizeRiderDriverRating, driverRatingSummary } from './riderDriverRatings';
+import {
+  authorizeRiderDriverRating,
+  driverRatingSummary,
+  riderDriverRatingRejectionPayload,
+  type RiderDriverRatingRejection,
+} from './riderDriverRatings';
 import { deliveryDetailsInput, deliveryRideFields, isExpressDeliveryCategory } from './deliveryBooking';
 import {
   checkHubtelCardCheckout,
@@ -1117,9 +1122,9 @@ export function createApp(): Express {
         warnings,
       });
     } catch (error) {
-      const decision = (error as { ratingDecision?: { status?: number; message?: string } }).ratingDecision;
+      const decision = (error as { ratingDecision?: RiderDriverRatingRejection }).ratingDecision;
       if (decision?.status && decision.message) {
-        res.status(decision.status).json({ success: false, message: decision.message });
+        res.status(decision.status).json(riderDriverRatingRejectionPayload(decision));
         return;
       }
       console.error('[Ratings] Unable to save Rider Driver rating:', error);

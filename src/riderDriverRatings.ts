@@ -2,6 +2,8 @@ export type RiderDriverRatingDecision =
   | { ok: true; driverId: string }
   | { ok: false; status: 403 | 404 | 409; code: string; message: string };
 
+export type RiderDriverRatingRejection = Extract<RiderDriverRatingDecision, { ok: false }>;
+
 type RideRecord = Record<string, unknown>;
 
 function text(value: unknown): string {
@@ -49,6 +51,15 @@ export function authorizeRiderDriverRating(
   }
 
   return { ok: true, driverId };
+}
+
+/** Safe, structured response used by the authenticated HTTP route. */
+export function riderDriverRatingRejectionPayload(decision: RiderDriverRatingRejection) {
+  return {
+    success: false as const,
+    code: decision.code,
+    message: decision.message,
+  };
 }
 
 export function driverRatingSummary(rides: RideRecord[]): { average: number; count: number } {
