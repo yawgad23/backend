@@ -13,6 +13,11 @@ describe('Rider Driver rating authorization', () => {
     expect(authorizeRiderDriverRating(completedRide, 'rider-1')).toEqual({ ok: true, driverId: 'driver-1' });
   });
 
+  it('allows a completed legacy ride that identifies its Rider as user_id', () => {
+    const { rider_id: _ignored, ...legacyRide } = completedRide;
+    expect(authorizeRiderDriverRating({ ...legacyRide, user_id: 'rider-1' }, 'rider-1')).toEqual({ ok: true, driverId: 'driver-1' });
+  });
+
   it('rejects other Riders, unfinished rides, and repeat ratings', () => {
     expect(authorizeRiderDriverRating(completedRide, 'rider-2')).toMatchObject({ ok: false, status: 403, code: 'ride_not_owned' });
     expect(authorizeRiderDriverRating({ ...completedRide, status: 'in_progress' }, 'rider-1')).toMatchObject({ ok: false, status: 409, code: 'ride_not_completed' });

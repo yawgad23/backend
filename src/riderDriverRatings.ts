@@ -30,7 +30,7 @@ export function authorizeRiderDriverRating(
     return { ok: false, status: 404, code: 'ride_not_found', message: 'Ride not found.' };
   }
 
-  const riderId = text(ride.rider_id ?? ride.riderId ?? (ride.rider as RideRecord | undefined)?.id);
+  const riderId = text(ride.rider_id ?? ride.riderId ?? ride.user_id ?? (ride.rider as RideRecord | undefined)?.id);
   if (!riderId || riderId !== text(authenticatedRiderId)) {
     return { ok: false, status: 403, code: 'ride_not_owned', message: 'You can only rate a Driver from your own completed ride.' };
   }
