@@ -33,6 +33,9 @@ export type RideQuoteSnapshot = {
   route_fingerprint: string;
   distance_km: number;
   duration_minutes: number;
+  /** Server-calculated road geometry shown while the Rider waits for a Driver. */
+  route_points?: Array<[number, number]>;
+  route_source?: 'google_routes_traffic' | 'osrm';
   fare_rate_snapshot: FareRateConfig;
   surge_multiplier: number;
   quote_breakdown: MeteredFareBreakdown;
@@ -82,6 +85,8 @@ export function makeRideQuoteSnapshot(input: {
   riderId: string;
   category: unknown;
   route: QuoteRoute;
+  routePoints?: Array<[number, number]>;
+  routeSource?: 'google_routes_traffic' | 'osrm';
   fareRate: unknown;
   surgeMultiplier: unknown;
   now?: number;
@@ -103,6 +108,16 @@ export function makeRideQuoteSnapshot(input: {
     route_fingerprint: routeFingerprint({ ...input.route, ...metrics }),
     distance_km: metrics.distanceKm,
     duration_minutes: metrics.durationMinutes,
+    route_points: Array.isArray(input.routePoints)
+      ? input.routePoints
+        .filter((point): point is [number, number] => Array.isArray(point)
+          && point.length >= 2
+          && Number.isFinite(Number(point[0]))
+          && Number.isFinite(Number(point[1])))
+        .map((point) => [Number(point[0]), Number(point[1])] as [number, number])
+        .slice(0, 180)
+      : [],
+    ...(input.routeSource ? { route_source: input.routeSource } : {}),
     fare_rate_snapshot: rate,
     surge_multiplier: breakdown.surgeMultiplier,
     quote_breakdown: breakdown,
@@ -262,6 +277,19 @@ export async function consumeRideQuoteAndCreateRide(input: {
     }
 
     const now = new Date().toISOString();
+    const quoteRoutePoints = Array.isArray(validation.quote.route_points)
+      ? validation.quote.route_points
+          .filter((point): point is [number, number] => Array.isArray(point)
+            && point.length >= 2
+            && Number.isFinite(Number(point[0]))
+            && Number.isFinite(Number(point[1])))
+          .map((point) => [Number(point[0]), Number(point[1])] as [number, number])
+          .slice(0, 180)
+      : [];
+    const rideRoutePoints = Array.isArray(input.rideData.booking_route_points)
+      && input.rideData.booking_route_points.length >= 2
+      ? input.rideData.booking_route_points
+      : quoteRoutePoints;
     const ride = {
       ...input.rideData,
       id: rideRef.id,
@@ -280,6 +308,8 @@ export async function consumeRideQuoteAndCreateRide(input: {
       estimated_distance_km: validation.quote.distance_km,
       duration: validation.quote.duration_minutes,
       estimated_duration_minutes: validation.quote.duration_minutes,
+      booking_route_points: rideRoutePoints,
+      booking_route_source: input.rideData.booking_route_source || validation.quote.route_source || null,
       created_date: now,
       updated_date: now,
     };

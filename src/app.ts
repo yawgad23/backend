@@ -738,6 +738,8 @@ export function createApp(): Express {
           riderId,
           category,
           route,
+          routePoints: quoteRoadRoute.points,
+          routeSource: quoteRoadRoute.source,
           fareRate,
           surgeMultiplier,
         }));
@@ -820,20 +822,15 @@ export function createApp(): Express {
       const now = requestedAt.toISOString();
       const searchExpiresAt = new Date(requestedAt.getTime() + RIDE_SEARCH_TTL_MS).toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
-      const requestedRoadRoute = await fetchRoadRouteWithStops(
-        { latitude: input.pickup.lat, longitude: input.pickup.lng },
-        [...(input.stops || []), input.destination].map((point) => ({ latitude: point.lat, longitude: point.lng })),
-      );
-      if (!requestedRoadRoute) {
-        res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
-        return;
-      }
       const route: QuoteRoute = {
         pickup: input.pickup,
         destination: input.destination,
         stops: input.stops,
-        distanceKm: requestedRoadRoute.distanceKm,
-        durationMinutes: requestedRoadRoute.durationMinutes,
+        // A current quote ID already locks server-calculated route geometry
+        // and price. Never require a second third-party routing response in
+        // order to create the customer request.
+        distanceKm: 0,
+        durationMinutes: 0,
       };
       if (input.cardCheckoutTransactionId && input.payment !== 'wallet') {
         res.status(400).json({ success: false, message: 'A confirmed card payment must be used through the HY3N wallet.' });
@@ -853,6 +850,18 @@ export function createApp(): Express {
         // ID. The backend still creates and immediately consumes its own
         // authoritative quote; it never accepts the old client fare fields.
         const category = normalizedCategory;
+        // Legacy installed clients do not have a quote ID, so only this
+        // compatibility path calculates their first authoritative route.
+        const requestedRoadRoute = await fetchRoadRouteWithStops(
+          { latitude: input.pickup.lat, longitude: input.pickup.lng },
+          [...(input.stops || []), input.destination].map((point) => ({ latitude: point.lat, longitude: point.lng })),
+        );
+        if (!requestedRoadRoute) {
+          res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
+          return;
+        }
+        route.distanceKm = requestedRoadRoute.distanceKm;
+        route.durationMinutes = requestedRoadRoute.durationMinutes;
         const [fareRate, surgeMultiplier] = await Promise.all([
           getFareRateConfig(category),
           getActiveSurgeMultiplier(),
@@ -865,6 +874,8 @@ export function createApp(): Express {
           riderId: tokenUid,
           category,
           route,
+          routePoints: requestedRoadRoute.points,
+          routeSource: requestedRoadRoute.source,
           fareRate,
           surgeMultiplier,
         }))).id;
@@ -905,8 +916,11 @@ export function createApp(): Express {
         promo_code: null,
         discount: 0,
         ride_options: input.rideOptions || { ac: true, pet_friendly: false, extra_luggage: false, wheelchair_accessible: false },
-        booking_route_points: requestedRoadRoute.points,
-        booking_route_source: requestedRoadRoute.source,
+        // The quote transaction copies the protected route geometry. These
+        // fields remain empty for current clients and are used only by the
+        // legacy no-quote compatibility path above.
+        booking_route_points: [],
+        booking_route_source: null,
         pickup_code: pickupCode,
         ride_pin: pickupCode,
         status: 'searching',

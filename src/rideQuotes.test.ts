@@ -55,6 +55,21 @@ describe('server-persisted ride quotes', () => {
       .toBe(routeFingerprint({ ...route, distanceKm: 999, durationMinutes: 999 }));
   });
 
+  it('retains the server road line alongside the locked fare', () => {
+    const quote = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      routePoints: [[5.6037, -0.187], [5.61, -0.19], [5.6501, -0.1952]],
+      routeSource: 'google_routes_traffic',
+      fareRate: originalRate,
+      surgeMultiplier: 1,
+    });
+
+    expect(quote.route_points).toEqual([[5.6037, -0.187], [5.61, -0.19], [5.6501, -0.1952]]);
+    expect(quote.route_source).toBe('google_routes_traffic');
+  });
+
   it('keeps the accepted quote unchanged after a later admin rate update', () => {
     const quote = makeRideQuoteSnapshot({
       riderId: 'rider-a',
