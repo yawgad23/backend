@@ -67,12 +67,11 @@ export function normalizeQuoteMetrics(route: Pick<QuoteRoute, 'distanceKm' | 'du
   };
 }
 
-/** A deterministic route binding without storing a second copy of location labels in quote documents. */
+/** A deterministic coordinate binding without trusting a device's route metrics. */
 export function routeFingerprint(route: QuoteRoute): string {
-  const metrics = normalizeQuoteMetrics(route);
   const location = (point: QuoteLocation) => `${fixedCoordinate(point.lat)},${fixedCoordinate(point.lng)}`;
   const stops = (route.stops || []).map(location).join('|');
-  return [location(route.pickup), location(route.destination), stops, metrics.distanceKm, metrics.durationMinutes].join('~');
+  return [location(route.pickup), location(route.destination), stops].join('~');
 }
 
 export function quoteExpiry(now = Date.now()): string {
@@ -140,7 +139,14 @@ export function validateRideQuote(input: {
   if (normalizeFareCategory(input.category) !== normalizeFareCategory(quote.category)) {
     return { ok: false, code: 'mismatch', message: 'The selected category changed. Refresh pricing and try again.' };
   }
-  if (String(quote.route_fingerprint || '') !== routeFingerprint(input.route)) {
+  const coordinateFingerprint = routeFingerprint(input.route);
+  // Builds released before the server-road-route correction appended client
+  // metrics to this value. Retain those locked quotes only when their exact
+  // coordinate prefix matches; all new quotes use the metrics-free form.
+  const storedFingerprint = String(quote.route_fingerprint || '');
+  const routeMatches = storedFingerprint === coordinateFingerprint
+    || storedFingerprint.startsWith(`${coordinateFingerprint}~`);
+  if (!routeMatches) {
     return { ok: false, code: 'mismatch', message: 'Your route changed. Refresh pricing and try again.' };
   }
   return {

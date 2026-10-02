@@ -50,6 +50,11 @@ describe('server-persisted ride quotes', () => {
     }
   });
 
+  it('binds a fare quote to route coordinates instead of device-provided metrics', () => {
+    expect(routeFingerprint({ ...route, distanceKm: 2, durationMinutes: 1 }))
+      .toBe(routeFingerprint({ ...route, distanceKm: 999, durationMinutes: 999 }));
+  });
+
   it('keeps the accepted quote unchanged after a later admin rate update', () => {
     const quote = makeRideQuoteSnapshot({
       riderId: 'rider-a',
@@ -122,6 +127,6 @@ describe('server-persisted ride quotes', () => {
     if (!otherRider.ok) expect(otherRider.code).toBe('forbidden');
     if (!changedRoute.ok) expect(changedRoute.code).toBe('mismatch');
     if (!expired.ok) expect(expired.code).toBe('expired');
-    expect(routeFingerprint(route)).toContain('7.125');
+    expect(routeFingerprint(route)).toContain('5.6037');
   });
 });

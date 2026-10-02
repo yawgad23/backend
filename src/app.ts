@@ -23,6 +23,7 @@ import {
   makeRideQuoteSnapshot,
   type QuoteRoute,
 } from './rideQuotes';
+import { fetchRoadRouteWithStops } from './liveRouteMetrics';
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
@@ -710,6 +711,14 @@ export function createApp(): Express {
     }
     try {
       const categories = [...new Set(parsed.data.categories.map(normalizeFareCategory))];
+      const quoteRoadRoute = await fetchRoadRouteWithStops(
+        { latitude: parsed.data.pickup.lat, longitude: parsed.data.pickup.lng },
+        [...(parsed.data.stops || []), parsed.data.destination].map((point) => ({ latitude: point.lat, longitude: point.lng })),
+      );
+      if (!quoteRoadRoute) {
+        res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
+        return;
+      }
       const surgeMultiplier = await getActiveSurgeMultiplier();
       const quotes = await Promise.all(categories.map(async (category) => {
         const fareRate = await getFareRateConfig(category);
@@ -720,8 +729,10 @@ export function createApp(): Express {
           pickup: parsed.data.pickup,
           destination: parsed.data.destination,
           stops: parsed.data.stops,
-          distanceKm: parsed.data.distance,
-          durationMinutes: parsed.data.duration,
+          // The device may suggest a route only to request a quote. The route
+          // distance, time and geometry displayed and charged are server data.
+          distanceKm: quoteRoadRoute.distanceKm,
+          durationMinutes: quoteRoadRoute.durationMinutes,
         };
         const storedQuote = await createRideQuote(makeRideQuoteSnapshot({
           riderId,
@@ -743,6 +754,8 @@ export function createApp(): Express {
           surgeMultiplier: breakdown.surgeMultiplier,
           breakdown,
           fareRate,
+          routePoints: quoteRoadRoute.points,
+          routeSource: quoteRoadRoute.source,
         };
       }));
       res.json({
@@ -807,12 +820,20 @@ export function createApp(): Express {
       const now = requestedAt.toISOString();
       const searchExpiresAt = new Date(requestedAt.getTime() + RIDE_SEARCH_TTL_MS).toISOString();
       const pickupCode = String(Math.floor(1000 + Math.random() * 9000));
+      const requestedRoadRoute = await fetchRoadRouteWithStops(
+        { latitude: input.pickup.lat, longitude: input.pickup.lng },
+        [...(input.stops || []), input.destination].map((point) => ({ latitude: point.lat, longitude: point.lng })),
+      );
+      if (!requestedRoadRoute) {
+        res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
+        return;
+      }
       const route: QuoteRoute = {
         pickup: input.pickup,
         destination: input.destination,
         stops: input.stops,
-        distanceKm: input.distance,
-        durationMinutes: input.duration,
+        distanceKm: requestedRoadRoute.distanceKm,
+        durationMinutes: requestedRoadRoute.durationMinutes,
       };
       if (input.cardCheckoutTransactionId && input.payment !== 'wallet') {
         res.status(400).json({ success: false, message: 'A confirmed card payment must be used through the HY3N wallet.' });
@@ -884,6 +905,8 @@ export function createApp(): Express {
         promo_code: null,
         discount: 0,
         ride_options: input.rideOptions || { ac: true, pet_friendly: false, extra_luggage: false, wheelchair_accessible: false },
+        booking_route_points: requestedRoadRoute.points,
+        booking_route_source: requestedRoadRoute.source,
         pickup_code: pickupCode,
         ride_pin: pickupCode,
         status: 'searching',

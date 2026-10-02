@@ -225,6 +225,39 @@ export async function fetchRoadRoute(from: Point, to: Point): Promise<RoadRouteM
   return await fetchGoogleTrafficRoute(from, to) || await fetchOsrmRoadRoute(from, to);
 }
 
+/**
+ * Joins the server-calculated road legs used by a booking preview. This is the
+ * same commercial-route-first policy used during an active trip, so the Rider
+ * never sees a straight line as if it were a road recommendation.
+ */
+export async function fetchRoadRouteWithStops(from: Point, destinations: Point[]): Promise<RoadRouteMetrics | null> {
+  if (!validPoint(from) || destinations.length === 0 || destinations.some((point) => !validPoint(point))) return null;
+  let origin = from;
+  const legs: RoadRouteMetrics[] = [];
+  for (const destination of destinations) {
+    const leg = await fetchRoadRoute(origin, destination);
+    if (!leg) return null;
+    legs.push(leg);
+    origin = destination;
+  }
+  const points = boundedRoutePoints(legs.flatMap((leg, index) => index === 0 ? leg.points : leg.points.slice(1)));
+  if (points.length < 2) return null;
+  const allGoogle = legs.every((leg) => leg.source === 'google_routes_traffic');
+  const staticDuration = legs.reduce((sum, leg) => sum + Number(leg.traffic?.staticDurationMinutes || 0), 0);
+  const delay = legs.reduce((sum, leg) => sum + Number(leg.traffic?.delayMinutes || 0), 0);
+  return {
+    distanceKm: Number(legs.reduce((sum, leg) => sum + leg.distanceKm, 0).toFixed(3)),
+    durationMinutes: Number(legs.reduce((sum, leg) => sum + leg.durationMinutes, 0).toFixed(1)),
+    points,
+    source: allGoogle ? 'google_routes_traffic' : 'osrm',
+    traffic: allGoogle ? {
+      staticDurationMinutes: Number(staticDuration.toFixed(1)),
+      delayMinutes: Number(delay.toFixed(1)),
+      speedIntervals: [],
+    } : undefined,
+  };
+}
+
 async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<RoadRouteMetrics | null> {
   const now = Date.now();
   const targetKey = routeTargetKey(to);
