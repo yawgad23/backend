@@ -5,6 +5,7 @@ import { sendDriverLocationLiveActivityUpdates } from './liveActivities';
 import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
 import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
 import { mapSafeDriverPresenceMetadata } from './driverPresence';
+import { shouldPersistDriverLocation } from './driverLocationOrdering';
 
 const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
@@ -63,6 +64,15 @@ export function registerDriverLocationRoutes(app: Express) {
       speedKmh: input.speedKmh ?? null,
       recorded_at: recordedAt,
     };
+    const previousPresence = await adminFirestore.get('driver_presence', driverId);
+    if (!shouldPersistDriverLocation(previousPresence, recordedAt)) {
+      res.json({
+        success: true,
+        ignoredStaleLocation: true,
+        location: previousPresence?.current_location || location,
+      });
+      return;
+    }
     const patch = {
       user_id: driverId,
       current_location: location,
