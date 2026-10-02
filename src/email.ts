@@ -63,126 +63,134 @@ export interface TripReceiptData {
   completedAt: string;
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  }[character] || character));
+}
+
+function receiptValue(value: unknown, fallback: string) {
+  const normalized = String(value ?? '').trim();
+  return normalized || fallback;
+}
+
+function formattedPaymentMethod(value: unknown) {
+  const method = receiptValue(value, 'Cash').replace(/[_-]+/g, ' ');
+  return method.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function validMetric(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = false) {
+  const riderName = receiptValue(data.riderName, 'HY3N Rider');
+  const driverName = receiptValue(data.driverName, 'Your HY3N driver');
+  const driverVehicle = receiptValue(data.driverVehicle, 'HY3N vehicle');
+  const driverPlate = String(data.driverPlate || '').trim();
+  const pickup = receiptValue(data.pickup, 'Pickup location');
+  const destination = receiptValue(data.destination, 'Destination');
+  const category = String(data.category || '').trim();
+  const paymentMethod = formattedPaymentMethod(data.paymentMethod);
+  const tripId = receiptValue(data.tripId, 'HY3N trip').slice(0, 16);
+  const fare = Number.isFinite(Number(data.fare)) ? Math.max(0, Number(data.fare)) : 0;
+  const fareStr = `GH₵${fare.toFixed(2)}`;
+  const date = new Date(data.completedAt);
+  const dateStr = Number.isNaN(date.getTime())
+    ? 'Trip completed'
+    : date.toLocaleString('en-GH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const distance = validMetric(data.distance);
+  const duration = validMetric(data.duration);
+  const lostItemLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Lost item report — trip ${tripId}`)}&body=${encodeURIComponent(`Hello HY3N Support,\n\nI need help with a lost item from trip ${tripId}.\n\nItem description:\n\nThank you.`)}`;
+  const supportLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Trip support — ${tripId}`)}`;
+  const logo = hasEmbeddedLogo
+    ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N" width="156" style="display:block;width:156px;max-width:100%;height:auto;border:0" />`
+    : '<div style="font-size:26px;line-height:28px;font-weight:900;letter-spacing:1.5px;color:#F4C542">HY3N</div>';
+
+  const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F4F5F7;font-family:Arial,Helvetica,sans-serif;color:#17191D">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0">Your HY3N trip with ${escapeHtml(driverName)} is complete. Total: ${fareStr}.</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F4F5F7;padding:24px 12px"><tr><td align="center">
+    <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:620px;background:#FFFFFF">
+      <tr><td style="background:#101114;padding:24px 30px 16px">
+        ${logo}
+      </td></tr>
+      <tr><td style="background:#101114;padding:22px 30px 30px;color:#FFFFFF">
+        <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#F4C542;text-transform:uppercase">Ride complete</div>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="padding-top:10px;vertical-align:top"><div style="font-size:34px;line-height:40px;font-weight:800;letter-spacing:-0.6px">Thanks for riding with HY3N, ${escapeHtml(riderName)}.</div></td>
+          <td align="right" style="padding:12px 0 0 18px;white-space:nowrap;vertical-align:top"><div style="font-size:11px;color:#B9BDC6;text-transform:uppercase;letter-spacing:1px">Total</div><div style="font-size:30px;line-height:34px;color:#F4C542;font-weight:800">${fareStr}</div></td>
+        </tr></table>
+        <div style="font-size:15px;line-height:22px;color:#D4D7DD;padding-top:12px">We hope your journey was smooth. Your receipt is below.</div>
+      </td></tr>
+      <tr><td style="padding:26px 30px 8px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E6E8EC;border-radius:14px"><tr><td style="padding:18px 20px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:1.1px;color:#7B808A;text-transform:uppercase">Completed by</div>
+          <div style="font-size:22px;line-height:29px;font-weight:800;color:#17191D;padding-top:4px">${escapeHtml(driverName)}</div>
+          <div style="font-size:14px;line-height:21px;color:#5F6672;padding-top:5px">${escapeHtml(driverVehicle)}${driverPlate ? ` <span style="color:#A3A8B1">•</span> ${escapeHtml(driverPlate)}` : ''}${category ? ` <span style="color:#A3A8B1">•</span> ${escapeHtml(category)}` : ''}</div>
+        </td></tr></table>
+      </td></tr>
+      <tr><td style="padding:18px 30px 8px"><div style="font-size:21px;line-height:28px;font-weight:800;color:#17191D">Trip details</div><div style="font-size:13px;color:#747B86;padding-top:4px">${escapeHtml(dateStr)}</div></td></tr>
+      <tr><td style="padding:8px 30px 18px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-left:2px solid #D6D9DF">
+          <tr><td width="28" style="vertical-align:top;padding:0 0 20px 14px"><span style="display:block;width:12px;height:12px;background:#078859;border:3px solid #DDF5EC;border-radius:50%"></span></td><td style="padding:0 0 20px 0"><div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#7B808A;text-transform:uppercase">Pickup</div><div style="font-size:15px;line-height:22px;font-weight:700;color:#20232A;padding-top:4px">${escapeHtml(pickup)}</div></td></tr>
+          <tr><td width="28" style="vertical-align:top;padding-left:14px"><span style="display:block;width:12px;height:12px;background:#E6533C;border:3px solid #FCE9E5;border-radius:2px"></span></td><td><div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#7B808A;text-transform:uppercase">Drop-off</div><div style="font-size:15px;line-height:22px;font-weight:700;color:#20232A;padding-top:4px">${escapeHtml(destination)}</div></td></tr>
+        </table>
+      </td></tr>
+      <tr><td style="padding:4px 30px 24px">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E6E8EC;border-bottom:1px solid #E6E8EC">
+          <tr><td style="padding:16px 0;color:#606873;font-size:14px">Payment method</td><td align="right" style="padding:16px 0;color:#20232A;font-weight:700;font-size:14px">${escapeHtml(paymentMethod)}</td></tr>
+          ${distance ? `<tr><td style="padding:0 0 16px;color:#606873;font-size:14px">Distance</td><td align="right" style="padding:0 0 16px;color:#20232A;font-weight:700;font-size:14px">${distance.toFixed(1)} km</td></tr>` : ''}
+          ${duration ? `<tr><td style="padding:0 0 16px;color:#606873;font-size:14px">Duration</td><td align="right" style="padding:0 0 16px;color:#20232A;font-weight:700;font-size:14px">${Math.round(duration)} min</td></tr>` : ''}
+          <tr><td style="padding:0 0 16px;color:#606873;font-size:14px">Trip ID</td><td align="right" style="padding:0 0 16px;color:#20232A;font-family:monospace;font-size:12px">${escapeHtml(tripId)}</td></tr>
+        </table>
+      </td></tr>
+      <tr><td style="padding:0 30px 26px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F7F8FA;border-radius:12px"><tr><td style="padding:18px 20px"><div style="font-size:18px;font-weight:800;color:#20232A">Need help with this trip?</div><div style="font-size:14px;line-height:21px;color:#606873;padding-top:5px">Our HY3N Support team is ready to help.</div><div style="padding-top:15px"><a href="${supportLink}" style="display:inline-block;background:#17191D;color:#FFFFFF;text-decoration:none;font-size:14px;font-weight:700;padding:12px 18px;border-radius:8px">Contact support</a></div></td></tr></table></td></tr>
+      <tr><td style="padding:0 30px 30px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #E6E8EC;border-radius:12px"><tr><td style="padding:18px 20px"><div style="font-size:18px;font-weight:800;color:#20232A">Forgot something?</div><div style="font-size:14px;line-height:21px;color:#606873;padding-top:5px">Report a lost item and include your trip details so we can help quickly.</div><div style="padding-top:15px"><a href="${lostItemLink}" style="display:inline-block;background:#FFFFFF;color:#17191D;text-decoration:none;font-size:14px;font-weight:700;padding:11px 17px;border:1px solid #BFC5CE;border-radius:8px">Report a lost item</a></div></td></tr></table></td></tr>
+      <tr><td style="background:#101114;padding:24px 30px;text-align:center"><div style="font-size:13px;line-height:20px;color:#C7CBD2">HY3N Technologies · Ghana</div><div style="font-size:12px;line-height:19px;color:#8F959F;padding-top:5px">Questions? <a href="mailto:hello@ridehy3n.com" style="color:#F4C542;text-decoration:none">hello@ridehy3n.com</a> · <a href="https://ridehy3n.com" style="color:#F4C542;text-decoration:none">ridehy3n.com</a></div><div style="font-size:11px;color:#6F7580;padding-top:10px">© ${new Date().getFullYear()} HY3N Technologies. All rights reserved.</div></td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+
+  const text = [
+    'HY3N — Ride receipt',
+    `Thanks for riding with HY3N, ${riderName}.`,
+    `Total: ${fareStr}`,
+    `Completed by: ${driverName}`,
+    `Vehicle: ${driverVehicle}${driverPlate ? ` · ${driverPlate}` : ''}`,
+    `Pickup: ${pickup}`,
+    `Drop-off: ${destination}`,
+    `Payment method: ${paymentMethod}`,
+    distance ? `Distance: ${distance.toFixed(1)} km` : null,
+    duration ? `Duration: ${Math.round(duration)} min` : null,
+    category ? `Category: ${category}` : null,
+    `Trip ID: ${tripId}`,
+    'Need help? hello@ridehy3n.com',
+    `Lost item report: ${lostItemLink}`,
+  ].filter(Boolean).join('\n');
+
+  return {
+    subject: `Your HY3N receipt — ${fareStr}`,
+    html,
+    text,
+  };
+}
+
 export async function sendTripReceiptEmail(data: TripReceiptData): Promise<boolean> {
   const from = process.env.EMAIL_FROM || '"HY3N Transport" <hy3ntransportservices@gmail.com>';
   const transporter = getTransporter();
-
-  const fareStr = `GH₵ ${data.fare.toFixed(2)}`;
-  const dateStr = new Date(data.completedAt).toLocaleString('en-GH', {
-    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
-    hour: 'numeric', minute: '2-digit',
-  });
-
-  const metaRows = [
-    data.distance ? `<tr><td style="color:#6B7280;padding:6px 0">Distance</td><td style="text-align:right;font-weight:600;padding:6px 0">${data.distance.toFixed(1)} km</td></tr>` : '',
-    data.duration ? `<tr><td style="color:#6B7280;padding:6px 0">Duration</td><td style="text-align:right;font-weight:600;padding:6px 0">${data.duration} min</td></tr>` : '',
-    data.category ? `<tr><td style="color:#6B7280;padding:6px 0">Category</td><td style="text-align:right;font-weight:600;padding:6px 0">${data.category}</td></tr>` : '',
-  ].filter(Boolean).join('');
   const logoAttachment = getReceiptLogoAttachment();
-
-  const html = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:32px 0">
-    <tr><td align="center">
-      <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;max-width:560px;width:100%">
-        <!-- Header -->
-        <tr><td style="background:#FFFFFF;padding:0 28px 18px;text-align:center;border-bottom:4px solid #D4AF37">
-          ${logoAttachment ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="430" style="display:block;width:430px;max-width:100%;height:auto;margin:0 auto;border:0" />` : '<div style="font-size:28px;font-weight:900;color:#111827;letter-spacing:2px;padding-top:24px">HY3N</div>'}
-          <div style="color:#6B7280;font-size:13px;margin-top:0">Your trip receipt</div>
-        </td></tr>
-
-        <!-- Greeting -->
-        <tr><td style="padding:28px 32px 0">
-          <p style="margin:0;font-size:16px;color:#111827">Hi <strong>${data.riderName}</strong>,</p>
-          <p style="margin:8px 0 0;font-size:14px;color:#6B7280">Thanks for riding with HY3N. Here is your trip receipt.</p>
-        </td></tr>
-
-        <!-- Fare highlight -->
-        <tr><td style="padding:20px 32px">
-          <div style="background:#0A0A0A;border-radius:10px;padding:20px;text-align:center">
-            <div style="color:#9CA3AF;font-size:12px;text-transform:uppercase;letter-spacing:1px">Total Fare</div>
-            <div style="color:#D4AF37;font-size:36px;font-weight:900;margin-top:6px">${fareStr}</div>
-            <div style="color:#9CA3AF;font-size:13px;margin-top:4px">${data.paymentMethod ? data.paymentMethod.charAt(0).toUpperCase() + data.paymentMethod.slice(1) : 'Cash'}</div>
-          </div>
-        </td></tr>
-
-        <!-- Route -->
-        <tr><td style="padding:0 32px">
-          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E5E7EB;border-radius:10px;overflow:hidden">
-            <tr><td style="padding:14px 16px;border-bottom:1px solid #E5E7EB">
-              <div style="display:flex;align-items:flex-start;gap:10px">
-                <span style="display:inline-block;width:10px;height:10px;background:#22C55E;border-radius:50%;margin-top:4px;flex-shrink:0"></span>
-                <div>
-                  <div style="font-size:11px;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px">Pickup</div>
-                  <div style="font-size:14px;color:#111827;font-weight:600;margin-top:2px">${data.pickup}</div>
-                </div>
-              </div>
-            </td></tr>
-            <tr><td style="padding:14px 16px">
-              <div style="display:flex;align-items:flex-start;gap:10px">
-                <span style="display:inline-block;width:10px;height:10px;background:#EF4444;border-radius:50%;margin-top:4px;flex-shrink:0"></span>
-                <div>
-                  <div style="font-size:11px;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.5px">Destination</div>
-                  <div style="font-size:14px;color:#111827;font-weight:600;margin-top:2px">${data.destination}</div>
-                </div>
-              </div>
-            </td></tr>
-          </table>
-        </td></tr>
-
-        <!-- Trip details -->
-        <tr><td style="padding:20px 32px">
-          <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #E5E7EB">
-            <tr><td style="padding-top:16px;font-size:12px;font-weight:700;color:#6B7280;text-transform:uppercase;letter-spacing:0.8px" colspan="2">Trip Details</td></tr>
-            <tr><td style="color:#6B7280;padding:6px 0">Date</td><td style="text-align:right;font-weight:600;padding:6px 0">${dateStr}</td></tr>
-            <tr><td style="color:#6B7280;padding:6px 0">Driver</td><td style="text-align:right;font-weight:600;padding:6px 0">${data.driverName}</td></tr>
-            <tr><td style="color:#6B7280;padding:6px 0">Vehicle</td><td style="text-align:right;font-weight:600;padding:6px 0">${data.driverVehicle}${data.driverPlate ? ` · ${data.driverPlate}` : ''}</td></tr>
-            ${metaRows}
-            <tr><td style="color:#6B7280;padding:6px 0">Trip ID</td><td style="text-align:right;font-family:monospace;font-size:12px;padding:6px 0">${data.tripId.slice(0, 16)}</td></tr>
-          </table>
-        </td></tr>
-
-        <!-- Footer -->
-        <tr><td style="background:#F9FAFB;padding:20px 32px;text-align:center;border-top:1px solid #E5E7EB">
-          <p style="margin:0;font-size:12px;color:#9CA3AF">Questions? Contact us at <a href="mailto:hello@ridehy3n.com" style="color:#D4AF37">hello@ridehy3n.com</a></p>
-          <p style="margin:8px 0 0;font-size:11px;color:#D1D5DB">&copy; ${new Date().getFullYear()} HY3N Technologies. All rights reserved.</p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-
-  const text = [
-    'HY3N — Ride With Pride',
-    'Trip Receipt',
-    '─────────────────',
-    `Rider: ${data.riderName}`,
-    `Date: ${dateStr}`,
-    `From: ${data.pickup}`,
-    `To: ${data.destination}`,
-    data.distance ? `Distance: ${data.distance.toFixed(1)} km` : null,
-    data.duration ? `Duration: ${data.duration} min` : null,
-    data.category ? `Category: ${data.category}` : null,
-    `Driver: ${data.driverName}`,
-    `Vehicle: ${data.driverVehicle}${data.driverPlate ? ` · ${data.driverPlate}` : ''}`,
-    `Payment: ${data.paymentMethod || 'Cash'}`,
-    `Fare: ${fareStr}`,
-    `Trip ID: ${data.tripId.slice(0, 16)}`,
-    '─────────────────',
-    'Questions? hello@ridehy3n.com',
-  ].filter(Boolean).join('\n');
+  const receipt = renderTripReceiptEmail(data, Boolean(logoAttachment));
 
   try {
     await transporter.sendMail({
       from,
       to: data.riderEmail,
-      subject: `Your HY3N trip receipt — ${fareStr}`,
-      text,
-      html,
+      subject: receipt.subject,
+      text: receipt.text,
+      html: receipt.html,
       attachments: logoAttachment ? [logoAttachment] : undefined,
     });
     return true;
