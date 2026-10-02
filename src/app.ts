@@ -37,6 +37,7 @@ import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from 
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
 import { driverProfileForUserId } from './driverApproval';
 import { authorizeRiderDriverRating, driverRatingSummary } from './riderDriverRatings';
+import { deliveryDetailsInput, deliveryRideFields, isExpressDeliveryCategory } from './deliveryBooking';
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -63,6 +64,7 @@ const riderRideRequestInput = z.object({
   passengerName: z.string().max(120).optional(),
   passengerPhone: z.string().max(40).optional(),
   passengerPickupNote: z.string().max(300).optional(),
+  delivery: deliveryDetailsInput.optional(),
   category: z.string().min(1).max(50),
   pickup: rideLocationInput,
   destination: rideLocationInput,
@@ -253,6 +255,18 @@ export function createApp(): Express {
                 ...req.body,
                 accessCode: req.body?.accessCode ? '[REDACTED]' : undefined,
               }
+      : originalUrl.startsWith('/api/rides/request')
+        ? {
+            ...req.body,
+            riderPhone: req.body?.riderPhone ? '[REDACTED]' : undefined,
+            bookedByPhone: req.body?.bookedByPhone ? '[REDACTED]' : undefined,
+            passengerPhone: req.body?.passengerPhone ? '[REDACTED]' : undefined,
+            delivery: req.body?.delivery ? {
+              ...req.body.delivery,
+              sender: req.body.delivery.sender ? { ...req.body.delivery.sender, phone: '[REDACTED]' } : undefined,
+              recipient: req.body.delivery.recipient ? { ...req.body.delivery.recipient, phone: '[REDACTED]' } : undefined,
+            } : undefined,
+          }
         : originalUrl.startsWith('/api/driver/location')
           ? {
               ...req.body,
@@ -773,6 +787,15 @@ export function createApp(): Express {
       res.status(400).json({ success: false, message: "Please provide the passenger's name and phone number." });
       return;
     }
+    const normalizedCategory = normalizeFareCategory(input.category);
+    if (isExpressDeliveryCategory(normalizedCategory) && !input.delivery) {
+      res.status(400).json({ success: false, message: 'Provide the sender, recipient, and package details for an Express Delivery request.' });
+      return;
+    }
+    if (!isExpressDeliveryCategory(normalizedCategory) && input.delivery) {
+      res.status(400).json({ success: false, message: 'Delivery details can only be included with an Express Delivery request.' });
+      return;
+    }
 
     try {
       const requestedAt = new Date();
@@ -803,7 +826,7 @@ export function createApp(): Express {
         // Legacy installed Rider clients submit route metrics but not a quote
         // ID. The backend still creates and immediately consumes its own
         // authoritative quote; it never accepts the old client fare fields.
-        const category = normalizeFareCategory(input.category);
+        const category = normalizedCategory;
         const [fareRate, surgeMultiplier] = await Promise.all([
           getFareRateConfig(category),
           getActiveSurgeMultiplier(),
@@ -842,6 +865,7 @@ export function createApp(): Express {
         passenger_name: input.passengerName || input.riderName,
         passenger_phone: input.passengerPhone || input.riderPhone,
         passenger_pickup_note: input.passengerPickupNote || null,
+        ...deliveryRideFields(input.delivery),
         pickup: input.pickup,
         pickup_address: input.pickup.address || input.pickup.name,
         destination: input.destination,
@@ -884,6 +908,7 @@ export function createApp(): Express {
             payment_display_name: paymentDisplayName,
             payment_collection: paymentCollection,
             booking_for_other: Boolean(input.bookingForOther),
+            is_delivery: isExpressDeliveryCategory(normalizedCategory),
           },
           created_at: now,
         });

@@ -18,6 +18,7 @@ import {
 } from './driverApproval';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
+import { driverOfferView } from './driverDeliveryOffer';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -519,11 +520,11 @@ export const driverTrips = router({
     const offers = await Promise.all(nearbyOffers.map(async (ride) => {
       const rideRecord = ride as Record<string, unknown>;
       const reputation = await riderReputation(rideRecord.rider_id || rideRecord.riderId);
-      return {
+      return driverOfferView({
         ...rideRecord,
         rider_rating: reputation.rating,
         rider_rating_count: reputation.ratingCount,
-      };
+      });
     }));
     return { offers };
   }),
@@ -587,6 +588,7 @@ export const driverTrips = router({
       id: input.driverId,
       name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
       phone: driverProfile.phone || driverProfile.phone_number || '',
+      service_type: driverProfile.service_type || driverProfile.serviceType || ride.category || 'car',
       photo_url: driverProfile.avatar_url || driverProfile.photo_url || '',
       rating: Number(driverProfile.rating ?? 5),
       rating_count: Math.max(0, Math.floor(Number(driverProfile.rating_count ?? 0) || 0)),
