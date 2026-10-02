@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { decodeGooglePolyline, parseGoogleTrafficRoute, parseOsrmRoute } from './liveRouteMetrics';
+import {
+  decodeGooglePolyline,
+  parseGoogleTrafficRoute,
+  parseOsrmRoute,
+  routeTargetKey,
+  ROUTE_REFRESH_MS,
+  shouldReuseCachedRoute,
+} from './liveRouteMetrics';
 
 describe('server road route metrics', () => {
   it('normalizes OSRM distance, duration, and geometry to app coordinates', () => {
@@ -64,5 +71,15 @@ describe('server road route metrics', () => {
     expect(parseOsrmRoute({ routes: [{ distance: -1, duration: 60 }] })).toBeNull();
     expect(parseGoogleTrafficRoute({ routes: [{ distanceMeters: 500 }] })).toBeNull();
     expect(parseOsrmRoute({ routes: [] })).toBeNull();
+  });
+
+  it('refreshes immediately when Start Trip changes the route target from pickup to destination', () => {
+    const pickupKey = routeTargetKey({ latitude: 5.61, longitude: -0.19 });
+    const destinationKey = routeTargetKey({ latitude: 5.57, longitude: -0.17 });
+    const cachedPickupRoute = { requestedAt: 1_000, targetKey: pickupKey };
+
+    expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS - 1)).toBe(true);
+    expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS)).toBe(false);
+    expect(shouldReuseCachedRoute(cachedPickupRoute, destinationKey, 1_001)).toBe(false);
   });
 });

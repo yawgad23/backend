@@ -1,6 +1,6 @@
 import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
 
-type Point = { latitude: number; longitude: number };
+export type Point = { latitude: number; longitude: number };
 type RoutePoint = [number, number];
 type TrafficSpeed = 'NORMAL' | 'SLOW' | 'TRAFFIC_JAM';
 
@@ -23,9 +23,10 @@ export type RoadRouteMetrics = {
 };
 
 const ACTIVE_STATUSES = ['matched', 'driver_arriving', 'driver_arrived', 'in_progress'];
-const ROUTE_REFRESH_MS = 12_000;
+export const ROUTE_REFRESH_MS = 8_000;
 const MAX_ROUTE_POINTS = 180;
-const routeCache = new Map<string, { requestedAt: number; key: string; metrics: RoadRouteMetrics | null }>();
+type CachedRoute = { requestedAt: number; targetKey: string; metrics: RoadRouteMetrics | null };
+const routeCache = new Map<string, CachedRoute>();
 
 function validPoint(point: Point | null | undefined): point is Point {
   return Boolean(
@@ -50,10 +51,19 @@ function routeTarget(ride: Record<string, any>): Point | null {
     : pointFrom(ride.pickup);
 }
 
-function routeKey(from: Point, to: Point) {
-  return [from.latitude, from.longitude, to.latitude, to.longitude]
+export function routeTargetKey(to: Point) {
+  return [to.latitude, to.longitude]
     .map((value) => Number(value).toFixed(5))
     .join(':');
+}
+
+/** Reuse only same-destination guidance; a pickup-to-trip phase change must route immediately. */
+export function shouldReuseCachedRoute(
+  previous: Pick<CachedRoute, 'requestedAt' | 'targetKey'> | undefined,
+  targetKey: string,
+  now: number,
+): boolean {
+  return Boolean(previous && previous.targetKey === targetKey && now - previous.requestedAt < ROUTE_REFRESH_MS);
 }
 
 function boundedRoutePoints(points: RoutePoint[]): RoutePoint[] {
@@ -217,16 +227,20 @@ export async function fetchRoadRoute(from: Point, to: Point): Promise<RoadRouteM
 
 async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<RoadRouteMetrics | null> {
   const now = Date.now();
-  const key = routeKey(from, to);
+  const targetKey = routeTargetKey(to);
   const previous = routeCache.get(rideId);
-  if (previous && previous.key === key && now - previous.requestedAt < ROUTE_REFRESH_MS) return previous.metrics;
+  if (shouldReuseCachedRoute(previous, targetKey, now)) return previous!.metrics;
+
+  // A new destination target (for example, Start Trip) must never render an
+  // old pickup route if a provider is temporarily unavailable.
+  const sameTargetFallback = previous?.targetKey === targetKey ? previous.metrics : null;
 
   // Mark the request before awaiting it so duplicate REST/tRPC location paths
   // cannot fan out multiple routing calls for the same ride in one instance.
-  routeCache.set(rideId, { requestedAt: now, key, metrics: previous?.metrics || null });
+  routeCache.set(rideId, { requestedAt: now, targetKey, metrics: sameTargetFallback });
   const metrics = await fetchRoadRoute(from, to);
-  routeCache.set(rideId, { requestedAt: now, key, metrics: metrics || previous?.metrics || null });
-  return metrics || previous?.metrics || null;
+  routeCache.set(rideId, { requestedAt: now, targetKey, metrics: metrics || sameTargetFallback });
+  return metrics || sameTargetFallback;
 }
 
 /**
