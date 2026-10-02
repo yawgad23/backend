@@ -79,7 +79,7 @@ describe('server-persisted ride quotes', () => {
     }
   });
 
-  it('rejects another rider, a changed route, and an expired quote', () => {
+  it('rejects another rider, a changed route, and an expired fifteen-minute quote', () => {
     const quote = makeRideQuoteSnapshot({
       riderId: 'rider-a',
       category: 'standard',
@@ -98,17 +98,26 @@ describe('server-persisted ride quotes', () => {
       route: { ...route, destination: { lat: 5.651, lng: -0.1952 } },
       now: Date.parse('2026-09-29T12:02:00.000Z'),
     });
+    const stillOpen = validateRideQuote({
+      quote,
+      quoteId: 'quote-a',
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      now: Date.parse('2026-09-29T12:14:59.000Z'),
+    });
     const expired = validateRideQuote({
       quote,
       quoteId: 'quote-a',
       riderId: 'rider-a',
       category: 'standard',
       route,
-      now: Date.parse('2026-09-29T12:06:00.000Z'),
+      now: Date.parse('2026-09-29T12:15:00.000Z'),
     });
 
     expect(otherRider.ok).toBe(false);
     expect(changedRoute.ok).toBe(false);
+    expect(stillOpen.ok).toBe(true);
     expect(expired.ok).toBe(false);
     if (!otherRider.ok) expect(otherRider.code).toBe('forbidden');
     if (!changedRoute.ok) expect(changedRoute.code).toBe('mismatch');

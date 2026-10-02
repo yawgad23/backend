@@ -8,7 +8,10 @@ import {
 } from './fareConfig';
 
 export const RIDE_QUOTES_COLLECTION = 'ride_quotes';
-export const RIDE_QUOTE_TTL_MS = 5 * 60 * 1000;
+// A fare remains locked long enough for a Rider to compare categories, add a
+// passenger or delivery contact, and confirm payment. The quote is still
+// server-bound to the exact route, account, category, rate snapshot and use.
+export const RIDE_QUOTE_TTL_MS = 15 * 60 * 1000;
 
 export type QuoteLocation = {
   lat: number;

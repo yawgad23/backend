@@ -930,7 +930,11 @@ export function createApp(): Express {
       });
     } catch (error: any) {
       if (['not_found', 'forbidden', 'consumed', 'expired', 'mismatch', 'payment_mismatch'].includes(String(error?.code || ''))) {
-        res.status(409).json({ success: false, message: error.message || 'Refresh pricing and try again.' });
+        res.status(409).json({
+          success: false,
+          code: String(error.code),
+          message: error.message || 'Refresh pricing and try again.',
+        });
         return;
       }
       console.error('[Ride Dispatch] Failed to create rider request:', error);
