@@ -187,29 +187,12 @@ export async function createRideQuote(snapshot: RideQuoteSnapshot): Promise<Ride
 }
 
 /**
- * Persists all category choices for one displayed route in one Firestore commit.
- * A Rider still receives an individually locked quote ID for each category, but
- * a transient connection problem can no longer leave an otherwise valid quote
- * request half-written after several separate writes.
+ * Persists the independently locked category choices through the established
+ * Firestore adapter. The adapter wraps the service's deployed ADC path and is
+ * therefore the safe availability path for live quote creation.
  */
 export async function createRideQuotes(snapshots: RideQuoteSnapshot[]): Promise<RideQuoteSnapshot[]> {
-  if (snapshots.length === 0) return [];
-
-  const db = getAdminDb();
-  const batch = db.batch();
-  const timestamp = new Date().toISOString();
-  const stored = snapshots.map((snapshot) => {
-    const ref = db.collection(RIDE_QUOTES_COLLECTION).doc();
-    batch.create(ref, {
-      ...snapshot,
-      created_date: snapshot.created_at || timestamp,
-      updated_date: timestamp,
-    });
-    return { ...snapshot, id: ref.id };
-  });
-
-  await batch.commit();
-  return stored;
+  return Promise.all(snapshots.map((snapshot) => createRideQuote(snapshot)));
 }
 
 export async function getOpenRideQuoteForPayment(riderId: string, quoteId: string): Promise<RideQuoteValidation> {
