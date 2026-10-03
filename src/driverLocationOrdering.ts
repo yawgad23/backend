@@ -9,6 +9,8 @@ export function shouldPersistDriverLocation(previous: Record<string, any> | null
   const incomingMs = timeMs(incomingRecordedAt);
   if (incomingMs === null) return false;
   const location = previous?.current_location || previous?.location || previous || {};
-  const existingMs = timeMs(location.recorded_at ?? location.updated_at ?? previous?.last_location_update ?? previous?.last_seen_at ?? previous?.last_seen);
+  // Server receipt time is the availability heartbeat. Coordinate ordering
+  // stays tied to the originating GPS sample time when that metadata exists.
+  const existingMs = timeMs(location.source_recorded_at ?? location.recorded_at ?? location.updated_at ?? previous?.last_location_update ?? previous?.last_seen_at ?? previous?.last_seen);
   return existingMs === null || incomingMs >= existingMs;
 }

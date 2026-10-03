@@ -16,6 +16,34 @@ export function normalizeUnknownIosHeading(value: unknown): unknown {
   return Number(value) === -1 ? null : value;
 }
 
+/**
+ * A device location timestamp orders coordinate samples, but it cannot decide
+ * whether a live authenticated Driver app is still connected. iOS can reuse a
+ * valid cached Core Location timestamp for several foreground heartbeats. Keep
+ * the two concepts separate: `sourceRecordedAt` prevents a late coordinate
+ * replay from moving the map backwards and `receivedAt` keeps a live Driver
+ * eligible for availability and offers.
+ */
+export function driverLocationTimestamps(inputRecordedAt?: string, receivedAt = new Date().toISOString()) {
+  return {
+    sourceRecordedAt: inputRecordedAt || receivedAt,
+    receivedAt,
+  };
+}
+
+/** Keep a verified online Driver available without accepting an older coordinate. */
+export function availabilityHeartbeatLocation(previous: Record<string, any> | null | undefined, receivedAt: string) {
+  const existing = previous?.current_location && typeof previous.current_location === 'object'
+    ? previous.current_location
+    : {};
+  return {
+    ...existing,
+    // The coordinate stays unchanged; this is a verified app heartbeat, not a
+    // second GPS sample. The source timestamp remains for coordinate ordering.
+    recorded_at: receivedAt,
+  };
+}
+
 export const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
   longitude: z.number().finite().min(-180).max(180),
@@ -65,20 +93,36 @@ export function registerDriverLocationRoutes(app: Express) {
     }
 
     const input = parsed.data;
-    const recordedAt = input.recordedAt || new Date().toISOString();
+    const { sourceRecordedAt, receivedAt } = driverLocationTimestamps(input.recordedAt);
     const location = {
       latitude: input.latitude,
       longitude: input.longitude,
       heading: input.heading ?? null,
       speedKmh: input.speedKmh ?? null,
-      recorded_at: recordedAt,
+      // Rider freshness is based on authenticated server receipt time. The
+      // source timestamp remains stored below for monotonic coordinate order.
+      recorded_at: receivedAt,
+      source_recorded_at: sourceRecordedAt,
     };
     const previousPresence = await adminFirestore.get('driver_presence', driverId);
-    if (!shouldPersistDriverLocation(previousPresence, recordedAt)) {
+    if (!shouldPersistDriverLocation(previousPresence, sourceRecordedAt)) {
+      const heartbeatLocation = availabilityHeartbeatLocation(previousPresence, receivedAt);
+      const heartbeatPatch = {
+        user_id: driverId,
+        current_location: heartbeatLocation,
+        last_location_update: receivedAt,
+        last_seen_at: receivedAt,
+      };
+      const canonical = approvedProfile;
+      const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
+      await Promise.all([
+        ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, heartbeatPatch)),
+        adminFirestore.set('driver_presence', driverId, heartbeatPatch),
+      ]);
       res.json({
         success: true,
         ignoredStaleLocation: true,
-        location: previousPresence?.current_location || location,
+        location: heartbeatLocation,
       });
       return;
     }
@@ -87,8 +131,8 @@ export function registerDriverLocationRoutes(app: Express) {
       current_location: location,
       latitude: input.latitude,
       longitude: input.longitude,
-      last_location_update: recordedAt,
-      last_seen_at: recordedAt,
+      last_location_update: receivedAt,
+      last_seen_at: receivedAt,
     };
 
     // Keep the canonical approved profile and UID-keyed compatibility profile
