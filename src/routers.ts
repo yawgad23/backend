@@ -14,6 +14,11 @@ import { getDailyPlatformFee, normalizeDriverServiceType, setDailyPlatformFee } 
 import { getTripChargeTotal } from "./fareAuthority";
 import { hubtelPaymentState, isHubtelStatusResponseAccepted, readHubtelPaymentDetails } from './hubtelPaymentStatus';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
+import {
+  normalizeRiderWalletTopUpAmount,
+  registeredRiderPaymentName,
+  riderWalletTopUpDescription,
+} from './riderWalletTopUp';
 
 function hasDriverFeeTestBypass(driverId: string) {
   return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
@@ -489,12 +494,26 @@ export const appRouter = router({
      */
     topup: riderProcedure(z.object({
         riderId: z.string(),
-        riderName: z.string(),
+        // Retained for older Rider archives, but never trusted for a payment
+        // greeting. The server resolves the registered Rider profile instead.
+        riderName: z.string().optional(),
         momoNumber: z.string(),
         momoNetwork: z.string().optional(),
-        amount: z.number().min(5).max(5000),
+        amount: z.number().finite().min(5).max(5000),
       }))
       .mutation(async ({ input }) => {
+        const amount = normalizeRiderWalletTopUpAmount(input.amount);
+        const canonicalProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, input.riderId);
+        const profileByUserId = canonicalProfile
+          ? null
+          : (await adminFirestore.list(
+              ADMIN_COLLECTIONS.RIDER_PROFILES,
+              { user_id: input.riderId },
+              null,
+              'desc',
+              1,
+            ))[0] || null;
+        const riderName = registeredRiderPaymentName(canonicalProfile || profileByUserId);
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const reference = generateReference();
         const walletCallbackUrl = process.env.HUBTEL_WALLET_CALLBACK_URL || '';
@@ -509,8 +528,9 @@ export const appRouter = router({
           user_id: input.riderId,
           user_type: 'rider',
           type: 'credit',
-          amount: input.amount,
-          description: `Wallet top-up via MoMo`,
+          amount,
+          description: `Rider wallet top-up via MoMo`,
+          payment_purpose: 'rider_wallet_top_up',
           reference,
           status: 'processing',
           callback_url: walletCallbackUrl,
@@ -521,9 +541,9 @@ export const appRouter = router({
           // chargeDriverCommission normalizes Ghana's local, 233, and +233
           // formats once. Passing the original entry prevents "233+233...".
           customerMsisdn: input.momoNumber,
-          amount: input.amount,
-          customerName: input.riderName,
-          description: `HY3N wallet top-up GH₵${input.amount}`,
+          amount,
+          customerName: riderName,
+          description: riderWalletTopUpDescription(amount),
           clientReference: reference,
           channel,
           callbackUrl: walletCallbackUrl,
