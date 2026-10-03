@@ -134,4 +134,18 @@ describe('server trip meter', () => {
     expect(jump.ignoredReason).toBe('jump');
     expect(jump.meter.distance_km).toBe(meter.distance_km);
   });
+
+  it('validates a final GPS sample in the completion request', () => {
+    const startedAt = '2026-09-24T15:00:00.000Z';
+    const meter = initializeTripMeter(startedAt, { latitude: 5.6037, longitude: -0.187 });
+    const finalSample = advanceTripMeter(
+      meter,
+      { latitude: 5.6042, longitude: -0.187 },
+      '2026-09-24T15:00:30.000Z',
+    );
+
+    expect(finalSample.accepted).toBe(true);
+    expect(finalSample.meter.accepted_samples).toBe(1);
+    expect(finalSample.meter.distance_km).toBeGreaterThan(0.025);
+  });
 });

@@ -540,10 +540,17 @@ export const driverTrips = router({
     const driverProfile = await profile(input.driverId);
     if (!isApprovedDriverProfile(driverProfile)) throw approvalRequiredError();
     if (!isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
-    if (input.decision === 'accept' && !(await hasCurrentPlatformFee(input.driverId, driverProfile))) {
+    // The fee gate and ride record do not depend on one another. Reading them
+    // together removes one Firestore round trip from the Driver's Accept tap.
+    const [hasFee, ride] = await Promise.all([
+      input.decision === 'accept'
+        ? hasCurrentPlatformFee(input.driverId, driverProfile)
+        : Promise.resolve(true),
+      rideFor(input.driverId, input.rideId),
+    ]);
+    if (!hasFee) {
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }
-    const ride = await rideFor(input.driverId, input.rideId);
     if (isRideSearchExpired(ride)) {
       await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, expiredRideSearchPatch());
       throw new Error('This ride request has expired.');
@@ -584,7 +591,9 @@ export const driverTrips = router({
     const acceptedAt = now();
     const isDirectMomoRide = ride.payment_method === 'mobile_money' || ride.payment === 'mobile_money';
     const momoNumber = isDirectMomoRide ? directMomoNumber(driverProfile.momo_number) : null;
-    const reputation = await riderReputation(ride.rider_id || ride.riderId);
+    // Reputation is display-only. Fetch it concurrently and enrich the ride
+    // after the atomic assignment rather than making the Rider wait for it.
+    const reputation = riderReputation(ride.rider_id || ride.riderId);
     const driver = {
       id: input.driverId,
       name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
@@ -619,8 +628,8 @@ export const driverTrips = router({
       // A completed-trip-only aggregate from the canonical Rider profile. The
       // Driver app can display it while offline during the accepted trip, but
       // a Driver cannot edit the profile or its reputation fields.
-      rider_rating: reputation.rating,
-      rider_rating_count: reputation.ratingCount,
+      rider_rating: null,
+      rider_rating_count: 0,
       driver_momo_number: momoNumber,
       driver_momo_network: momoNumber ? (driverProfile.momo_network || '') : null,
       status,
@@ -632,6 +641,12 @@ export const driverTrips = router({
     if ((updated as Record<string, any>).status === 'cancelled') {
       throw new Error('This ride request has expired.');
     }
+    void reputation.then((summary) => adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, {
+      rider_rating: summary.rating,
+      rider_rating_count: summary.ratingCount,
+    })).catch((error) => {
+      console.error('[DriverOffers] Deferred Rider reputation refresh failed:', error);
+    });
     await recordRideEvent({ rideId: input.rideId, type: input.queueAfterRideId ? 'offer_queued' : 'offer_accepted', actorId: input.driverId, actorRole: 'driver', status, metadata: { queued_after_ride_id: input.queueAfterRideId || null } });
     await publishLiveActivity(updated, true);
     return { success: true, ride: updated, decision: input.decision };
@@ -729,14 +744,38 @@ export const driverTrips = router({
     publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
   }),
-  complete: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative().optional(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
+  complete: driverProcedure(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+    finalFare: z.number().nonnegative().optional(),
+    tipAmount: z.number().nonnegative().optional(),
+    actualDistanceKm: z.number().optional(),
+    actualDurationMinutes: z.number().optional(),
+    fareBreakdown: z.any().optional(),
+    // The app may attach its last GPS sample to this one authoritative
+    // completion request. The server applies the normal trip-meter drift and
+    // jump checks before it can affect the final fare.
+    finalLocation: z.object({
+      latitude: z.number().min(-90).max(90),
+      longitude: z.number().min(-180).max(180),
+      recordedAt: z.string().datetime().optional(),
+    }).optional(),
+  })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
     if (!canCompleteTrip(ride)) throw new Error('A trip cannot be completed or charged before Start Trip is confirmed.');
     const quotedFare = getQuotedRideFare(ride);
     const completedAt = now();
     const meteredDurationMinutes = getTripDurationMinutes(ride.trip_started_at, new Date(completedAt).getTime());
-    const recordedMeterDistance = Number(ride.trip_meter?.distance_km);
-    const hasServerMeteredDistance = Number(ride.trip_meter?.accepted_samples) > 0
+    const finalObservationAt = input.finalLocation?.recordedAt || completedAt;
+    const finalMeter = input.finalLocation
+      ? advanceTripMeter(
+        ride.trip_meter,
+        { latitude: input.finalLocation.latitude, longitude: input.finalLocation.longitude },
+        finalObservationAt,
+      ).meter
+      : ride.trip_meter;
+    const recordedMeterDistance = Number(finalMeter?.distance_km);
+    const hasServerMeteredDistance = Number(finalMeter?.accepted_samples) > 0
       && Number.isFinite(recordedMeterDistance)
       && recordedMeterDistance >= 0;
     const compatibleDistance = getCappedCompatibilityDistanceKm(
@@ -780,6 +819,10 @@ export const driverTrips = router({
       driver_reported_final_fare: input.finalFare ?? null,
       actual_distance_km: actualDistanceKm,
       actual_duration_minutes: meteredDurationMinutes,
+      ...(input.finalLocation ? {
+        trip_meter: finalMeter,
+        trip_last_location_at: finalObservationAt,
+      } : {}),
       fare_authority: 'metered_trip',
       fare_breakdown: {
         ...meteredBreakdown,
