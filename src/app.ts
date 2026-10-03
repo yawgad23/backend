@@ -22,6 +22,7 @@ import {
   createRideQuotes,
   getOpenRideQuoteForPayment,
   makeRideQuoteSnapshot,
+  storedRoutePointPairs,
   type QuoteRoute,
 } from './rideQuotes';
 import { fetchRoadRouteWithStops } from './liveRouteMetrics';
@@ -995,7 +996,12 @@ export function createApp(): Express {
 
       res.status(201).json({
         success: true,
-        ride,
+        // Stored geometry uses Firestore-safe point objects. The established
+        // Rider map response remains [latitude, longitude] tuples.
+        ride: {
+          ...ride,
+          booking_route_points: storedRoutePointPairs(ride.booking_route_points),
+        },
         message: 'Your request is now waiting for a driver to accept it.',
       });
     } catch (error: any) {

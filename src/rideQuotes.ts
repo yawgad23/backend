@@ -26,6 +26,11 @@ export type QuoteRoute = {
   durationMinutes: number;
 };
 
+type StoredRoutePoint = {
+  lat: number;
+  lng: number;
+};
+
 export type RideQuoteSnapshot = {
   id?: string;
   rider_id: string;
@@ -34,7 +39,7 @@ export type RideQuoteSnapshot = {
   distance_km: number;
   duration_minutes: number;
   /** Server-calculated road geometry shown while the Rider waits for a Driver. */
-  route_points?: Array<[number, number]>;
+  route_points?: StoredRoutePoint[];
   route_source?: 'google_routes_traffic' | 'osrm' | 'server_coordinate_estimate';
   fare_rate_snapshot: FareRateConfig;
   surge_multiplier: number;
@@ -81,6 +86,29 @@ export function quoteExpiry(now = Date.now()): string {
   return new Date(now + RIDE_QUOTE_TTL_MS).toISOString();
 }
 
+/** Firestore forbids nested arrays, so persisted road geometry uses point objects. */
+function toStoredRoutePoints(value: unknown): StoredRoutePoint[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((point) => {
+      const source: Record<string, unknown> | null = Array.isArray(point)
+        ? { lat: point[0], lng: point[1] }
+        : point && typeof point === 'object'
+          ? point as Record<string, unknown>
+          : null;
+      const lat = Number(source?.lat ?? source?.latitude);
+      const lng = Number(source?.lng ?? source?.longitude);
+      return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+    })
+    .filter((point): point is StoredRoutePoint => point !== null)
+    .slice(0, 180);
+}
+
+/** Accepts legacy tuple records as well as the current Firestore-safe objects. */
+export function storedRoutePointPairs(value: unknown): Array<[number, number]> {
+  return toStoredRoutePoints(value).map((point) => [point.lat, point.lng] as [number, number]);
+}
+
 export function makeRideQuoteSnapshot(input: {
   riderId: string;
   category: unknown;
@@ -108,15 +136,7 @@ export function makeRideQuoteSnapshot(input: {
     route_fingerprint: routeFingerprint({ ...input.route, ...metrics }),
     distance_km: metrics.distanceKm,
     duration_minutes: metrics.durationMinutes,
-    route_points: Array.isArray(input.routePoints)
-      ? input.routePoints
-        .filter((point): point is [number, number] => Array.isArray(point)
-          && point.length >= 2
-          && Number.isFinite(Number(point[0]))
-          && Number.isFinite(Number(point[1])))
-        .map((point) => [Number(point[0]), Number(point[1])] as [number, number])
-        .slice(0, 180)
-      : [],
+    route_points: toStoredRoutePoints(input.routePoints),
     ...(input.routeSource ? { route_source: input.routeSource } : {}),
     fare_rate_snapshot: rate,
     surge_multiplier: breakdown.surgeMultiplier,
@@ -286,19 +306,9 @@ export async function consumeRideQuoteAndCreateRide(input: {
     }
 
     const now = new Date().toISOString();
-    const quoteRoutePoints = Array.isArray(validation.quote.route_points)
-      ? validation.quote.route_points
-          .filter((point): point is [number, number] => Array.isArray(point)
-            && point.length >= 2
-            && Number.isFinite(Number(point[0]))
-            && Number.isFinite(Number(point[1])))
-          .map((point) => [Number(point[0]), Number(point[1])] as [number, number])
-          .slice(0, 180)
-      : [];
-    const rideRoutePoints = Array.isArray(input.rideData.booking_route_points)
-      && input.rideData.booking_route_points.length >= 2
-      ? input.rideData.booking_route_points
-      : quoteRoutePoints;
+    const quoteRoutePoints = storedRoutePointPairs(validation.quote.route_points);
+    const suppliedRideRoutePoints = storedRoutePointPairs(input.rideData.booking_route_points);
+    const rideRoutePoints = suppliedRideRoutePoints.length >= 2 ? suppliedRideRoutePoints : quoteRoutePoints;
     const ride = {
       ...input.rideData,
       id: rideRef.id,
@@ -317,7 +327,7 @@ export async function consumeRideQuoteAndCreateRide(input: {
       estimated_distance_km: validation.quote.distance_km,
       duration: validation.quote.duration_minutes,
       estimated_duration_minutes: validation.quote.duration_minutes,
-      booking_route_points: rideRoutePoints,
+      booking_route_points: toStoredRoutePoints(rideRoutePoints),
       booking_route_source: input.rideData.booking_route_source || validation.quote.route_source || null,
       created_date: now,
       updated_date: now,

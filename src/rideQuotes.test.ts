@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   makeRideQuoteSnapshot,
   routeFingerprint,
+  storedRoutePointPairs,
   validateRideQuote,
   type QuoteRoute,
 } from './rideQuotes';
@@ -66,7 +67,12 @@ describe('server-persisted ride quotes', () => {
       surgeMultiplier: 1,
     });
 
-    expect(quote.route_points).toEqual([[5.6037, -0.187], [5.61, -0.19], [5.6501, -0.1952]]);
+    expect(quote.route_points).toEqual([
+      { lat: 5.6037, lng: -0.187 },
+      { lat: 5.61, lng: -0.19 },
+      { lat: 5.6501, lng: -0.1952 },
+    ]);
+    expect(storedRoutePointPairs(quote.route_points)).toEqual([[5.6037, -0.187], [5.61, -0.19], [5.6501, -0.1952]]);
     expect(quote.route_source).toBe('google_routes_traffic');
   });
 
