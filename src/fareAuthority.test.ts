@@ -21,9 +21,9 @@ describe('metered trip fares', () => {
       waitingFee: 0,
     });
 
-    // The standard minimum plus booking fee is allowed, but a GH₵69 booking
+    // The Standard minimum is allowed, but a GH₵69 booking
     // quote can never become the completed fare when no distance was recorded.
-    expect(fare).toBe(19);
+    expect(fare).toBe(16);
     expect(fare).toBeLessThan(69);
   });
 
@@ -38,7 +38,7 @@ describe('metered trip fares', () => {
     expect(breakdown.distanceFare).toBeCloseTo(36.5, 5);
     expect(breakdown.timeFare).toBeCloseTo(8.6, 5);
     expect(breakdown.waitingFee).toBe(2.2);
-    expect(breakdown.total).toBe(60);
+    expect(breakdown.total).toBe(57);
   });
 
   it('uses a stored category rate snapshot instead of a later default rate', () => {
@@ -67,6 +67,50 @@ describe('metered trip fares', () => {
   it('uses server time only after the recorded Start Trip timestamp', () => {
     expect(getTripDurationMinutes('2026-09-24T15:00:00.000Z', Date.parse('2026-09-24T15:15:00.000Z'))).toBe(15);
     expect(getTripDurationMinutes('not-a-date', Date.now())).toBe(0);
+  });
+
+  it('caps eligible Standard short rides at GH₵19 before paid waiting', () => {
+    const breakdown = getMeteredFareBreakdown({
+      category: 'standard',
+      distanceKm: 1.8,
+      durationMinutes: 9,
+      waitingFee: 2.2,
+      fareRate: {
+        baseFare: 10,
+        pricePerKm: 5,
+        pricePerMinute: 0.8,
+        minFare: 16.5,
+        bookingFee: 2.5,
+        waitingFeePerMinute: 0.55,
+        shortTripCap: 19,
+        shortTripMaxDistanceKm: 2,
+        shortTripMaxDurationMinutes: 10,
+        isActive: true,
+      },
+    });
+    expect(breakdown).toMatchObject({ shortTripCap: 19, shortTripCapApplied: true, waitingFee: 2.2, total: 21 });
+  });
+
+  it('does not cap Standard trips outside either approved short-trip limit', () => {
+    const breakdown = getMeteredFareBreakdown({
+      category: 'standard',
+      distanceKm: 2.1,
+      durationMinutes: 9,
+      fareRate: {
+        baseFare: 10,
+        pricePerKm: 5,
+        pricePerMinute: 0.8,
+        minFare: 16.5,
+        bookingFee: 2.5,
+        waitingFeePerMinute: 0.55,
+        shortTripCap: 19,
+        shortTripMaxDistanceKm: 2,
+        shortTripMaxDurationMinutes: 10,
+        isActive: true,
+      },
+    });
+    expect(breakdown.shortTripCapApplied).toBe(false);
+    expect(breakdown.total).toBeGreaterThan(19);
   });
 
   it('charges only post-free waiting from server arrival and Start Trip timestamps', () => {

@@ -20,6 +20,8 @@ export type MeteredFareBreakdown = {
   surgeMultiplier: number;
   minimumFare: number;
   bookingFee: number;
+  shortTripCapApplied: boolean;
+  shortTripCap: number | null;
   waitingFee: number;
   total: number;
 };
@@ -36,6 +38,18 @@ export type WaitingCharge = {
 function finiteNonNegative(value: unknown, fallback = 0): number {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : fallback;
+}
+
+function standardShortTripCap(rate: FareRate, category: string, distanceKm: number, durationMinutes: number): number | null {
+  if (category !== 'standard') return null;
+  const cap = Number(rate.shortTripCap);
+  const maximumDistance = Number(rate.shortTripMaxDistanceKm);
+  const maximumDuration = Number(rate.shortTripMaxDurationMinutes);
+  const minimumTotal = rate.minFare + rate.bookingFee;
+  if (!Number.isFinite(cap) || !Number.isFinite(maximumDistance) || !Number.isFinite(maximumDuration)) return null;
+  if (cap < minimumTotal || maximumDistance <= 0 || maximumDuration <= 0) return null;
+  if (distanceKm > maximumDistance || durationMinutes > maximumDuration) return null;
+  return cap;
 }
 
 /** HY3N display rule: fractions at .50 or below round down; above .50 round up. */
@@ -129,7 +143,13 @@ export function getMeteredFareBreakdown(input: {
   const distanceFare = distanceKm * rate.pricePerKm;
   const timeFare = durationMinutes * rate.pricePerMinute;
   const meteredSubtotal = (rate.baseFare + distanceFare + timeFare) * surgeMultiplier;
-  const beforeWaiting = Math.max(meteredSubtotal, rate.minFare) + rate.bookingFee;
+  const uncappedBeforeWaiting = Math.max(meteredSubtotal, rate.minFare) + rate.bookingFee;
+  const shortTripCap = standardShortTripCap(rate, category, distanceKm, durationMinutes);
+  // Paid waiting is earned after the inclusive short-trip fare is established.
+  // It is never erased by the short-trip promotion.
+  const beforeWaiting = shortTripCap === null
+    ? uncappedBeforeWaiting
+    : Math.min(uncappedBeforeWaiting, shortTripCap);
 
   return {
     category,
@@ -143,6 +163,8 @@ export function getMeteredFareBreakdown(input: {
     surgeMultiplier,
     minimumFare: rate.minFare,
     bookingFee: rate.bookingFee,
+    shortTripCapApplied: shortTripCap !== null && beforeWaiting < uncappedBeforeWaiting,
+    shortTripCap,
     waitingFee: Number(waitingFee.toFixed(2)),
     total: roundGhsFare(beforeWaiting + waitingFee),
   };
