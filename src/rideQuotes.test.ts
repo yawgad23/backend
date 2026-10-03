@@ -70,6 +70,27 @@ describe('server-persisted ride quotes', () => {
     expect(quote.route_source).toBe('google_routes_traffic');
   });
 
+  it('prepares independent locked snapshots for the category batch', () => {
+    const standard = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'standard',
+      route,
+      fareRate: originalRate,
+      surgeMultiplier: 1,
+    });
+    const comfort = makeRideQuoteSnapshot({
+      riderId: 'rider-a',
+      category: 'comfort',
+      route,
+      fareRate: { ...originalRate, baseFare: 16.2, pricePerKm: 4.95, pricePerMinute: 0.65, minFare: 27.5 },
+      surgeMultiplier: 1,
+    });
+
+    expect([standard, comfort].map((quote) => quote.category)).toEqual(['standard', 'comfort']);
+    expect(standard.route_fingerprint).toBe(comfort.route_fingerprint);
+    expect(standard.fare_rate_snapshot).not.toEqual(comfort.fare_rate_snapshot);
+  });
+
   it('keeps the accepted quote unchanged after a later admin rate update', () => {
     const quote = makeRideQuoteSnapshot({
       riderId: 'rider-a',

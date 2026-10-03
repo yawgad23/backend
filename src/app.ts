@@ -19,6 +19,7 @@ import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } fr
 import {
   consumeRideQuoteAndCreateRide,
   createRideQuote,
+  createRideQuotes,
   getOpenRideQuoteForPayment,
   makeRideQuoteSnapshot,
   type QuoteRoute,
@@ -709,6 +710,7 @@ export function createApp(): Express {
       res.status(400).json({ success: false, message: 'Please check the route details and try again.' });
       return;
     }
+    let quoteStage = 'route';
     try {
       const categories = [...new Set(parsed.data.categories.map(normalizeFareCategory))];
       const quoteRoadRoute = await fetchRoadRouteWithStops(
@@ -719,11 +721,13 @@ export function createApp(): Express {
         res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
         return;
       }
+      quoteStage = 'surge';
       const surgeMultiplier = await getActiveSurgeMultiplier();
-      const quotes = await Promise.all(categories.map(async (category) => {
+      quoteStage = 'fare_configuration';
+      const quoteSnapshots = await Promise.all(categories.map(async (category) => {
         const fareRate = await getFareRateConfig(category);
         if (!fareRate.isActive) {
-          return { category, available: false };
+          return { category, available: false as const };
         }
         const route: QuoteRoute = {
           pickup: parsed.data.pickup,
@@ -734,18 +738,35 @@ export function createApp(): Express {
           distanceKm: quoteRoadRoute.distanceKm,
           durationMinutes: quoteRoadRoute.durationMinutes,
         };
-        const storedQuote = await createRideQuote(makeRideQuoteSnapshot({
-          riderId,
-          category,
-          route,
-          routePoints: quoteRoadRoute.points,
-          routeSource: quoteRoadRoute.source,
-          fareRate,
-          surgeMultiplier,
-        }));
-        const breakdown = storedQuote.quote_breakdown;
         return {
           category,
+          available: true as const,
+          fareRate,
+          snapshot: makeRideQuoteSnapshot({
+            riderId,
+            category,
+            route,
+            routePoints: quoteRoadRoute.points,
+            routeSource: quoteRoadRoute.source,
+            fareRate,
+            surgeMultiplier,
+          }),
+        };
+      }));
+      quoteStage = 'storage';
+      const persistedQuotes = await createRideQuotes(
+        quoteSnapshots
+          .filter((quote): quote is Extract<typeof quote, { available: true }> => quote.available)
+          .map((quote) => quote.snapshot),
+      );
+      const persistedByCategory = new Map(persistedQuotes.map((quote) => [quote.category, quote]));
+      const quotes = quoteSnapshots.map((quote) => {
+        if (!quote.available) return quote;
+        const storedQuote = persistedByCategory.get(quote.category);
+        if (!storedQuote) throw new Error(`Quote persistence did not return ${quote.category}.`);
+        const breakdown = storedQuote.quote_breakdown;
+        return {
+          category: quote.category,
           quoteId: storedQuote.id,
           expiresAt: storedQuote.expires_at,
           available: true,
@@ -755,18 +776,30 @@ export function createApp(): Express {
           durationMinutes: breakdown.durationMinutes,
           surgeMultiplier: breakdown.surgeMultiplier,
           breakdown,
-          fareRate,
+          fareRate: quote.fareRate,
           routePoints: quoteRoadRoute.points,
           routeSource: quoteRoadRoute.source,
         };
-      }));
+      });
       res.json({
         success: true,
         quotes,
       });
     } catch (error) {
-      console.error('[Ride quote] Failed:', error);
-      res.status(503).json({ success: false, message: 'Pricing is temporarily unavailable. Please try again.' });
+      const detail = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+      // Stage and error class make an outage diagnosable without logging Rider
+      // identity, coordinates, auth headers, prices, or any secret material.
+      console.error('[Ride quote] Failed', {
+        stage: quoteStage,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+        detail,
+      });
+      const message = quoteStage === 'storage'
+        ? 'Secure fare storage is temporarily unavailable. Please try again.'
+        : quoteStage === 'fare_configuration' || quoteStage === 'surge'
+          ? 'Fare settings are temporarily unavailable. Please try again.'
+          : 'Pricing is temporarily unavailable. Please try again.';
+      res.status(503).json({ success: false, code: `quote_${quoteStage}_unavailable`, message });
     }
   });
 
