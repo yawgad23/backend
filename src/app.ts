@@ -25,7 +25,7 @@ import {
   storedRoutePointPairs,
   type QuoteRoute,
 } from './rideQuotes';
-import { fetchRoadRouteWithStops } from './liveRouteMetrics';
+import { fetchBookingRoadRouteWithStops, fetchRoadRouteWithStops } from './liveRouteMetrics';
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
@@ -718,7 +718,7 @@ export function createApp(): Express {
     let quoteStage = 'route';
     try {
       const categories = [...new Set(parsed.data.categories.map(normalizeFareCategory))];
-      const quoteRoadRoute = await fetchRoadRouteWithStops(
+      const quoteRoadRoute = await fetchBookingRoadRouteWithStops(
         { latitude: parsed.data.pickup.lat, longitude: parsed.data.pickup.lng },
         [...(parsed.data.stops || []), parsed.data.destination].map((point) => ({ latitude: point.lat, longitude: point.lng })),
       );

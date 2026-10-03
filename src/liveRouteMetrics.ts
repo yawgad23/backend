@@ -29,8 +29,14 @@ export const ROUTE_REFRESH_MS = 8_000;
 const MAX_ROUTE_POINTS = 180;
 const COORDINATE_ROAD_DISTANCE_FACTOR = 1.28;
 const COORDINATE_FALLBACK_SPEED_KMH = 22;
+const FAST_GOOGLE_ROUTE_WAIT_MS = 1_500;
+const BOOKING_ROUTE_CACHE_TTL_MS = 20_000;
+const MAX_BOOKING_ROUTE_CACHE_ENTRIES = 120;
 type CachedRoute = { requestedAt: number; targetKey: string; metrics: RoadRouteMetrics | null };
+type CachedBookingRoute = { expiresAt: number; metrics: RoadRouteMetrics };
 const routeCache = new Map<string, CachedRoute>();
+const bookingRouteCache = new Map<string, CachedBookingRoute>();
+const bookingRouteInFlight = new Map<string, Promise<RoadRouteMetrics | null>>();
 
 function validPoint(point: Point | null | undefined): point is Point {
   return Boolean(
@@ -271,7 +277,28 @@ async function fetchOsrmRoadRoute(from: Point, to: Point): Promise<RoadRouteMetr
   }
 }
 
-/** Prefers commercial live-traffic routing, while preserving a road-route fallback during provider outages. */
+/**
+ * Keep traffic-aware Google routing as the first preference, but do not wait
+ * for its full timeout before an already-started road-route fallback can answer
+ * a booking screen. Both providers remain server-only and the server remains
+ * the authority for the returned distance and duration.
+ */
+export async function preferGoogleRouteWithFastFallback(
+  googleRoute: Promise<RoadRouteMetrics | null>,
+  osrmRoute: Promise<RoadRouteMetrics | null>,
+  googleWaitMs = FAST_GOOGLE_ROUTE_WAIT_MS,
+): Promise<RoadRouteMetrics | null> {
+  const fastGoogleResult = await Promise.race<RoadRouteMetrics | null>([
+    googleRoute,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), googleWaitMs)),
+  ]);
+  if (fastGoogleResult) return fastGoogleResult;
+
+  const fallbackResult = await osrmRoute;
+  return fallbackResult || await googleRoute;
+}
+
+/** Prefers commercial live-traffic routing, while preserving the normal road fallback. */
 export async function fetchRoadRoute(from: Point, to: Point): Promise<RoadRouteMetrics | null> {
   return await fetchGoogleTrafficRoute(from, to) || await fetchOsrmRoadRoute(from, to);
 }
@@ -310,6 +337,83 @@ export async function fetchRoadRouteWithStops(from: Point, destinations: Point[]
       speedIntervals: [],
     } : undefined,
   };
+}
+
+/** A quicker booking-only route path; active-trip live ETA keeps its traffic-first path above. */
+async function fetchFastBookingRoadRouteWithStops(from: Point, destinations: Point[]): Promise<RoadRouteMetrics | null> {
+  if (!validPoint(from) || destinations.length === 0 || destinations.some((point) => !validPoint(point))) return null;
+  let origin = from;
+  const legs: RoadRouteMetrics[] = [];
+  for (const destination of destinations) {
+    const leg = await preferGoogleRouteWithFastFallback(
+      fetchGoogleTrafficRoute(origin, destination),
+      fetchOsrmRoadRoute(origin, destination),
+    );
+    if (!leg) return serverCoordinateRouteEstimate(from, destinations);
+    legs.push(leg);
+    origin = destination;
+  }
+  const points = boundedRoutePoints(legs.flatMap((leg, index) => index === 0 ? leg.points : leg.points.slice(1)));
+  if (points.length < 2) return serverCoordinateRouteEstimate(from, destinations);
+  const allGoogle = legs.every((leg) => leg.source === 'google_routes_traffic');
+  const staticDuration = legs.reduce((sum, leg) => sum + Number(leg.traffic?.staticDurationMinutes || 0), 0);
+  const delay = legs.reduce((sum, leg) => sum + Number(leg.traffic?.delayMinutes || 0), 0);
+  return {
+    distanceKm: Number(legs.reduce((sum, leg) => sum + leg.distanceKm, 0).toFixed(3)),
+    durationMinutes: Number(legs.reduce((sum, leg) => sum + leg.durationMinutes, 0).toFixed(1)),
+    points,
+    source: allGoogle ? 'google_routes_traffic' : 'osrm',
+    traffic: allGoogle ? {
+      staticDurationMinutes: Number(staticDuration.toFixed(1)),
+      delayMinutes: Number(delay.toFixed(1)),
+      speedIntervals: [],
+    } : undefined,
+  };
+}
+
+/** Stable key for short-lived, coordinate-identical booking previews only. */
+export function bookingRouteCacheKey(from: Point, destinations: Point[]) {
+  const pointKey = (point: Point) => `${point.latitude.toFixed(5)},${point.longitude.toFixed(5)}`;
+  return [pointKey(from), ...destinations.map(pointKey)].join('~');
+}
+
+function pruneBookingRouteCache(now: number) {
+  for (const [key, cached] of bookingRouteCache) {
+    if (cached.expiresAt <= now) bookingRouteCache.delete(key);
+  }
+  while (bookingRouteCache.size >= MAX_BOOKING_ROUTE_CACHE_ENTRIES) {
+    const oldestKey = bookingRouteCache.keys().next().value;
+    if (!oldestKey) break;
+    bookingRouteCache.delete(oldestKey);
+  }
+}
+
+/**
+ * Reuses an identical route calculation for a brief quote-comparison window.
+ * This coalesces the Rider's selected-category request and background-category
+ * request without sharing any fare, quote ID, or Rider-owned data.
+ */
+export async function fetchBookingRoadRouteWithStops(from: Point, destinations: Point[]): Promise<RoadRouteMetrics | null> {
+  if (!validPoint(from) || destinations.length === 0 || destinations.some((point) => !validPoint(point))) return null;
+  const key = bookingRouteCacheKey(from, destinations);
+  const now = Date.now();
+  const cached = bookingRouteCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.metrics;
+  pruneBookingRouteCache(now);
+
+  const existing = bookingRouteInFlight.get(key);
+  if (existing) return existing;
+
+  const request = fetchFastBookingRoadRouteWithStops(from, destinations).then((metrics) => {
+    if (metrics) bookingRouteCache.set(key, { metrics, expiresAt: Date.now() + BOOKING_ROUTE_CACHE_TTL_MS });
+    return metrics;
+  });
+  bookingRouteInFlight.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (bookingRouteInFlight.get(key) === request) bookingRouteInFlight.delete(key);
+  }
 }
 
 async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<RoadRouteMetrics | null> {
