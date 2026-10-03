@@ -713,6 +713,56 @@ export const driverTrips = router({
     await recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     return { success: true, ride: updated };
   }),
+  // The Driver UI's “Verify & start trip” action must make one network round
+  // trip, not wait for a verification mutation and then a second start mutation.
+  // Both state transitions are still server-authoritative and atomic.
+  verifyAndStart: driverProcedure(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+    pickupCode: z.string(),
+    startLocation: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
+  })).mutation(async ({ input }) => {
+    const ride = await rideFor(input.driverId, input.rideId);
+    if (ride.status === 'in_progress' && String(ride.driver_id || '') === input.driverId) {
+      return { success: true, alreadyStarted: true, ride };
+    }
+    if (!canStartTrip(ride)) throw new Error('Trip must be marked driver_arrived before it can start.');
+    if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.');
+
+    const tripStartedAt = now();
+    const waitingCharge = getWaitingCharge({
+      category: ride.category,
+      fareRate: ride.fare_rate_snapshot,
+      arrivedAt: ride.driver_arrived_at,
+      tripStartedAt,
+    });
+    const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], {
+      driver_id: input.driverId,
+      status: 'in_progress',
+      pickup_verified_at: tripStartedAt,
+      trip_started_at: tripStartedAt,
+      trip_meter: initializeTripMeter(tripStartedAt, input.startLocation),
+      trip_distance_source: 'server_gps_meter',
+      actual_distance_km: 0,
+      waiting_time_minutes: waitingCharge.waitedMinutes,
+      waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
+      waiting_fee_per_minute: waitingCharge.ratePerMinute,
+      waiting_fee: waitingCharge.waitingFee,
+    });
+    recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
+    recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
+      waiting_time_minutes: waitingCharge.waitedMinutes,
+      waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
+      waiting_fee: waitingCharge.waitingFee,
+    } });
+    publishLiveActivity(updated, true);
+    if (input.startLocation) {
+      void refreshDriverActiveRideRoutes(input.driverId, input.startLocation).catch((error) => {
+        console.error('[RoadRoute] Verify-and-start route refresh failed:', error);
+      });
+    }
+    return { success: true, ride: updated };
+  }),
   start: driverProcedure(z.object({
     driverId: z.string(),
     rideId: z.string(),

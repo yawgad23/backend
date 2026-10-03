@@ -27,6 +27,20 @@ export function completedTripCountAfterCompletion(
   return historicalCompleted + 1;
 }
 
+/**
+ * The completion path must not scan a Driver's entire ride history before it
+ * acknowledges End Trip. The server-owned profile counter is updated in the
+ * same Firestore transaction as the terminal ride state, so the next count is
+ * authoritative for normal operation and cannot be supplied by a client.
+ */
+export function nextCompletedTripCount(profileRecords: DriverTripRecord[]): number {
+  const current = profileRecords.reduce((maximum, profile) => {
+    const count = Number(profile.total_trips ?? profile.total_rides ?? 0);
+    return Number.isFinite(count) && count >= 0 ? Math.max(maximum, Math.floor(count)) : maximum;
+  }, 0);
+  return current + 1;
+}
+
 /** Canonical and legacy Driver profile documents receive the same derived count. */
 export function driverTripCountProfilePatch(driverId: string, totalTrips: number, updatedAt: string) {
   const safeTotal = Math.max(0, Math.floor(Number(totalTrips) || 0));
@@ -35,6 +49,6 @@ export function driverTripCountProfilePatch(driverId: string, totalTrips: number
     total_trips: safeTotal,
     total_rides: safeTotal,
     total_trips_updated_at: updatedAt,
-    total_trips_source: 'completed_ride_records',
+    total_trips_source: 'server_completion_counter',
   };
 }

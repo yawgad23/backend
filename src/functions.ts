@@ -3,6 +3,7 @@ import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/fire
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
 import { sendRideChatPush, sendRideStatusPush } from "./pushNotifications";
+import { sendDriverRideOfferPush } from './driverOfferPush';
 import { runDailyFinancialReconciliation } from './financialReconciliation';
 
 // Force deploy: 2026-07-18T17:10:00Z
@@ -74,6 +75,22 @@ export const chatMessagePush = onDocumentCreated(
   async (event) => {
     if (!event.data) return;
     await sendRideChatPush(event.params.messageId, event.data.data());
+  },
+);
+
+/**
+ * A new searching ride wakes nearby compatible Drivers immediately. Full ride
+ * data is still read through the authenticated Driver offers endpoint, so a
+ * push cannot expose a Rider's private details or bypass server eligibility.
+ */
+export const driverRideOfferPush = onDocumentCreated(
+  {
+    document: 'rides/{rideId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    if (!event.data) return;
+    await sendDriverRideOfferPush(event.params.rideId, event.data.data());
   },
 );
 
