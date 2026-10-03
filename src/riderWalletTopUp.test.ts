@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildRiderWalletTopUpPayment,
   normalizeRiderWalletTopUpAmount,
   registeredRiderPaymentName,
   riderWalletTopUpDescription,
@@ -20,5 +21,14 @@ describe('Rider wallet top-up identity and amount', () => {
 
   it('labels each provider charge as a Rider wallet top-up with the exact amount', () => {
     expect(riderWalletTopUpDescription(5)).toBe('HY3N Rider Wallet top-up GH₵5.00');
+  });
+
+  it('keeps the registered name, exact amount, and Rider-only purpose together', () => {
+    expect(buildRiderWalletTopUpPayment({ full_name: 'Nana Owusu' }, 5)).toEqual({
+      amount: 5,
+      customerName: 'Nana',
+      description: 'HY3N Rider Wallet top-up GH₵5.00',
+      paymentPurpose: 'rider_wallet_top_up',
+    });
   });
 });

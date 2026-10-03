@@ -4,6 +4,17 @@ export type RiderPaymentProfile = {
   display_name?: unknown;
 };
 
+export type RiderWalletTopUpPayment = {
+  /** Server-normalized Ghana cedi amount passed to both Firestore and Hubtel. */
+  amount: number;
+  /** Registered Rider first name for Hubtel's greeting, e.g. "Hi Nana". */
+  customerName: string;
+  /** Explicitly Rider-only provider label; never a Driver platform fee. */
+  description: string;
+  /** Stored with the ledger row for payment-type reconciliation. */
+  paymentPurpose: 'rider_wallet_top_up';
+};
+
 /**
  * Wallet funding is denominated in Ghana pesewas. Normalize it once before a
  * transaction record or provider request is created so the stored and charged
@@ -39,4 +50,24 @@ export function registeredRiderPaymentName(profile: RiderPaymentProfile | null |
 
 export function riderWalletTopUpDescription(amount: number): string {
   return `HY3N Rider Wallet top-up GH₵${amount.toFixed(2)}`;
+}
+
+/**
+ * Produces the one authoritative value set for a Rider wallet payment. The
+ * client may supply its selected amount, but the server owns normalization,
+ * registered identity, provider description, and the ledger purpose. Keeping
+ * these values together prevents a Rider wallet request from being recorded
+ * or presented as a Driver daily-platform-fee request.
+ */
+export function buildRiderWalletTopUpPayment(
+  profile: RiderPaymentProfile | null | undefined,
+  rawAmount: number,
+): RiderWalletTopUpPayment {
+  const amount = normalizeRiderWalletTopUpAmount(rawAmount);
+  return {
+    amount,
+    customerName: registeredRiderPaymentName(profile),
+    description: riderWalletTopUpDescription(amount),
+    paymentPurpose: 'rider_wallet_top_up',
+  };
 }

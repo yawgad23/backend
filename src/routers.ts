@@ -15,9 +15,7 @@ import { getTripChargeTotal } from "./fareAuthority";
 import { hubtelPaymentState, isHubtelStatusResponseAccepted, readHubtelPaymentDetails } from './hubtelPaymentStatus';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
-  normalizeRiderWalletTopUpAmount,
-  registeredRiderPaymentName,
-  riderWalletTopUpDescription,
+  buildRiderWalletTopUpPayment,
 } from './riderWalletTopUp';
 
 function hasDriverFeeTestBypass(driverId: string) {
@@ -502,7 +500,6 @@ export const appRouter = router({
         amount: z.number().finite().min(5).max(5000),
       }))
       .mutation(async ({ input }) => {
-        const amount = normalizeRiderWalletTopUpAmount(input.amount);
         const canonicalProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, input.riderId);
         const profileByUserId = canonicalProfile
           ? null
@@ -513,7 +510,7 @@ export const appRouter = router({
               'desc',
               1,
             ))[0] || null;
-        const riderName = registeredRiderPaymentName(canonicalProfile || profileByUserId);
+        const payment = buildRiderWalletTopUpPayment(canonicalProfile || profileByUserId, input.amount);
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const reference = generateReference();
         const walletCallbackUrl = process.env.HUBTEL_WALLET_CALLBACK_URL || '';
@@ -528,9 +525,11 @@ export const appRouter = router({
           user_id: input.riderId,
           user_type: 'rider',
           type: 'credit',
-          amount,
-          description: `Rider wallet top-up via MoMo`,
-          payment_purpose: 'rider_wallet_top_up',
+          amount: payment.amount,
+          description: payment.description,
+          payment_purpose: payment.paymentPurpose,
+          payer_display_name: payment.customerName,
+          provider_requested_amount: payment.amount,
           reference,
           status: 'processing',
           callback_url: walletCallbackUrl,
@@ -541,9 +540,9 @@ export const appRouter = router({
           // chargeDriverCommission normalizes Ghana's local, 233, and +233
           // formats once. Passing the original entry prevents "233+233...".
           customerMsisdn: input.momoNumber,
-          amount,
-          customerName: riderName,
-          description: riderWalletTopUpDescription(amount),
+          amount: payment.amount,
+          customerName: payment.customerName,
+          description: payment.description,
           clientReference: reference,
           channel,
           callbackUrl: walletCallbackUrl,
