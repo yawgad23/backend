@@ -26,6 +26,67 @@ function hasDriverFeeTestBypass(driverId: string) {
     .includes(driverId);
 }
 
+type DriverFeeCheck = {
+  isPaid: boolean;
+  feeGateDisabled?: boolean;
+  testAccessGranted?: boolean;
+  adminFeeBypassGranted?: boolean;
+  bypassDate?: string;
+};
+
+const DRIVER_FEE_CHECK_CACHE_MS = 14_000;
+const driverFeeCheckCache = new Map<string, { value: DriverFeeCheck; expiresAt: number }>();
+
+async function recentDriverFeeRecords(driverId: string) {
+  try {
+    // A bounded, newest-first query is enough to decide the 24-hour fee gate.
+    // The matching composite index avoids scanning a Driver's entire payment
+    // history every time the home screen refreshes.
+    return await adminFirestore.list(
+      ADMIN_COLLECTIONS.DAILY_COMMISSION,
+      { driver_id: driverId },
+      'created_date',
+      'desc',
+      20,
+    );
+  } catch (error) {
+    // Keep Driver availability working while the newly deployed index builds.
+    console.warn('[DriverFee] Indexed fee lookup unavailable; using bounded compatibility scan.', error);
+    return adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: driverId }, null, 'desc', 100);
+  }
+}
+
+async function currentDriverFeeCheck(driverId: string): Promise<DriverFeeCheck> {
+  const today = new Date().toISOString().split('T')[0];
+  const cacheKey = `${driverId}:${today}`;
+  const cached = driverFeeCheckCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  let value: DriverFeeCheck;
+  if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') {
+    value = { isPaid: true, feeGateDisabled: true };
+  } else if (hasDriverFeeTestBypass(driverId)) {
+    value = { isPaid: true, testAccessGranted: true };
+  } else {
+    const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+    if (isDriverFeeBypassActive(driverProfile, today)) {
+      value = { isPaid: true, adminFeeBypassGranted: true, bypassDate: today };
+    } else {
+      const records = await recentDriverFeeRecords(driverId);
+      const isPaid = records.some((record: any) => {
+        if (!['paid', 'confirmed', 'completed'].includes(String(record.status || '').toLowerCase())) return false;
+        const paidAt = record.submitted_at || record.admin_override_at || record.created_date || record.date;
+        const paymentTime = new Date(paidAt || 0).getTime();
+        return Number.isFinite(paymentTime) && Date.now() - paymentTime < 24 * 60 * 60 * 1000;
+      });
+      value = { isPaid };
+    }
+  }
+
+  driverFeeCheckCache.set(cacheKey, { value, expiresAt: Date.now() + DRIVER_FEE_CHECK_CACHE_MS });
+  return value;
+}
+
 // ─── Wallet helpers ─────────────────────────────────────────────────────────
 
 async function getOrCreateWallet(userId: string, userType: 'rider' | 'driver' = 'rider') {
@@ -381,55 +442,7 @@ export const appRouter = router({
         driverId: z.string(),
       }))
       .query(async ({ input }) => {
-        const today = new Date().toISOString().split('T')[0];
-        // The mobile app can be opened for supervised dispatch testing without
-        // charging a driver. Production remains gated unless Railway explicitly
-        // sets DRIVER_PLATFORM_FEE_GATE_ENABLED=false.
-        if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') {
-          return { isPaid: true, feeGateDisabled: true };
-        }
-        if (hasDriverFeeTestBypass(input.driverId)) {
-          return { isPaid: true, testAccessGranted: true };
-        }
-
-        const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId);
-        if (isDriverFeeBypassActive(driverProfile, today)) {
-          return { isPaid: true, adminFeeBypassGranted: true, bypassDate: today };
-        }
-
-        // Fetch all commission records for this driver to process in memory
-        const records = await adminFirestore.list(
-          ADMIN_COLLECTIONS.DAILY_COMMISSION,
-          { driver_id: input.driverId },
-          null
-        );
-
-        // Filter for successful payments and sort by date descending
-        const successful = records
-          .filter((r: any) => r.status === 'paid' || r.status === 'confirmed')
-          .sort((a: any, b: any) => {
-            const timeA = new Date(a.submitted_at || a.admin_override_at || a.created_date || a.date || 0).getTime();
-            const timeB = new Date(b.submitted_at || b.admin_override_at || b.created_date || b.date || 0).getTime();
-            return timeB - timeA;
-          });
-
-        if (successful.length === 0) {
-          return { isPaid: false };
-        }
-
-        const latestPayment = successful[0];
-        const paymentDateStr = latestPayment.submitted_at || latestPayment.admin_override_at || latestPayment.created_date || latestPayment.date;
-        if (!paymentDateStr) {
-          return { isPaid: false };
-        }
-
-        const paymentTime = new Date(paymentDateStr).getTime();
-        const currentTime = Date.now();
-        const hoursElapsed = (currentTime - paymentTime) / (1000 * 60 * 60);
-
-        // Payment remains valid for exactly 24 hours after it was submitted
-        const isPaid = hoursElapsed < 24;
-        return { isPaid };
+        return currentDriverFeeCheck(input.driverId);
       }),
 
   }),
