@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { driverApprovalState, isApprovedDriverProfile } from './driverApproval';
+import { driverApprovalState, isApprovedDriverProfile, preferredDriverProfile } from './driverApproval';
 
 describe('Driver approval policy', () => {
   it('requires an explicit admin approval before a Driver can be dispatchable', () => {
@@ -17,5 +17,16 @@ describe('Driver approval policy', () => {
     expect(driverApprovalState({ is_approved: true })).toBe('approved');
     expect(driverApprovalState({ application_status: 'rejected', approved: true })).toBe('rejected');
     expect(driverApprovalState({ application_status: 'not-reviewed' })).toBe('pending');
+  });
+
+  it('prefers an approved UID profile and falls back safely for legacy records', () => {
+    expect(preferredDriverProfile([
+      { id: 'legacy', approval_status: 'pending', updated_date: '2026-10-03T10:00:00.000Z' },
+      { id: 'uid', approval_status: 'approved', updated_date: '2026-10-03T09:00:00.000Z' },
+    ])?.id).toBe('uid');
+    expect(preferredDriverProfile([
+      { id: 'uid', approval_status: 'pending', updated_date: '2026-10-03T10:00:00.000Z' },
+      { id: 'legacy', approval_status: 'approved', updated_date: '2026-10-03T09:00:00.000Z' },
+    ])?.id).toBe('legacy');
   });
 });

@@ -24,6 +24,10 @@ import { canPersistDriverTripMeter } from './driverTripLifecycle';
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
 const driverIdInput = z.object({ driverId: z.string().min(1) });
+const OFFER_PRESENTATION_CACHE_MS = 60_000;
+const DRIVER_FEE_CACHE_MS = 60_000;
+const riderReputationCache = new Map<string, { value: { rating: number | null; ratingCount: number }; expiresAt: number }>();
+const currentDriverFeeCache = new Map<string, number>();
 
 async function profile(driverId: string) {
   return driverProfileForUserId(driverId);
@@ -40,6 +44,9 @@ async function rideFor(driverId: string, rideId: string) {
 async function riderReputation(riderId: unknown) {
   const uid = String(riderId || '').trim();
   if (!uid) return { rating: null, ratingCount: 0 };
+  const cached = riderReputationCache.get(uid);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
   const directProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, uid);
   const profileByUserId = directProfile
     ? null
@@ -47,10 +54,12 @@ async function riderReputation(riderId: unknown) {
   const profileData = directProfile || profileByUserId;
   const rating = Number(profileData?.rating);
   const ratingCount = Math.max(0, Math.floor(Number(profileData?.rating_count) || 0));
-  return {
+  const value = {
     rating: Number.isFinite(rating) && rating >= 1 && rating <= 5 && ratingCount > 0 ? rating : null,
     ratingCount,
   };
+  riderReputationCache.set(uid, { value, expiresAt: Date.now() + OFFER_PRESENTATION_CACHE_MS });
+  return value;
 }
 
 function withRide(ride: Record<string, any>, patch: Record<string, any>): Record<string, any> {
@@ -64,6 +73,24 @@ function publishLiveActivity(ride: Record<string, any>, force = false) {
   void sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
     console.error('[LiveActivity] Ride state push failed:', error);
   });
+}
+
+async function currentSearchingRides() {
+  try {
+    // This is backed by the `rides(status ASC, created_at DESC)` composite
+    // index. Keep a bounded legacy fallback while a freshly deployed index is
+    // building rather than making offer discovery unavailable.
+    return await adminFirestore.list(
+      ADMIN_COLLECTIONS.RIDES,
+      { status: 'searching' },
+      'created_at',
+      'desc',
+      80,
+    );
+  } catch (error) {
+    console.warn('[DriverOffers] Indexed searching-ride query unavailable; using bounded compatibility scan.', error);
+    return adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
+  }
 }
 
 export function receiptEmail(value: unknown) {
@@ -289,8 +316,13 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
   // production, a paid commission remains valid for 24 hours.
   if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') return true;
   if (hasDriverFeeTestBypass(driverId)) return true;
+  const cacheUntil = currentDriverFeeCache.get(driverId) || 0;
+  if (cacheUntil > Date.now()) return true;
   const driverProfile = knownProfile ?? await profile(driverId);
-  if (canPassDriverPlatformFeeGate(driverProfile, false)) return true;
+  if (canPassDriverPlatformFeeGate(driverProfile, false)) {
+    currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
+    return true;
+  }
   const records = await adminFirestore.list(
     ADMIN_COLLECTIONS.DAILY_COMMISSION,
     { driver_id: driverId },
@@ -304,7 +336,10 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
     const paidTime = new Date(paidAt || 0).getTime();
     return Number.isFinite(paidTime) && Date.now() - paidTime < 24 * 60 * 60 * 1000;
   });
-  return canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee);
+  const allowed = canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee);
+  if (allowed) currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
+  else currentDriverFeeCache.delete(driverId);
+  return allowed;
 }
 
 const CATEGORY_ALIASES: Record<string, string> = {
@@ -516,7 +551,10 @@ export const driverTrips = router({
     const driverLocation = locationOf(driverProfile);
     if (!driverLocation) return { offers: [] };
 
-    const recentRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, 'created_at', 'desc', 40);
+    // Restrict the database query to live searches before local category and
+    // distance filtering. The index-backed query avoids reading unrelated
+    // completed rides every time an online Driver polls for an offer.
+    const recentRides = await currentSearchingRides();
     const nearbyOffers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
       .filter((ride) => !isRideSearchExpired(ride))

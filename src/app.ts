@@ -52,6 +52,7 @@ import {
   createCardCheckoutReference,
   initiateHubtelCardCheckout,
 } from "./cardCheckout";
+import { apiTimingRecord } from './apiTiming';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -221,106 +222,16 @@ export function createApp(): Express {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ limit: '1mb', extended: true }));
 
-  // Request / Response Logger Middleware
+  // Record compact, privacy-safe timings for every response. The old logger
+  // serialized complete headers, request queries and bodies for every Driver
+  // offer poll; that added avoidable CPU/logging pressure and put operational
+  // traffic volume ahead of the app's response path.
   app.use((req, res, next) => {
     const start = Date.now();
     const { method, originalUrl } = req;
-    const paymentRequestPath = originalUrl.startsWith('/api/trpc/wallet.topup')
-      || originalUrl.startsWith('/api/trpc/commission.charge')
-      || originalUrl.startsWith('/api/public/v1/payments/charge')
-      || originalUrl.startsWith('/api/card-checkout')
-      || originalUrl.startsWith('/api/hubtel/');
-
-    const headers = { ...req.headers };
-    if (headers.authorization) {
-      headers.authorization = "[REDACTED]";
-    }
-    if (headers['x-hy3n-admin-access']) {
-      headers['x-hy3n-admin-access'] = "[REDACTED]";
-    }
-    const requestBody = paymentRequestPath
-      ? '[REDACTED_PAYMENT_REQUEST]'
-      : originalUrl.startsWith('/api/notifications/push-device')
-      ? { ...req.body, token: req.body?.token ? '[REDACTED]' : undefined }
-      : originalUrl.startsWith('/api/live-activities/token')
-        ? {
-            ...req.body,
-            fcmToken: req.body?.fcmToken ? '[REDACTED]' : undefined,
-            activityPushToken: req.body?.activityPushToken ? '[REDACTED]' : undefined,
-          }
-      : originalUrl.startsWith('/api/driver/otp')
-        ? {
-            ...req.body,
-            phoneNumber: req.body?.phoneNumber ? '[REDACTED]' : undefined,
-            code: req.body?.code ? '[REDACTED]' : undefined,
-          }
-        : originalUrl.startsWith('/api/admin/accounts')
-          ? {
-              ...req.body,
-              password: req.body?.password ? '[REDACTED]' : undefined,
-            }
-          : originalUrl.startsWith('/api/admin/access-code')
-            ? {
-                ...req.body,
-                accessCode: req.body?.accessCode ? '[REDACTED]' : undefined,
-              }
-      : originalUrl.startsWith('/api/rides/request')
-        ? {
-            ...req.body,
-            riderPhone: req.body?.riderPhone ? '[REDACTED]' : undefined,
-            bookedByPhone: req.body?.bookedByPhone ? '[REDACTED]' : undefined,
-            passengerPhone: req.body?.passengerPhone ? '[REDACTED]' : undefined,
-            delivery: req.body?.delivery ? {
-              ...req.body.delivery,
-              sender: req.body.delivery.sender ? { ...req.body.delivery.sender, phone: '[REDACTED]' } : undefined,
-              recipient: req.body.delivery.recipient ? { ...req.body.delivery.recipient, phone: '[REDACTED]' } : undefined,
-            } : undefined,
-          }
-        : originalUrl.startsWith('/api/driver/location')
-          ? {
-              ...req.body,
-              latitude: req.body?.latitude === undefined ? undefined : '[REDACTED]',
-              longitude: req.body?.longitude === undefined ? undefined : '[REDACTED]',
-            }
-        : req.body;
-
-    console.log(`[API Request] >>> ${method} ${originalUrl}`, JSON.stringify({
-      timestamp: new Date().toISOString(),
-      headers,
-      query: req.query,
-      body: requestBody,
-    }, null, 2));
-
-    const originalSend = res.send;
-    res.send = function (body) {
-      const responseHeaders = res.getHeaders();
-      let parsedBody = body;
-      if (Buffer.isBuffer(body)) {
-        parsedBody = "[BUFFER]";
-      } else if (typeof body === 'string') {
-        try {
-          parsedBody = JSON.parse(body);
-        } catch {
-          parsedBody = body.length > 2000 ? body.substring(0, 2000) + '... [TRUNCATED]' : body;
-        }
-      }
-
-      if (originalUrl.startsWith('/api/admin/access-code') && parsedBody && typeof parsedBody === 'object') {
-        parsedBody = {
-          ...parsedBody,
-          accessProof: parsedBody.accessProof ? '[REDACTED]' : undefined,
-        };
-      }
-      if (paymentRequestPath) parsedBody = '[REDACTED_PAYMENT_RESPONSE]';
-
-      console.log(`[API Response] <<< ${method} ${originalUrl} | Status: ${res.statusCode} (Duration: ${Date.now() - start}ms)`, JSON.stringify({
-        timestamp: new Date().toISOString(),
-        headers: responseHeaders,
-        body: parsedBody,
-      }, null, 2));
-
-      return originalSend.apply(this, arguments as any);
-    };
+    res.once('finish', () => {
+      console.info('[API Timing]', apiTimingRecord(method, originalUrl, res.statusCode, Date.now() - start));
+    });
 
     next();
   });

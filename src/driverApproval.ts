@@ -34,28 +34,38 @@ export function isApprovedDriverProfile(profile: Record<string, any> | null | un
     && accountStatus !== 'removed';
 }
 
+export function preferredDriverProfile(profiles: Array<Record<string, any> | null | undefined>): Record<string, any> | null {
+  const candidates = profiles.filter((profile): profile is Record<string, any> => Boolean(profile));
+  if (!candidates.length) return null;
+  return candidates.sort((left, right) => {
+    const leftApproved = isApprovedDriverProfile(left);
+    const rightApproved = isApprovedDriverProfile(right);
+    if (leftApproved !== rightApproved) return leftApproved ? -1 : 1;
+    return String(right.updated_date || right.created_date || '').localeCompare(
+      String(left.updated_date || left.created_date || ''),
+    );
+  })[0];
+}
+
 /**
  * Profiles created by the legacy admin workflow can use an auto-generated ID,
  * while current mobile registration also maintains a UID-keyed document. Prefer
  * a currently approved document, then use the most recently changed record.
  */
 export async function driverProfileForUserId(driverId: string): Promise<Record<string, any> | null> {
+  // Current mobile clients maintain a UID-keyed compatibility document on every
+  // presence update. Reading it first avoids a collection scan for each offer
+  // poll, location heartbeat, and lifecycle tap. Legacy records still remain a
+  // safe fallback whenever that document is absent or not approved.
+  const uidProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+  if (isApprovedDriverProfile(uidProfile)) return uidProfile;
+
   const matches = await adminFirestore.list(
     ADMIN_COLLECTIONS.DRIVER_PROFILES,
     { user_id: driverId },
     null,
   );
-  if (matches.length > 0) {
-    return matches.sort((left: Record<string, any>, right: Record<string, any>) => {
-      const leftApproved = isApprovedDriverProfile(left);
-      const rightApproved = isApprovedDriverProfile(right);
-      if (leftApproved !== rightApproved) return leftApproved ? -1 : 1;
-      return String(right.updated_date || right.created_date || '').localeCompare(
-        String(left.updated_date || left.created_date || ''),
-      );
-    })[0];
-  }
-  return adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
+  return preferredDriverProfile([...matches, uidProfile]);
 }
 
 export function approvalRequiredError(): Error {
