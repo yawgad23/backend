@@ -91,46 +91,37 @@ export function registerDriverLocationRoutes(app: Express) {
       last_seen_at: recordedAt,
     };
 
-    // Keep the legacy approved-profile document and UID-keyed presence document
-    // in sync. The Rider subscribes to the UID-keyed document for live updates.
+    // Keep the canonical approved profile and UID-keyed compatibility profile
+    // in sync. `driverProfileForUserId` already queried legacy records, so do
+    // not make a second sequential collection scan on every GPS sample.
     const canonical = approvedProfile;
-    const profiles = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null, 'desc', 10);
-    const targets = [...profiles, canonical]
-      .filter((profile): profile is Record<string, any> => Boolean(profile))
-      .filter((profile, index, list) => list.findIndex((other) => other.id === profile.id) === index);
-
-    if (targets.length === 0) {
-      await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId, patch);
-    } else {
-      await Promise.all(targets.map((profile) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, patch)));
-    }
+    const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
 
     // Rider maps use a deliberately minimal record. Full Driver profile and
     // application data remain private to the Driver and the admin dashboard.
-    await adminFirestore.set('driver_presence', driverId, {
-      service_type: approvedProfile?.service_type || approvedProfile?.serviceType || 'car',
-      vehicle_type: approvedProfile?.vehicle_type || approvedProfile?.vehicleType || 'car',
-      vehicle_make: approvedProfile?.vehicle_make || approvedProfile?.vehicleMake || '',
-      vehicle_model: approvedProfile?.vehicle_model || approvedProfile?.vehicleModel || '',
-      vehicle_color: approvedProfile?.vehicle_color || approvedProfile?.vehicle_colour || '',
-      vehicle_colour: approvedProfile?.vehicle_colour || approvedProfile?.vehicle_color || '',
-      vehicle_colour_hex: approvedProfile?.vehicle_colour_hex || '',
-      license_plate: approvedProfile?.license_plate || approvedProfile?.vehicle_plate || '',
-      vehicle_plate: approvedProfile?.vehicle_plate || approvedProfile?.license_plate || '',
-      rating: Number(approvedProfile?.rating || 0),
-      ...mapSafeDriverPresenceMetadata({ ...approvedProfile, ...patch }),
-      ...patch,
-    });
+    await Promise.all([
+      ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, patch)),
+      adminFirestore.set('driver_presence', driverId, {
+        service_type: approvedProfile?.service_type || approvedProfile?.serviceType || 'car',
+        vehicle_type: approvedProfile?.vehicle_type || approvedProfile?.vehicleType || 'car',
+        vehicle_make: approvedProfile?.vehicle_make || approvedProfile?.vehicleMake || '',
+        vehicle_model: approvedProfile?.vehicle_model || approvedProfile?.vehicleModel || '',
+        vehicle_color: approvedProfile?.vehicle_color || approvedProfile?.vehicle_colour || '',
+        vehicle_colour: approvedProfile?.vehicle_colour || approvedProfile?.vehicle_color || '',
+        vehicle_colour_hex: approvedProfile?.vehicle_colour_hex || '',
+        license_plate: approvedProfile?.license_plate || approvedProfile?.vehicle_plate || '',
+        vehicle_plate: approvedProfile?.vehicle_plate || approvedProfile?.license_plate || '',
+        rating: Number(approvedProfile?.rating || 0),
+        ...mapSafeDriverPresenceMetadata({ ...approvedProfile, ...patch }),
+        ...patch,
+      }),
+    ]);
 
-    try {
-      // Await delivery while this HTTP invocation is alive. Detached work can
-      // be stopped as soon as the response returns, leaving a backgrounded
-      // Rider with a frozen Lock Screen route.
-      await sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude });
-    } catch (error) {
-      // Location persistence remains successful if Apple/FCM is delayed.
+    // Lock Screen refreshes are supplementary. They must not make the Driver
+    // wait to go online, start a trip, or update a Rider-visible GPS marker.
+    void sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
       console.error('[LiveActivity] Background Driver location push failed:', error);
-    }
+    });
 
     // Route metrics are server-owned and refreshed independently of the
     // presence write. A routing outage must never reject a valid GPS update.

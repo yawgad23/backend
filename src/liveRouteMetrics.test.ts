@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   decodeGooglePolyline,
+  firestoreSafeLiveRoutePoints,
   parseGoogleTrafficRoute,
   parseOsrmRoute,
   routeTargetKey,
@@ -84,6 +85,13 @@ describe('server road route metrics', () => {
     expect(result?.points).toEqual([]);
     expect(result?.distanceKm).toBeGreaterThan(0);
     expect(result?.durationMinutes).toBeGreaterThan(0);
+  });
+
+  it('encodes active-trip geometry without Firestore-invalid nested arrays', () => {
+    expect(firestoreSafeLiveRoutePoints([[5.6037, -0.187], [5.61, -0.19]])).toEqual([
+      { lat: 5.6037, lng: -0.187 },
+      { lat: 5.61, lng: -0.19 },
+    ]);
   });
 
   it('refreshes immediately when Start Trip changes the route target from pickup to destination', () => {

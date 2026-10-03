@@ -56,9 +56,11 @@ function withRide(ride: Record<string, any>, patch: Record<string, any>): Record
   return { ...ride, ...patch, updated_date: now() };
 }
 
-async function publishLiveActivity(ride: Record<string, any>, force = false) {
-  await sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
-    // A Lock Screen update must never block the real ride-state transition.
+function publishLiveActivity(ride: Record<string, any>, force = false) {
+  // The ride write is authoritative and already delivered through Firestore.
+  // ActivityKit is a supplementary presentation: never hold a Driver action
+  // while an external push or road-ETA request waits for a response.
+  void sendRideLiveActivityUpdate(ride, { force }).catch((error) => {
     console.error('[LiveActivity] Ride state push failed:', error);
   });
 }
@@ -179,7 +181,7 @@ export async function sendCompletedRideReceipt(rideId: string, suppliedRide?: Re
  * ride document remains the source of truth for the current state; this log
  * answers how it reached that state without duplicating rider contact data.
  */
-async function recordRideEvent(input: {
+function recordRideEvent(input: {
   rideId: string;
   type: string;
   actorId?: string;
@@ -187,8 +189,7 @@ async function recordRideEvent(input: {
   status?: string;
   metadata?: Record<string, unknown>;
 }) {
-  try {
-    await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
+  void adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
       ride_id: input.rideId,
       event_type: input.type,
       actor_id: input.actorId || null,
@@ -196,11 +197,10 @@ async function recordRideEvent(input: {
       ride_status: input.status || null,
       metadata: input.metadata || {},
       created_at: now(),
-    });
-  } catch (error) {
+    }).catch((error) => {
     // Event logging must not block a legitimate rider or Driver state change.
     console.error('[RideEvents] Unable to record event:', error);
-  }
+  });
 }
 
 function isOnline(profileData: Record<string, any> | null) {
@@ -208,23 +208,16 @@ function isOnline(profileData: Record<string, any> | null) {
 }
 
 /** Keep the legacy approved profile and UID presence document in agreement. */
-async function setDriverProfilePresence(driverId: string, patch: Record<string, any>) {
-  const canonical = await profile(driverId);
-  const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: driverId }, null, 'desc', 10);
+async function setDriverProfilePresence(driverId: string, patch: Record<string, any>, knownCanonical?: Record<string, any> | null) {
+  const canonical = knownCanonical === undefined ? await profile(driverId) : knownCanonical;
   const documentIds = new Set<string>([
     driverId,
     ...(canonical?.id ? [String(canonical.id)] : []),
-    ...matches.map((candidate) => String(candidate.id)),
   ]);
-  await Promise.all([...documentIds].map((id) => adminFirestore.set(
-    ADMIN_COLLECTIONS.DRIVER_PROFILES,
-    id,
-    { user_id: driverId, ...patch },
-  )));
 
   // Rider map listeners need vehicle availability and a fresh location, not a
   // Driver's identity documents, payment data, or application information.
-  await adminFirestore.set('driver_presence', driverId, {
+  const presencePatch = {
     user_id: driverId,
     service_type: canonical?.service_type || canonical?.serviceType || 'car',
     vehicle_type: canonical?.vehicle_type || canonical?.vehicleType || 'car',
@@ -238,7 +231,15 @@ async function setDriverProfilePresence(driverId: string, patch: Record<string, 
     rating: Number(canonical?.rating || 0),
     ...mapSafeDriverPresenceMetadata({ ...canonical, ...patch }),
     ...patch,
-  });
+  };
+  await Promise.all([
+    ...[...documentIds].map((id) => adminFirestore.set(
+      ADMIN_COLLECTIONS.DRIVER_PROFILES,
+      id,
+      { user_id: driverId, ...patch },
+    )),
+    adminFirestore.set('driver_presence', driverId, presencePatch),
+  ]);
 }
 
 function hasDriverFeeTestBypass(driverId: string) {
@@ -385,7 +386,7 @@ export const driverOperations = router({
     if (input.status === 'online' && !isApprovedDriverProfile(driverProfile)) {
       throw approvalRequiredError();
     }
-    await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status));
+    await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status), driverProfile);
     return { success: true, status: input.status };
   }),
   updateLocation: driverProcedure(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
@@ -661,6 +662,12 @@ export const driverTrips = router({
     startLocation: z.object({ latitude: z.number(), longitude: z.number() }).optional(),
   })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
+    if (ride.status === 'in_progress' && String(ride.driver_id || '') === input.driverId) {
+      // A radio timeout can cause an older app to repeat Start Trip after the
+      // first request committed. Return the existing authoritative trip instead
+      // of telling the Driver it failed.
+      return { success: true, alreadyStarted: true, ride };
+    }
     if (!canStartTrip(ride)) throw new Error('Trip must be marked driver_arrived before it can start.');
     if (ride.pickup_code && !ride.pickup_verified_at) throw new Error('Pickup code must be verified before the trip can start.');
     const tripStartedAt = now();
@@ -689,7 +696,12 @@ export const driverTrips = router({
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
       waiting_fee: waitingCharge.waitingFee,
     } });
-    await publishLiveActivity(updated, true);
+    publishLiveActivity(updated, true);
+    if (input.startLocation) {
+      void refreshDriverActiveRideRoutes(input.driverId, input.startLocation).catch((error) => {
+        console.error('[RoadRoute] Start Trip route refresh failed:', error);
+      });
+    }
     return { success: true, ride: updated };
   }),
   recordTripLocation: driverProcedure(z.object({
@@ -714,7 +726,7 @@ export const driverTrips = router({
       trip_last_location_at: observedAt,
     });
     await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
-    await publishLiveActivity(updated);
+    publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
   }),
   complete: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), finalFare: z.number().nonnegative().optional(), tipAmount: z.number().nonnegative().optional(), actualDistanceKm: z.number().optional(), actualDurationMinutes: z.number().optional(), fareBreakdown: z.any().optional() })).mutation(async ({ input }) => {
@@ -784,11 +796,8 @@ export const driverTrips = router({
       input.driverId,
       completionPatch,
     );
-    // An ActivityKit end event must complete before this request returns. A
-    // fire-and-forget promise can be terminated with the function invocation,
-    // leaving a completed trip visible on the Rider's Lock Screen.
-    await publishLiveActivity(updated, true);
-    await recordRideEvent({
+    publishLiveActivity(updated, true);
+    recordRideEvent({
       rideId: input.rideId,
       type: 'trip_completed',
       actorId: input.driverId,
@@ -806,7 +815,9 @@ export const driverTrips = router({
     // A receipt belongs to the completed ride, not to either mobile client.
     // The shared Firestore transaction prevents a current or older Rider build
     // from racing this request and sending the same receipt twice.
-    await sendCompletedRideReceipt(input.rideId, updated);
+    void sendCompletedRideReceipt(input.rideId, updated).catch((error) => {
+      console.error('[ReceiptEmail] Deferred completion receipt failed:', error);
+    });
 
     return { success: true, ride: updated, driverEarnings: finalFare, totalTrips };
   }),
@@ -825,8 +836,8 @@ export const driverTrips = router({
       ['driver_arriving', 'driver_arrived', 'driver_queued'],
       cancellationPatch,
     );
-    await publishLiveActivity(updated, true);
-    await recordRideEvent({
+    publishLiveActivity(updated, true);
+    recordRideEvent({
       rideId: input.rideId,
       type: 'ride_cancelled',
       actorId: input.driverId,

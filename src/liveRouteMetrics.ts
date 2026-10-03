@@ -2,6 +2,8 @@ import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
 
 export type Point = { latitude: number; longitude: number };
 type RoutePoint = [number, number];
+/** Firestore does not permit an array to contain another array. */
+export type StoredLiveRoutePoint = { lat: number; lng: number };
 type TrafficSpeed = 'NORMAL' | 'SLOW' | 'TRAFFIC_JAM';
 
 type TrafficInterval = {
@@ -108,6 +110,17 @@ function boundedRoutePoints(points: RoutePoint[]): RoutePoint[] {
   if (points.length <= MAX_ROUTE_POINTS) return points;
   const step = (points.length - 1) / (MAX_ROUTE_POINTS - 1);
   return Array.from({ length: MAX_ROUTE_POINTS }, (_, index) => points[Math.round(index * step)]);
+}
+
+/**
+ * Road providers use compact tuple coordinates in memory, but those tuples
+ * cannot be written to Firestore as a nested array. Persist a small map for
+ * each point and let native clients convert it back to a tuple for drawing.
+ */
+export function firestoreSafeLiveRoutePoints(points: RoutePoint[]): StoredLiveRoutePoint[] {
+  return boundedRoutePoints(points)
+    .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+    .map(([lat, lng]) => ({ lat, lng }));
 }
 
 function durationMinutes(value: unknown): number | null {
@@ -342,7 +355,7 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
         distance_km: metrics.distanceKm,
         duration_minutes: metrics.durationMinutes,
         phase,
-        points: metrics.points,
+        points: firestoreSafeLiveRoutePoints(metrics.points),
         source: metrics.source,
         traffic: metrics.traffic || null,
         updated_at: new Date().toISOString(),
