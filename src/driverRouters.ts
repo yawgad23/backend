@@ -19,6 +19,7 @@ import {
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
 import { driverOfferView } from './driverDeliveryOffer';
+import { canPersistDriverTripMeter } from './driverTripLifecycle';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -727,20 +728,46 @@ export const driverTrips = router({
     recordedAt: z.string().datetime().optional(),
   })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);
-    if (!canCompleteTrip(ride)) throw new Error('Trip GPS can only be recorded after Start Trip is confirmed.');
+    if (!canPersistDriverTripMeter(ride, input.driverId)) {
+      return {
+        success: true,
+        accepted: false,
+        incrementKm: 0,
+        ignoredReason: 'trip_terminal',
+        actualDistanceKm: Number(ride.trip_meter?.distance_km || ride.actual_distance_km || 0),
+      };
+    }
     const observedAt = input.recordedAt || now();
     const { meter, accepted, incrementKm, ignoredReason } = advanceTripMeter(
       ride.trip_meter,
       { latitude: input.latitude, longitude: input.longitude },
       observedAt,
     );
-    const updated = withRide(ride, {
+    const meterPatch = {
       trip_meter: meter,
       trip_distance_source: 'server_gps_meter',
       actual_distance_km: meter.distance_km,
       trip_last_location_at: observedAt,
-    });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    };
+    // The status predicate runs inside a Firestore transaction. A location
+    // sample that read in_progress before another request completes the trip
+    // therefore cannot restore that terminal record back to in_progress.
+    let updated: Record<string, any>;
+    try {
+      updated = await adminFirestore.updateRideIfStatus(input.rideId, ['in_progress'], meterPatch);
+    } catch (error) {
+      const latest = await rideFor(input.driverId, input.rideId);
+      if (!canPersistDriverTripMeter(latest, input.driverId)) {
+        return {
+          success: true,
+          accepted: false,
+          incrementKm: 0,
+          ignoredReason: 'trip_terminal',
+          actualDistanceKm: Number(latest.trip_meter?.distance_km || latest.actual_distance_km || 0),
+        };
+      }
+      throw error;
+    }
     publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
   }),
@@ -834,11 +861,20 @@ export const driverTrips = router({
       },
       completed_at: completedAt,
     };
-    const { ride: updated, totalTrips } = await adminFirestore.completeRideAndSynchronizeDriverTripCount(
+    const { ride: updated, totalTrips, alreadyCompleted } = await adminFirestore.completeRideAndSynchronizeDriverTripCount(
       input.rideId,
       input.driverId,
       completionPatch,
     );
+    if (alreadyCompleted) {
+      return {
+        success: true,
+        alreadyCompleted: true,
+        ride: updated,
+        driverEarnings: Number(updated.driver_earnings ?? updated.final_fare ?? updated.fare ?? 0),
+        totalTrips,
+      };
+    }
     publishLiveActivity(updated, true);
     recordRideEvent({
       rideId: input.rideId,
@@ -862,7 +898,7 @@ export const driverTrips = router({
       console.error('[ReceiptEmail] Deferred completion receipt failed:', error);
     });
 
-    return { success: true, ride: updated, driverEarnings: finalFare, totalTrips };
+    return { success: true, alreadyCompleted: false, ride: updated, driverEarnings: Number(updated.driver_earnings ?? finalFare), totalTrips };
   }),
   cancel: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), reason: z.string().trim().min(1).max(500) })).mutation(async ({ input }) => {
     const ride = await rideFor(input.driverId, input.rideId);

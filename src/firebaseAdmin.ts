@@ -314,7 +314,7 @@ export const adminFirestore = {
     rideId: string,
     driverId: string,
     data: Record<string, any>,
-  ): Promise<{ ride: Record<string, any>; totalTrips: number }> {
+  ): Promise<{ ride: Record<string, any>; totalTrips: number; alreadyCompleted: boolean }> {
     return withFirestoreErrorHandling(`completeRideAndSynchronizeDriverTripCount(${rideId})`, async () => {
       const db = getDb();
       const rideRef = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
@@ -333,15 +333,21 @@ export const adminFirestore = {
         if (!rideSnap.exists) throw new Error('Ride not found.');
 
         const ride = { id: rideSnap.id, ...rideSnap.data() } as Record<string, any>;
-        if (String(ride.status || '').trim().toLowerCase() !== 'in_progress') {
-          throw new Error('This ride is no longer eligible for completion.');
-        }
         if (String(ride.driver_id || '').trim() !== driverId) {
           throw new Error('This ride is assigned to another driver.');
         }
 
         const historicalRides = driverRidesSnap.docs.map((document) => ({ id: document.id, ...document.data() }));
         const totalTrips = completedTripCountAfterCompletion(historicalRides, driverId, rideId);
+        const status = String(ride.status || '').trim().toLowerCase();
+        if (status === 'completed') {
+          // A lost mobile response must never create another settlement, count,
+          // receipt, or completion event. Return the persisted server result.
+          return { ride, totalTrips, alreadyCompleted: true };
+        }
+        if (status !== 'in_progress') {
+          throw new Error('This ride is no longer eligible for completion.');
+        }
         const timestamp = new Date().toISOString();
         const ridePatch = { ...data, driver_id: driverId, updated_date: timestamp };
         const profilePatch = driverTripCountProfilePatch(driverId, totalTrips, timestamp);
@@ -352,7 +358,7 @@ export const adminFirestore = {
           transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(profileId), profilePatch, { merge: true });
         }
 
-        return { ride: { ...ride, ...ridePatch }, totalTrips };
+        return { ride: { ...ride, ...ridePatch }, totalTrips, alreadyCompleted: false };
       });
     });
   },
