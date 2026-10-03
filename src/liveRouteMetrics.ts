@@ -14,7 +14,7 @@ export type RoadRouteMetrics = {
   distanceKm: number;
   durationMinutes: number;
   points: RoutePoint[];
-  source: 'google_routes_traffic' | 'osrm';
+  source: 'google_routes_traffic' | 'osrm' | 'server_coordinate_estimate';
   traffic?: {
     staticDurationMinutes: number | null;
     delayMinutes: number | null;
@@ -25,6 +25,8 @@ export type RoadRouteMetrics = {
 const ACTIVE_STATUSES = ['matched', 'driver_arriving', 'driver_arrived', 'in_progress'];
 export const ROUTE_REFRESH_MS = 8_000;
 const MAX_ROUTE_POINTS = 180;
+const COORDINATE_ROAD_DISTANCE_FACTOR = 1.28;
+const COORDINATE_FALLBACK_SPEED_KMH = 22;
 type CachedRoute = { requestedAt: number; targetKey: string; metrics: RoadRouteMetrics | null };
 const routeCache = new Map<string, CachedRoute>();
 
@@ -36,6 +38,42 @@ function validPoint(point: Point | null | undefined): point is Point {
     && point.latitude >= -90 && point.latitude <= 90
     && point.longitude >= -180 && point.longitude <= 180,
   );
+}
+
+function greatCircleDistanceKm(from: Point, to: Point): number {
+  const radians = (value: number) => (value * Math.PI) / 180;
+  const earthRadiusKm = 6371.0088;
+  const latDelta = radians(to.latitude - from.latitude);
+  const lngDelta = radians(to.longitude - from.longitude);
+  const fromLatitude = radians(from.latitude);
+  const toLatitude = radians(to.latitude);
+  const haversine = Math.sin(latDelta / 2) ** 2
+    + Math.cos(fromLatitude) * Math.cos(toLatitude) * Math.sin(lngDelta / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+/**
+ * Gives a booking an explicitly-labelled, server-only estimate when every
+ * external road router is unavailable. It accepts neither a device distance
+ * nor a device duration, and returns no geometry so the native map never
+ * draws a misleading straight line in place of a road route.
+ */
+export function serverCoordinateRouteEstimate(from: Point, destinations: Point[]): RoadRouteMetrics | null {
+  if (!validPoint(from) || destinations.length === 0 || destinations.some((point) => !validPoint(point))) return null;
+  let origin = from;
+  let directDistanceKm = 0;
+  for (const destination of destinations) {
+    directDistanceKm += greatCircleDistanceKm(origin, destination);
+    origin = destination;
+  }
+  if (!Number.isFinite(directDistanceKm) || directDistanceKm <= 0) return null;
+  const distanceKm = directDistanceKm * COORDINATE_ROAD_DISTANCE_FACTOR;
+  return {
+    distanceKm: Number(distanceKm.toFixed(3)),
+    durationMinutes: Number(Math.max(1, (distanceKm / COORDINATE_FALLBACK_SPEED_KMH) * 60).toFixed(1)),
+    points: [],
+    source: 'server_coordinate_estimate',
+  };
 }
 
 function pointFrom(value: any): Point | null {
@@ -236,7 +274,10 @@ export async function fetchRoadRouteWithStops(from: Point, destinations: Point[]
   const legs: RoadRouteMetrics[] = [];
   for (const destination of destinations) {
     const leg = await fetchRoadRoute(origin, destination);
-    if (!leg) return null;
+    // Quote availability must not depend on a third-party road router. The
+    // server keeps fare authority by creating a bounded estimate itself, and
+    // empty geometry ensures the map cannot portray it as a road line.
+    if (!leg) return serverCoordinateRouteEstimate(from, destinations);
     legs.push(leg);
     origin = destination;
   }
@@ -308,7 +349,9 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
       },
       route_distance_source: metrics.source === 'google_routes_traffic'
         ? 'server_google_routes_traffic'
-        : 'server_osrm_road_route_fallback',
+        : metrics.source === 'osrm'
+          ? 'server_osrm_road_route_fallback'
+          : 'server_coordinate_route_estimate',
     });
     updated += 1;
   }));

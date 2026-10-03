@@ -35,7 +35,7 @@ export type RideQuoteSnapshot = {
   duration_minutes: number;
   /** Server-calculated road geometry shown while the Rider waits for a Driver. */
   route_points?: Array<[number, number]>;
-  route_source?: 'google_routes_traffic' | 'osrm';
+  route_source?: 'google_routes_traffic' | 'osrm' | 'server_coordinate_estimate';
   fare_rate_snapshot: FareRateConfig;
   surge_multiplier: number;
   quote_breakdown: MeteredFareBreakdown;
@@ -86,7 +86,7 @@ export function makeRideQuoteSnapshot(input: {
   category: unknown;
   route: QuoteRoute;
   routePoints?: Array<[number, number]>;
-  routeSource?: 'google_routes_traffic' | 'osrm';
+  routeSource?: 'google_routes_traffic' | 'osrm' | 'server_coordinate_estimate';
   fareRate: unknown;
   surgeMultiplier: unknown;
   now?: number;

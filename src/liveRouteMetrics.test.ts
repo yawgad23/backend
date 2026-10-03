@@ -5,6 +5,7 @@ import {
   parseOsrmRoute,
   routeTargetKey,
   ROUTE_REFRESH_MS,
+  serverCoordinateRouteEstimate,
   shouldReuseCachedRoute,
 } from './liveRouteMetrics';
 
@@ -71,6 +72,18 @@ describe('server road route metrics', () => {
     expect(parseOsrmRoute({ routes: [{ distance: -1, duration: 60 }] })).toBeNull();
     expect(parseGoogleTrafficRoute({ routes: [{ distanceMeters: 500 }] })).toBeNull();
     expect(parseOsrmRoute({ routes: [] })).toBeNull();
+  });
+
+  it('keeps a quote server-owned when every external route provider is unavailable', () => {
+    const result = serverCoordinateRouteEstimate(
+      { latitude: 5.6037, longitude: -0.187 },
+      [{ latitude: 5.6501, longitude: -0.1952 }],
+    );
+
+    expect(result?.source).toBe('server_coordinate_estimate');
+    expect(result?.points).toEqual([]);
+    expect(result?.distanceKm).toBeGreaterThan(0);
+    expect(result?.durationMinutes).toBeGreaterThan(0);
   });
 
   it('refreshes immediately when Start Trip changes the route target from pickup to destination', () => {
