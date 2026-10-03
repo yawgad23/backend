@@ -7,10 +7,19 @@ import { driverProfileForUserId, isApprovedDriverProfile } from './driverApprova
 import { mapSafeDriverPresenceMetadata } from './driverPresence';
 import { shouldPersistDriverLocation } from './driverLocationOrdering';
 
-const driverLocationInput = z.object({
+/**
+ * Core Location uses -1 for an unknown compass heading. A Driver can be
+ * stationary while going online, so this is valid location metadata rather
+ * than a malformed GPS point. Treat it as an absent optional heading.
+ */
+export function normalizeUnknownIosHeading(value: unknown): unknown {
+  return Number(value) === -1 ? null : value;
+}
+
+export const driverLocationInput = z.object({
   latitude: z.number().finite().min(-90).max(90),
   longitude: z.number().finite().min(-180).max(180),
-  heading: z.number().finite().min(0).max(360).nullable().optional(),
+  heading: z.preprocess(normalizeUnknownIosHeading, z.number().finite().min(0).max(360).nullable().optional()),
   speedKmh: z.number().finite().min(0).max(240).nullable().optional(),
   recordedAt: z.string().datetime().optional(),
 });
