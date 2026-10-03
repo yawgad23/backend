@@ -340,6 +340,9 @@ export function createApp(): Express {
   registerAdminFinancialRoutes(app);
   registerAdminNotificationRoutes(app);
   registerPasswordResetRoutes(app);
+  // Rider's active-trip Share Trip action calls these authenticated endpoints.
+  // Keep the public tracking read path registered before the generic API routes.
+  registerTripShareRoutes(app);
 
   /**
    * A customer-requested account deletion is implemented as a retained,
