@@ -1219,10 +1219,10 @@ export function createApp(): Express {
         return { driverId: decision.driverId };
       });
 
-      const warnings: string[] = [];
-      let driverRating = 0;
-      let ratingCount = 0;
-      try {
+      // The one-time Rider rating is already committed. Refreshing the
+      // Driver's aggregate is presentation-only and can scan hundreds of old
+      // rides, so it must not keep a Rider staring at the Submit spinner.
+      void (async () => {
         const driverRides = await adminFirestore.list(
           ADMIN_COLLECTIONS.RIDES,
           { driver_id: rated.driverId },
@@ -1231,11 +1231,9 @@ export function createApp(): Express {
           500,
         );
         const summary = driverRatingSummary(driverRides);
-        driverRating = summary.average;
-        ratingCount = summary.count;
         const profile = await driverProfileForUserId(rated.driverId);
         if (!profile?.id) {
-          warnings.push('driver_profile_not_found');
+          console.warn('[Ratings] Driver profile was not found for aggregate refresh:', rated.driverId);
         } else {
           await adminFirestore.update(ADMIN_COLLECTIONS.DRIVER_PROFILES, profile.id, {
             rating: summary.average,
@@ -1243,17 +1241,17 @@ export function createApp(): Express {
             rating_updated_at: submittedAt,
           });
         }
-      } catch (error) {
+      })().catch((error) => {
+        // The authoritative ride rating is safe. A later rating refreshes the
+        // aggregate again, so this optional failure must not delay or reverse
+        // the Rider's successful acknowledgement.
         console.error('[Ratings] Driver rating summary refresh failed after primary write:', error);
-        warnings.push('driver_rating_summary_not_refreshed');
-      }
+      });
 
       res.status(201).json({
         success: true,
         rating: parsed.data.rating,
-        driverRating,
-        ratingCount,
-        warnings,
+        warnings: ['driver_rating_summary_pending'],
       });
     } catch (error) {
       const decision = (error as { ratingDecision?: RiderDriverRatingRejection }).ratingDecision;
