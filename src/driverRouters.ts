@@ -204,6 +204,29 @@ function recordRideEvent(input: {
   });
 }
 
+/**
+ * Rating aggregates are presentation data. The one-time rating write is
+ * committed first; this slower legacy-compatible scan must never keep a
+ * Driver waiting on the Submit button after that authoritative commit.
+ */
+async function refreshRiderRatingAggregate(riderId: string, ratedAt: string) {
+  // A Firestore `where(rider_id) + orderBy(completed_at)` query requires a
+  // composite index. Ordering is irrelevant to an average, so read the
+  // Rider's completed rides without an order and calculate locally. This
+  // keeps the refresh compatible with existing production data.
+  const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: riderId }, null, 'desc', 500);
+  const summary = riderRatingSummary(riderRides);
+  const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: riderId }, null, 'desc', 5);
+  const riderProfile = riderProfiles[0] || await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, riderId);
+  if (riderProfile && summary.count) {
+    await adminFirestore.update(
+      ADMIN_COLLECTIONS.RIDER_PROFILES,
+      riderProfile.id,
+      { rating: summary.average, rating_count: summary.count, rating_updated_at: ratedAt },
+    );
+  }
+}
+
 function isOnline(profileData: Record<string, any> | null) {
   return isOnlineWithFreshLocation(profileData);
 }
@@ -456,31 +479,15 @@ export const driverTrips = router({
         driver_rated_at: ratedAt,
         updated_date: ratedAt,
       });
-    });
+      });
 
     const warnings: string[] = [];
-    try {
-      // A Firestore `where(rider_id) + orderBy(completed_at)` query requires a
-      // composite index. Ordering is irrelevant to an average, so read the
-      // rider's completed rides without an order and calculate locally. This
-      // keeps the flow compatible with existing production data.
-      const riderRides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: input.riderId }, null, 'desc', 500);
-      const summary = riderRatingSummary(riderRides);
-      const riderProfiles = await adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, { user_id: input.riderId }, null, 'desc', 5);
-      const riderProfile = riderProfiles[0] || await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, input.riderId);
-      if (riderProfile && summary.count) {
-        await adminFirestore.update(
-          ADMIN_COLLECTIONS.RIDER_PROFILES,
-          riderProfile.id,
-          { rating: summary.average, rating_count: summary.count, rating_updated_at: ratedAt },
-        );
-      }
-    } catch (error) {
-      // The ride record already has the driver's rating. Do not present an
-      // optional aggregate-refresh failure as a failed submission.
+    void refreshRiderRatingAggregate(input.riderId, ratedAt).catch((error) => {
+      // The ride record already has the Driver's rating. Do not delay the
+      // acknowledgement or turn an optional aggregate refresh into a failed
+      // submission; later ratings will recompute the same server aggregate.
       console.error('[Ratings] Rider average refresh failed after rating write:', error);
-      warnings.push('rider_average_not_refreshed');
-    }
+    });
     if (input.foundItem?.trim()) {
       try {
         await adminFirestore.create('found_items', { driver_id: input.driverId, ride_id: input.rideId, rider_id: input.riderId, description: input.foundItem.trim(), status: 'reported', reported_at: now() });
