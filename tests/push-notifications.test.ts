@@ -14,6 +14,17 @@ describe('Expo push token validation', () => {
   });
 
   it('builds privacy-safe messages for Rider-visible status transitions only', () => {
+    expect(buildRideStatusPush({
+      status: 'matched',
+      driver_name: 'Kofi',
+      driver_vehicle: 'Toyota Vitz',
+      driver_colour: 'White',
+      driver_plate: 'GT 1234-24',
+    })).toEqual({
+      status: 'matched',
+      title: 'Driver found',
+      body: 'Kofi · White · Toyota Vitz · plate GT 1234-24 accepted your ride request.',
+    });
     expect(buildRideStatusPush({ status: 'driver_arriving', driver_name: 'Kofi' })).toEqual({
       status: 'driver_arriving',
       title: 'Driver is on the way',

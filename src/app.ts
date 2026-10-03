@@ -36,6 +36,7 @@ import { registerAdminFinancialRoutes } from "./adminFinancialRoutes";
 import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { registerPasswordResetRoutes } from './passwordReset';
+import { riderOwnsRideStatus } from './riderRideStatus';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
 import { driverProfileForUserId } from './driverApproval';
@@ -1018,6 +1019,56 @@ export function createApp(): Express {
       }
       console.error('[Ride Dispatch] Failed to create rider request:', error);
       res.status(503).json({ success: false, message: 'Ride dispatch is temporarily unavailable. Please try again.' });
+    }
+  });
+
+  /**
+   * Returns one Rider-owned ride from the server's authoritative store.
+   *
+   * Firestore snapshots normally update the Rider immediately. This endpoint
+   * is intentionally a private fallback for a paused/disconnected snapshot so
+   * an accepted ride can never remain visually stuck on “Searching”.
+   */
+  app.get('/api/rides/:rideId/status', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in to refresh your ride status.' });
+      return;
+    }
+
+    let riderId: string;
+    try {
+      riderId = (await getAdminAuth().verifyIdToken(idToken)).uid;
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+
+    const rideId = String(req.params.rideId || '').trim();
+    if (!/^[A-Za-z0-9_-]{1,160}$/.test(rideId)) {
+      res.status(400).json({ success: false, message: 'The ride reference is invalid.' });
+      return;
+    }
+
+    try {
+      const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+      if (!ride || !riderOwnsRideStatus(ride, riderId)) {
+        // Return the same response for a missing and non-owned ride so the
+        // endpoint cannot be used to infer another rider's trip.
+        res.status(404).json({ success: false, message: 'Ride not found.' });
+        return;
+      }
+      res.json({
+        success: true,
+        ride: {
+          ...ride,
+          booking_route_points: storedRoutePointPairs(ride.booking_route_points),
+        },
+      });
+    } catch (error) {
+      console.error('[Ride status] Unable to refresh Rider status:', error);
+      res.status(503).json({ success: false, message: 'Ride status is temporarily unavailable. Please try again.' });
     }
   });
 

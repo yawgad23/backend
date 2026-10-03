@@ -136,11 +136,18 @@ function normalizedStatus(value: unknown): string {
 export function buildRideStatusPush(ride: Record<string, any>): RideStatusPush | null {
   const status = normalizedStatus(ride.status);
   const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your Driver').slice(0, 60);
+  const vehicle = cleanText(
+    ride.driver_vehicle || [ride.driver?.vehicle_make, ride.driver?.vehicle_model].filter(Boolean).join(' '),
+    'vehicle',
+  ).slice(0, 60);
+  const colour = cleanText(ride.driver_colour || ride.driver?.vehicle_colour, '').slice(0, 30);
+  const plate = cleanText(ride.driver_plate || ride.driver?.plate, '').slice(0, 30);
   const destination = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_address, 'your destination').slice(0, 80);
+  const driverDetails = [driverName, colour, vehicle, plate ? `plate ${plate}` : ''].filter(Boolean).join(' · ');
 
   switch (status) {
     case 'matched':
-      return { status, title: 'Driver found', body: `${driverName} accepted your ride request.` };
+      return { status, title: 'Driver found', body: `${driverDetails} accepted your ride request.` };
     case 'driver_arriving':
       return { status, title: 'Driver is on the way', body: `${driverName} is heading to your pickup.` };
     case 'driver_arrived':
