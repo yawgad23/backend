@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { liveActivityPresentation } from './liveActivities';
+import { HY3N_LIVE_ACTIVITY_IMAGE_NAME, liveActivityPresentation } from './liveActivities';
 
 describe('Rider Live Activity terminal states', () => {
+  it('uses the transparent HY3N wordmark asset for native Island updates', () => {
+    expect(HY3N_LIVE_ACTIVITY_IMAGE_NAME).toBe('hy3n_wordmark');
+  });
+
   it('ends a completed trip immediately without waiting for route calculation', async () => {
     const start = Date.now();
     const presentation = await liveActivityPresentation({

@@ -6,6 +6,7 @@ import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin
 
 const LIVE_ACTIVITY_COLLECTION = 'rider_live_activities';
 const UPDATE_INTERVAL_MS = 30_000;
+export const HY3N_LIVE_ACTIVITY_IMAGE_NAME = 'hy3n_wordmark';
 const activityTokenInput = z.object({
   rideId: z.string().min(1).max(160),
   activityId: z.string().min(1).max(220),
@@ -242,8 +243,8 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
                 timerEndDateInMilliseconds: presentation.arrivalAt,
                 progress: presentation.progress,
                 ...(presentation.event === 'end' ? {} : {
-                  imageName: 'hy3n_car',
-                  dynamicIslandImageName: 'hy3n_car',
+                  imageName: HY3N_LIVE_ACTIVITY_IMAGE_NAME,
+                  dynamicIslandImageName: HY3N_LIVE_ACTIVITY_IMAGE_NAME,
                 }),
               },
               // Briefly confirm the final state, then remove the Lock Screen
