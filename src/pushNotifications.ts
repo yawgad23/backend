@@ -147,8 +147,15 @@ export function buildRideStatusPush(ride: Record<string, any>): RideStatusPush |
 
   switch (status) {
     case 'searching':
-      if (ride.reassigned_after_driver_cancellation === true) {
-        return { status, title: 'Finding another Driver', body: 'Your previous Driver cancelled. We sent your request to other nearby Drivers.' };
+      if (ride.reassigned_after_assignment_release === true) {
+        const riderRequested = ride.assignment_release_actor === 'rider';
+        return {
+          status,
+          title: 'Finding another Driver',
+          body: riderRequested
+            ? 'We released the previous Driver and sent this same request to nearby Drivers.'
+            : 'Your previous Driver cancelled. We sent your request to other nearby Drivers.',
+        };
       }
       return null;
     case 'matched':

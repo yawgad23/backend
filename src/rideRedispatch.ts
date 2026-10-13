@@ -4,24 +4,39 @@ const asIdList = (value: unknown): string[] => Array.isArray(value)
   ? value.map((item) => String(item || '').trim()).filter(Boolean)
   : [];
 
+/** A Rider can re-dispatch only an assigned, not-yet-started ride. */
+export function shouldRedispatchAssignedRide(
+  ride: Record<string, unknown>,
+  requested: unknown,
+): boolean {
+  const status = String(ride.status || '').trim().toLowerCase();
+  const driverId = String(ride.driver_id || '').trim();
+  return requested === true
+    && Boolean(driverId)
+    && ['matched', 'driver_arriving', 'driver_arrived', 'driver_queued'].includes(status);
+}
+
 /**
- * Re-opens the same pre-trip request after its assigned Driver cancels.
- *
- * It intentionally preserves the original server-locked quote, rider, route,
- * payment method, and audit history. It clears only the former Driver's
- * assignment and map/ETA details, then excludes that Driver from this request
- * so the offer can be sent to other eligible nearby Drivers.
+ * Re-opens the same pre-trip request when the current Driver assignment must
+ * be released. The server retains the original locked quote, route, payment,
+ * and Rider identity; it clears only the old Driver assignment and excludes
+ * that Driver from receiving this request again.
  */
-export function driverCancellationRedispatchPatch(input: {
+export function assignmentReleaseRedispatchPatch(input: {
   ride: Record<string, unknown>;
-  driverId: string;
+  previousDriverId: string;
+  releasedBy: 'rider' | 'driver';
   reason: string;
   now?: Date;
   pickupCode: string;
 }): Record<string, unknown> {
   const currentTime = input.now ?? new Date();
   const timestamp = currentTime.toISOString();
-  const excludedDriverIds = [...new Set([...asIdList(input.ride.declined_by_driver_ids), input.driverId])];
+  const priorDriverId = String(input.previousDriverId || '').trim();
+  const excludedDriverIds = [...new Set([
+    ...asIdList(input.ride.declined_by_driver_ids),
+    ...(priorDriverId ? [priorDriverId] : []),
+  ])];
   const reassignmentCount = Math.max(0, Math.floor(Number(input.ride.driver_reassignment_count) || 0)) + 1;
 
   return {
@@ -54,14 +69,17 @@ export function driverCancellationRedispatchPatch(input: {
     pickup_code: input.pickupCode,
     ride_pin: input.pickupCode,
     declined_by_driver_ids: excludedDriverIds,
-    reassigned_after_driver_cancellation: true,
+    reassigned_after_assignment_release: true,
+    reassigned_after_driver_cancellation: input.releasedBy === 'driver',
+    assignment_release_actor: input.releasedBy,
     driver_reassignment_count: reassignmentCount,
-    last_driver_cancellation: {
-      driver_id: input.driverId,
+    last_assignment_release: {
+      actor: input.releasedBy,
+      driver_id: priorDriverId || null,
       reason: input.reason,
       at: timestamp,
     },
-    last_driver_cancellation_at: timestamp,
+    last_assignment_release_at: timestamp,
     updated_date: timestamp,
   };
 }

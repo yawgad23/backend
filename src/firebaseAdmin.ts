@@ -335,6 +335,35 @@ export const adminFirestore = {
   },
 
   /**
+   * Re-opens or cancels a pre-trip ride only for the Rider who owns it. The
+   * ownership and state checks share one transaction so Rider actions cannot
+   * detach a newly assigned Driver after the trip has started.
+   */
+  async updateRiderRideIfStatus(
+    rideId: string,
+    riderId: string,
+    allowedStatuses: string[],
+    data: Record<string, any>,
+  ): Promise<Record<string, any>> {
+    return withFirestoreErrorHandling(`updateRiderRideIfStatus(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        const status = String(ride.status || '').trim().toLowerCase();
+        if (String(ride.rider_id || '').trim() !== riderId || !allowedStatuses.includes(status)) {
+          throw new Error('This ride is no longer eligible for that Rider action.');
+        }
+        const payload = { ...data, updated_date: new Date().toISOString() };
+        transaction.update(ref, payload);
+        return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
    * Completes a started ride and increments the server-owned Driver lifetime
    * counter in the same transaction. A completion must not scan an entire trip
    * history before acknowledging the Driver's End Trip tap.

@@ -12,7 +12,7 @@ import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverP
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import { sendDriverRideOfferPush } from './driverOfferPush';
-import { driverCancellationRedispatchPatch } from './rideRedispatch';
+import { assignmentReleaseRedispatchPatch } from './rideRedispatch';
 import {
   approvalRequiredError,
   driverProfileForUserId,
@@ -1002,9 +1002,10 @@ export const driverTrips = router({
     if (!canCancelRideBeforeTrip(ride)) {
       throw new Error('A trip that has started or ended cannot be cancelled. Contact support for a fare dispute.');
     }
-    const reassignmentPatch = driverCancellationRedispatchPatch({
+    const reassignmentPatch = assignmentReleaseRedispatchPatch({
       ride,
-      driverId: input.driverId,
+      previousDriverId: input.driverId,
+      releasedBy: 'driver',
       reason: input.reason,
       pickupCode: String(Math.floor(1000 + Math.random() * 9000)),
     });

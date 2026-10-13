@@ -8,13 +8,15 @@ import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { registerDriverOtpRoutes } from "./driverOtp";
 import { registerDriverPhoneLoginRoutes } from "./driverPhoneLogin";
 import { registerDriverLocationRoutes } from "./driverLocation";
-import { registerLiveActivityRoutes } from "./liveActivities";
+import { registerLiveActivityRoutes, sendRideLiveActivityUpdate } from "./liveActivities";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
 import newRouteRouter from "./newRoute";
 import { registerCronRoutes } from "./cron";
 import { adminFirestore, ADMIN_COLLECTIONS, getAdminAuth, getAdminDb } from "./firebaseAdmin";
 import { canCancelRideBeforeTrip, cancelledRideNoChargePatch, requiresRiderCancellationReason, roundGhsFare } from "./fareAuthority";
+import { assignmentReleaseRedispatchPatch, shouldRedispatchAssignedRide } from './rideRedispatch';
+import { sendDriverRideOfferPush } from './driverOfferPush';
 import { getActiveSurgeMultiplier, getFareRateConfig, normalizeFareCategory } from './fareConfig';
 import {
   consumeRideQuoteAndCreateRide,
@@ -102,6 +104,7 @@ const riderRideRequestInput = z.object({
 
 const riderRideCancellationInput = z.object({
   reason: z.string().trim().min(1).max(500).optional(),
+  redispatch: z.boolean().optional(),
 });
 
 const riderDriverRatingInput = z.object({
@@ -1084,13 +1087,48 @@ export function createApp(): Express {
         return;
       }
       const reason = parsed.data.reason?.trim();
-      if (requiresRiderCancellationReason(ride) && !reason) {
+      const shouldRedispatch = shouldRedispatchAssignedRide(ride, parsed.data.redispatch);
+      if (requiresRiderCancellationReason(ride) && !reason && !shouldRedispatch) {
         res.status(422).json({ success: false, code: 'cancellation_reason_required', message: 'Please select a cancellation reason after a Driver has been assigned.' });
         return;
       }
+      // A Rider who explicitly chooses "Find another ride" wants the same
+      // protected request re-sent, not a terminal cancellation or a new quote.
+      // The server preserves the locked fare and excludes the former Driver.
+      if (shouldRedispatch) {
+        const reassignmentPatch = assignmentReleaseRedispatchPatch({
+          ride,
+          previousDriverId: String(ride.driver_id),
+          releasedBy: 'rider',
+          reason: reason || 'Rider selected Find another ride',
+          pickupCode: String(Math.floor(1000 + Math.random() * 9000)),
+        });
+        const updated = await adminFirestore.updateRiderRideIfStatus(
+          rideId,
+          riderId,
+          ['matched', 'driver_arriving', 'driver_arrived', 'driver_queued'],
+          reassignmentPatch,
+        );
+        // End the old Driver presentation on a backgrounded iPhone before the
+        // same request begins searching for its replacement.
+        void sendRideLiveActivityUpdate({ ...updated, status: 'cancelled' }, { force: true });
+        void sendDriverRideOfferPush(rideId, updated);
+        await adminFirestore.create(ADMIN_COLLECTIONS.RIDE_EVENTS, {
+          ride_id: rideId,
+          event_type: 'rider_requested_driver_redispatch',
+          actor_id: riderId,
+          actor_role: 'rider',
+          ride_status: 'searching',
+          metadata: { reason: reason || 'Rider selected Find another ride', previous_driver_id: ride.driver_id, reassignment_count: updated.driver_reassignment_count },
+          created_at: new Date().toISOString(),
+        }).catch((error) => console.error('[RideEvents] Unable to record Rider re-dispatch:', error));
+        res.json({ success: true, redispatched: true, ride: updated });
+        return;
+      }
       const cancelledAt = new Date().toISOString();
-      const updated = await adminFirestore.updateRideIfStatus(
+      const updated = await adminFirestore.updateRiderRideIfStatus(
         rideId,
+        riderId,
         ['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued'],
         cancelledRideNoChargePatch({ cancelledBy: 'rider', reason: reason || 'Cancelled before Driver assignment', cancelledAt }),
       );
