@@ -11,6 +11,8 @@ import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numer
 import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverPayoutRequest } from './driverCashCollectionPolicy';
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
+import { sendDriverRideOfferPush } from './driverOfferPush';
+import { driverCancellationRedispatchPatch } from './rideRedispatch';
 import {
   approvalRequiredError,
   driverProfileForUserId,
@@ -1000,26 +1002,31 @@ export const driverTrips = router({
     if (!canCancelRideBeforeTrip(ride)) {
       throw new Error('A trip that has started or ended cannot be cancelled. Contact support for a fare dispute.');
     }
-    const cancellationPatch = cancelledRideNoChargePatch({
-      cancelledBy: 'driver',
+    const reassignmentPatch = driverCancellationRedispatchPatch({
+      ride,
+      driverId: input.driverId,
       reason: input.reason,
-      cancelledAt: now(),
+      pickupCode: String(Math.floor(1000 + Math.random() * 9000)),
     });
-    const updated = await adminFirestore.updateRideIfStatus(
+    const updated = await adminFirestore.updateDriverRideIfStatus(
       input.rideId,
+      input.driverId,
       ['driver_arriving', 'driver_arrived', 'driver_queued'],
-      cancellationPatch,
+      reassignmentPatch,
     );
-    publishLiveActivity(updated, true);
-    recordRideEvent({
+    // The former Driver's Live Activity is ended, then the same protected
+    // request is immediately offered to other nearby eligible Drivers.
+    void sendRideLiveActivityUpdate({ ...updated, status: 'cancelled' }, { force: true });
+    void sendDriverRideOfferPush(input.rideId, updated);
+    void recordRideEvent({
       rideId: input.rideId,
-      type: 'ride_cancelled',
+      type: 'driver_cancelled_redispatched',
       actorId: input.driverId,
       actorRole: 'driver',
-      status: updated.status,
-      metadata: { cancellation_fee: 0, waiting_fee: 0 },
+      status: 'searching',
+      metadata: { reason: input.reason, reassignment_count: updated.driver_reassignment_count },
     });
-    return { success: true, ride: updated };
+    return { success: true, ride: updated, redispatched: true };
   }),
 });
 

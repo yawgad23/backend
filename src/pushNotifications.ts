@@ -146,6 +146,11 @@ export function buildRideStatusPush(ride: Record<string, any>): RideStatusPush |
   const driverDetails = [driverName, colour, vehicle, plate ? `plate ${plate}` : ''].filter(Boolean).join(' · ');
 
   switch (status) {
+    case 'searching':
+      if (ride.reassigned_after_driver_cancellation === true) {
+        return { status, title: 'Finding another Driver', body: 'Your previous Driver cancelled. We sent your request to other nearby Drivers.' };
+      }
+      return null;
     case 'matched':
       return { status, title: 'Driver found', body: `${driverDetails} accepted your ride request.` };
     case 'driver_arriving':

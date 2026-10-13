@@ -53,4 +53,13 @@ describe('Driver ride-offer push recipients', () => {
     expect(recipients[0]).toBe('driver-0');
     expect(recipients[11]).toBe('driver-11');
   });
+
+  it('does not wake a Driver who cancelled the same request during re-dispatch', () => {
+    const redispatchedRide = { ...ride, declined_by_driver_ids: ['driver-1'] };
+
+    expect(driverOfferRecipients(redispatchedRide, [
+      presence(),
+      presence({ id: 'driver-2', user_id: 'driver-2' }),
+    ], now)).toEqual(['driver-2']);
+  });
 });

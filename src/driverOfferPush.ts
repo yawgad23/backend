@@ -63,9 +63,15 @@ function configuredPickupRadiusKm(driver: DriverPresence): number {
  * platform-fee eligibility and atomic ride assignment before a ride is matched.
  */
 export function driverOfferRecipients(ride: Record<string, unknown>, presences: DriverPresence[], now = Date.now()): string[] {
+  const excludedDriverIds = new Set(
+    Array.isArray(ride.declined_by_driver_ids)
+      ? ride.declined_by_driver_ids.map((value) => cleanText(value)).filter(Boolean)
+      : [],
+  );
   return presences
     .filter((presence) => isOnlineWithFreshLocation(presence as Record<string, any>, now))
     .filter((presence) => driverCanServeRideCategory(presence as Record<string, any>, ride.category))
+    .filter((presence) => !excludedDriverIds.has(cleanText(presence.user_id ?? presence.id)))
     .map((presence) => ({
       uid: cleanText(presence.user_id ?? presence.id),
       distanceKm: pickupDistanceKm(ride, presence),
