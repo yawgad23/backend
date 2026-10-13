@@ -6,7 +6,7 @@
   "main": "dist/functions.js",
   "types": "dist-types/routers.d.ts",
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -18,13 +18,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@trpc/server": "11.7.2",
-    "axios": "^1.13.2",
+    "@trpc/server": "11.19.0",
+    "axios": "1.20.0",
     "dotenv": "^16.6.1",
-    "express": "^4.22.1",
-    "firebase-admin": "^13.0.0",
-    "firebase-functions": "^6.4.0",
-    "nodemailer": "^9.0.0",
+    "express": "4.22.3",
+    "firebase-admin": "14.5.0",
+    "firebase-functions": "7.4.0",
+    "nodemailer": "10.1.0",
     "superjson": "^1.13.3",
     "zod": "^4.2.1"
   },
@@ -36,5 +36,10 @@
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "vitest": "^2.1.9"
+  },
+  "overrides": {
+    "@fastify/busboy": "3.2.2",
+    "body-parser": "1.20.6",
+    "qs": "6.16.0"
   }
 }
