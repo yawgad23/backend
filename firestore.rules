@@ -44,8 +44,10 @@ service cloud.firestore {
     match /rides/{rideId} {
       allow read: if isAdmin() || isRideParticipant();
       allow create, delete: if isAdmin();
-      allow update: if isAdmin() || (isRideParticipant() && resource.data.rider_id == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rider_rating', 'rider_feedback', 'rider_feedback_tags', 'rated_at', 'updated_date']));
+      // Ratings, fares, state transitions, and every other ride change are
+      // validated against the verified Rider/Driver identity by the backend.
+      // Never accept direct mobile writes for a financial or safety record.
+      allow update: if isAdmin();
     }
     match /ride_messages/{messageId} {
       allow read: if isAdmin() || (signedIn() && (resource.data.rider_id == request.auth.uid || resource.data.driver_id == request.auth.uid || resource.data.sender_id == request.auth.uid));

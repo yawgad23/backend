@@ -54,6 +54,12 @@ import {
   initiateHubtelCardCheckout,
 } from "./cardCheckout";
 import { apiTimingRecord } from './apiTiming';
+import {
+  isHttpsRequest,
+  isProductionRuntime,
+  isSensitiveApiPath,
+  securityHeaders,
+} from './httpSecurity';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -187,10 +193,30 @@ function cardCheckoutCallbackUrl(): string {
  */
 export function createApp(): Express {
   const app = express();
+  app.disable('x-powered-by');
   // The API runs behind one trusted Cloud Run proxy. This gives public
   // anti-abuse endpoints a stable requester IP without trusting arbitrary
   // forwarded-address chains.
   app.set('trust proxy', 1);
+
+  // Mobile clients use Firebase bearer tokens, not ambient browser cookies.
+  // These headers prevent framing, MIME sniffing, and storage of sensitive
+  // API responses; production requests that did not arrive over HTTPS fail.
+  app.use((req, res, next) => {
+    const secure = isHttpsRequest(req.headers['x-forwarded-proto'], req.protocol);
+    for (const [name, value] of Object.entries(securityHeaders(secure))) {
+      res.setHeader(name, value);
+    }
+    if (isProductionRuntime(process.env) && !secure) {
+      res.status(400).json({ success: false, message: 'HTTPS is required.' });
+      return;
+    }
+    if (isSensitiveApiPath(req)) {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+    }
+    next();
+  });
 
   // Native apps do not send an Origin header. Browser calls are restricted to
   // HY3N-owned origins instead of reflecting arbitrary hostile websites.

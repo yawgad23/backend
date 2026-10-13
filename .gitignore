@@ -3,5 +3,12 @@ dist/
 .firebase/
 .env
 .env.local
+.env.*
+!.env.example
+.envrc
+*.pem
+*.p12
+*service-account*.json
+serviceAccount*.json
 *.log
 .DS_Store
