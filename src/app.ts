@@ -39,6 +39,7 @@ import { registerAdminAccessCodeRoutes } from "./adminAccessCode";
 import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { registerPasswordResetRoutes } from './passwordReset';
 import { registerWebsiteIntakeRoutes } from './websiteIntake';
+import { registerAccountProfileRoutes } from './accountProfileRoutes';
 import { riderOwnsRideStatus } from './riderRideStatus';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
@@ -282,6 +283,7 @@ export function createApp(): Express {
   registerAdminFinancialRoutes(app);
   registerAdminNotificationRoutes(app);
   registerPasswordResetRoutes(app);
+  registerAccountProfileRoutes(app);
   registerWebsiteIntakeRoutes(app, isTrustedBrowserOrigin);
   // Rider's active-trip Share Trip action calls these authenticated endpoints.
   // Keep the public tracking read path registered before the generic API routes.

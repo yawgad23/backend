@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
+import { AccountContactConflictError, claimAccountContacts } from './accountContactClaims';
 
 /** Normalize Ghana mobile input to the Firebase/Firestore E.164 representation. */
 export function normalizeGhanaPhone(value: unknown): string | null {
@@ -111,6 +112,23 @@ export function registerDriverPhoneLoginRoutes(app: Express) {
         : [];
       const profilesToLink = [...matchingProfiles, ...relatedProfiles]
         .filter((profile, index, list) => list.findIndex((item) => item.id === profile.id) === index);
+      try {
+        await claimAccountContacts({
+          ownerUid: session.uid,
+          role: 'driver',
+          contacts: { email: selected.email, phone: session.phone },
+          transferableOwnerUids: identityOwners,
+        });
+      } catch (error) {
+        if (error instanceof AccountContactConflictError) {
+          response.status(409).json({
+            success: false,
+            message: 'This phone number is already attached to another HY3N account. Please contact HY3N Support so the accounts can be safely reviewed.',
+          });
+          return;
+        }
+        throw error;
+      }
       const timestamp = new Date().toISOString();
       const patch = {
         user_id: session.uid,

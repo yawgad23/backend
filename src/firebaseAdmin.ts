@@ -83,6 +83,7 @@ export const ADMIN_COLLECTIONS = {
   RIDE_EVENTS: 'ride_events',
   TRIP_SHARES: 'trip_shares',
   DRIVER_PROFILES: 'driver_profiles',
+  ACCOUNT_CONTACT_CLAIMS: 'account_contact_claims',
   DAILY_COMMISSION: 'daily_commissions',
   PUSH_DEVICES: 'push_devices',
   PUSH_DELIVERIES: 'push_deliveries',
