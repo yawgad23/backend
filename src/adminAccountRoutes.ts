@@ -29,6 +29,61 @@ function profileUserId(profile: Record<string, any>): string {
   return String(profile.user_id || profile.id || '').trim();
 }
 
+function cleanIdentityText(value: unknown, maxLength: number): string | null {
+  const normalized = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+function usableRiderName(value: unknown): string | null {
+  const name = cleanIdentityText(value, 120);
+  return name && !['rider', 'hy3n rider', 'unknown', 'unnamed account'].includes(name.toLowerCase()) ? name : null;
+}
+
+/**
+ * A historic Rider profile can be present but blank after a phone/third-party
+ * sign-in created Firebase Auth without the profile form values. A trip is an
+ * authenticated, server-owned snapshot for that same UID, so it can restore
+ * only the empty identity fields. It never replaces an existing profile value.
+ */
+export function riderIdentityRecoveryPatch(profile: Record<string, any>, ride: Record<string, any>) {
+  const patch: Record<string, string | boolean> = {};
+  const profileName = usableRiderName(profile.full_name || profile.name || profile.display_name);
+  const rideName = usableRiderName(ride.rider_name || (ride.rider as Record<string, unknown> | undefined)?.name);
+  const profilePhone = cleanIdentityText(profile.phone || profile.phone_number, 40);
+  const ridePhone = cleanIdentityText(ride.rider_phone, 40);
+  const profileEmail = cleanIdentityText(profile.email, 160);
+  const rideEmail = cleanIdentityText(ride.rider_email, 160);
+
+  if (!profileName && rideName) patch.full_name = rideName;
+  if (!profilePhone && ridePhone) patch.phone = ridePhone;
+  if (!profileEmail && rideEmail) patch.email = rideEmail.toLowerCase();
+  if (Object.keys(patch).length > 0) patch.identity_recovered_from_ride = true;
+  return patch;
+}
+
+async function recoverRiderIdentity(profile: Record<string, any>) {
+  const userId = profileUserId(profile);
+  if (!userId) return profile;
+
+  const name = usableRiderName(profile.full_name || profile.name || profile.display_name);
+  // Keep account-list reads bounded. This repair is specifically for the
+  // visible “Unnamed account” issue; contact fields can be completed by the
+  // Rider from their Account page without issuing one ride query per profile.
+  if (name) return profile;
+
+  const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: userId }, 'created_date', 'desc', 25);
+  for (const ride of rides) {
+    const patch = riderIdentityRecoveryPatch(profile, ride);
+    if (Object.keys(patch).length === 0) continue;
+    const saved = await adminFirestore.update(ADMIN_COLLECTIONS.RIDER_PROFILES, String(profile.id), {
+      user_id: userId,
+      ...patch,
+    });
+    return { ...profile, ...saved };
+  }
+  return profile;
+}
+
 function profileActivityTime(profile: Record<string, any>): number {
   for (const field of ['created_date', 'account_created_at', 'updated_date']) {
     const timestamp = Date.parse(String(profile[field] || ''));
@@ -199,7 +254,19 @@ export function registerAdminAccountRoutes(app: Express) {
         if (!userId) continue;
         unique.set(userId, unique.has(userId) ? newest(unique.get(userId)!, record) : record);
       }
-      response.json({ accounts: [...unique.values()].map((record) => normalizedProfile(record, accountRole)) });
+      const profiles = accountRole === 'rider'
+        ? await Promise.all([...unique.values()].map(async (profile) => {
+            try {
+              return await recoverRiderIdentity(profile);
+            } catch (error) {
+              // An account list must remain available if one historic ride is
+              // malformed or an optional identity-repair write is unavailable.
+              console.warn('[Admin accounts] Rider identity recovery skipped:', error);
+              return profile;
+            }
+          }))
+        : [...unique.values()];
+      response.json({ accounts: profiles.map((record) => normalizedProfile(record, accountRole)) });
     } catch (error) {
       console.error('[Admin accounts] Failed to list accounts:', error);
       response.status(503).json({ error: 'Accounts are temporarily unavailable. Please refresh.' });
