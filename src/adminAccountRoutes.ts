@@ -29,10 +29,26 @@ function profileUserId(profile: Record<string, any>): string {
   return String(profile.user_id || profile.id || '').trim();
 }
 
-function newest(first: Record<string, any>, second: Record<string, any>) {
-  const firstDate = String(first.updated_date || first.created_date || '');
-  const secondDate = String(second.updated_date || second.created_date || '');
-  return secondDate > firstDate ? second : first;
+function profileActivityTime(profile: Record<string, any>): number {
+  for (const field of ['created_date', 'account_created_at', 'updated_date']) {
+    const timestamp = Date.parse(String(profile[field] || ''));
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+export function newest(first: Record<string, any>, second: Record<string, any>) {
+  return profileActivityTime(second) > profileActivityTime(first) ? second : first;
+}
+
+/**
+ * Some older Rider app builds created their own profile documents without a
+ * `created_date`. Firestore omits those documents from an orderBy(created_date)
+ * query, even though the profile and their rides exist. Sort after reading so
+ * every valid account remains visible to the administrator.
+ */
+export function sortProfilesNewestFirst(profiles: Array<Record<string, any>>) {
+  return [...profiles].sort((first, second) => profileActivityTime(second) - profileActivityTime(first));
 }
 
 function normalizedProfile(profile: Record<string, any>, accountRole: AccountRole) {
@@ -56,7 +72,7 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
     plate: accountRole === 'driver' ? profile.license_plate || profile.vehicle_plate || null : null,
     rating: Number(profile.rating || 0),
     totalRides: Number(profile.total_rides || profile.total_trips || 0),
-    createdAt: profile.created_date || null,
+    createdAt: profile.created_date || profile.account_created_at || profile.updated_date || null,
     retentionAudit: {
       deletionRequested: profile.account_deletion_requested === true,
       inactivatedAt: profile.account_inactivated_at || null,
@@ -172,7 +188,11 @@ export function registerAdminAccountRoutes(app: Express) {
     }
 
     try {
-      const records = await adminFirestore.list(accountCollection(accountRole), {}, 'created_date', 'desc', 500);
+      // Do not ask Firestore to order by `created_date`: documents created by
+      // prior mobile releases may not have that field and Firestore excludes
+      // missing-field documents from an ordered query. The in-memory sort above
+      // keeps the normal newest-first presentation without hiding real Riders.
+      const records = sortProfilesNewestFirst(await adminFirestore.list(accountCollection(accountRole), {}, null, 'desc', 500));
       const unique = new Map<string, Record<string, any>>();
       for (const record of records) {
         const userId = profileUserId(record);
