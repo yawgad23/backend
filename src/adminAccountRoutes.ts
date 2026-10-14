@@ -87,6 +87,57 @@ export function legacyRiderContactMatches(profile: Record<string, any>, ride: Re
   return Boolean((profilePhone && profilePhone === ridePhone) || (profileEmail && profileEmail === rideEmail));
 }
 
+export function riderIdFromRide(ride: Record<string, any>): string | null {
+  const nestedRider = ride.rider && typeof ride.rider === 'object' ? ride.rider as Record<string, unknown> : null;
+  return validUserId(ride.rider_id || ride.riderId || nestedRider?.user_id || nestedRider?.id);
+}
+
+export function riderProfileFromRide(ride: Record<string, any>, totalRides: number): Record<string, any> | null {
+  const userId = riderIdFromRide(ride);
+  if (!userId) return null;
+  const nestedRider = ride.rider && typeof ride.rider === 'object' ? ride.rider as Record<string, unknown> : null;
+  const fullName = usableRiderName(ride.rider_name || nestedRider?.name);
+  const phone = cleanIdentityText(ride.rider_phone || nestedRider?.phone, 40);
+  const email = normalizedEmail(ride.rider_email || nestedRider?.email);
+  // Never manufacture a visible account from an anonymous or malformed trip.
+  if (!fullName && !phone && !email) return null;
+  return {
+    id: userId,
+    user_id: userId,
+    full_name: fullName || '',
+    phone: phone || '',
+    email: email || '',
+    total_rides: totalRides,
+    rating: 5,
+    account_status: 'active',
+    registration_source: 'ride_history_reconciliation',
+    identity_recovered_from_ride: true,
+    account_created_at: ride.created_date || ride.created_at || new Date().toISOString(),
+  };
+}
+
+export function reconcileRiderProfilesFromRides(
+  profiles: Array<Record<string, any>>,
+  rides: Array<Record<string, any>>,
+) {
+  const knownUserIds = new Set(profiles.map(profileUserId));
+  const rideCounts = new Map<string, number>();
+  for (const ride of rides) {
+    const riderId = riderIdFromRide(ride);
+    if (riderId) rideCounts.set(riderId, (rideCounts.get(riderId) || 0) + 1);
+  }
+  const missingProfiles: Array<Record<string, any>> = [];
+  for (const ride of rides) {
+    const riderId = riderIdFromRide(ride);
+    if (!riderId || knownUserIds.has(riderId)) continue;
+    const profile = riderProfileFromRide(ride, rideCounts.get(riderId) || 0);
+    if (!profile) continue;
+    knownUserIds.add(riderId);
+    missingProfiles.push(profile);
+  }
+  return missingProfiles;
+}
+
 /** See riderIdentityRecoveryPatch: this deliberately excludes approval and vehicle fields. */
 export function driverIdentityRecoveryPatch(profile: Record<string, any>, ride: Record<string, any>) {
   const patch: Record<string, string | boolean> = {};
@@ -118,8 +169,7 @@ async function recoverRiderIdentity(
   // Rider from their Account page without issuing one ride query per profile.
   if (name) return profile;
 
-  const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: userId }, 'created_date', 'desc', 25);
-  const candidates = [...rides];
+  const candidates = (await loadLegacyRiderRides()).filter((ride) => riderIdFromRide(ride) === userId);
   // Phone-auth can create a different Firebase UID from the earlier email UID.
   // Fall back only to an exact normalized phone/email match, only for a blank
   // account name, and only if the UID lookup did not find a real Rider name.
@@ -325,6 +375,20 @@ export function registerAdminAccountRoutes(app: Express) {
       // missing-field documents from an ordered query. The in-memory sort above
       // keeps the normal newest-first presentation without hiding real Riders.
       const records = sortProfilesNewestFirst(await adminFirestore.list(accountCollection(accountRole), {}, null, 'desc', 500));
+      const riderRides = accountRole === 'rider'
+        ? await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 500)
+        : [];
+      if (accountRole === 'rider') {
+        const missingProfiles = reconcileRiderProfilesFromRides(records, riderRides);
+        if (missingProfiles.length > 0) {
+          await Promise.all(missingProfiles.map((profile) => adminFirestore.set(
+            ADMIN_COLLECTIONS.RIDER_PROFILES,
+            String(profile.user_id),
+            profile,
+          )));
+          records.push(...missingProfiles);
+        }
+      }
       const unique = new Map<string, Record<string, any>>();
       for (const record of records) {
         const userId = profileUserId(record);
@@ -333,7 +397,7 @@ export function registerAdminAccountRoutes(app: Express) {
       }
       let legacyRiderRides: Promise<Array<Record<string, any>>> | null = null;
       const loadLegacyRiderRides = () => {
-        legacyRiderRides ??= adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 500);
+        legacyRiderRides ??= Promise.resolve(riderRides);
         return legacyRiderRides;
       };
       const profiles = (accountRole === 'rider' || accountRole === 'driver')

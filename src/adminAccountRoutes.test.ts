@@ -3,7 +3,9 @@ import {
   driverIdentityRecoveryPatch,
   legacyRiderContactMatches,
   newest,
+  reconcileRiderProfilesFromRides,
   riderIdentityRecoveryPatch,
+  riderProfileFromRide,
   sortProfilesNewestFirst,
 } from './adminAccountRoutes';
 
@@ -74,6 +76,34 @@ describe('admin account profile ordering', () => {
       { id: 'rider-1', user_id: 'rider-1', phone: '+233595167067', email: 'first@example.com' },
       { rider_id: 'rider-2', rider_phone: '+233541220725', rider_email: 'second@example.com' },
     )).toBe(false);
+  });
+
+  it('creates one Rider profile from a valid server-owned ride when the profile is absent', () => {
+    const missing = reconcileRiderProfilesFromRides(
+      [{ id: 'known-rider', user_id: 'known-rider', full_name: 'Known Rider' }],
+      [
+        { id: 'ride-1', rider_id: 'known-rider', rider_name: 'Known Rider' },
+        {
+          id: 'ride-2', riderId: 'rider-from-ride', rider_name: 'ASANTE',
+          rider_phone: '0541220725', rider_email: 'ASANTE@example.com', created_date: '2026-10-14T01:00:00.000Z',
+        },
+        { id: 'ride-3', rider_id: 'rider-from-ride', rider_name: 'ASANTE' },
+      ],
+    );
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatchObject({
+      user_id: 'rider-from-ride',
+      full_name: 'ASANTE',
+      phone: '0541220725',
+      email: 'asante@example.com',
+      total_rides: 2,
+      registration_source: 'ride_history_reconciliation',
+    });
+  });
+
+  it('does not create a Rider profile from an anonymous malformed ride', () => {
+    expect(riderProfileFromRide({ rider_id: 'anonymous-rider' }, 1)).toBeNull();
   });
 
   it('repairs a blank Driver name only from that Driver’s assigned ride snapshot', () => {
