@@ -138,6 +138,73 @@ export function reconcileRiderProfilesFromRides(
   return missingProfiles;
 }
 
+function uniqueProfilesByUserId(profiles: Array<Record<string, any>>) {
+  const unique = new Map<string, Record<string, any>>();
+  for (const profile of profiles) {
+    const userId = validUserId(profileUserId(profile));
+    if (!userId) continue;
+    unique.set(userId, unique.has(userId) ? newest(unique.get(userId)!, profile) : profile);
+  }
+  return [...unique.values()];
+}
+
+function normalizedAccountStatus(value: unknown): AccountStatus {
+  const status = accountStatus(value);
+  return status || 'active';
+}
+
+function normalizedDriverType(profile: Record<string, any>) {
+  const type = cleanIdentityText(profile.service_type || profile.serviceType, 40)?.toLowerCase();
+  return type || 'car';
+}
+
+/**
+ * Produces the admin-visible registered-account totals from complete server
+ * collections. Rider profiles recovered from a valid ride are included once
+ * by UID, so duplicate profile documents and repeat rides cannot inflate totals.
+ */
+export function accountRegistrationSummary(
+  driverProfiles: Array<Record<string, any>>,
+  riderProfiles: Array<Record<string, any>>,
+  rides: Array<Record<string, any>>,
+) {
+  const uniqueDrivers = uniqueProfilesByUserId(driverProfiles);
+  const recoveredRiders = reconcileRiderProfilesFromRides(riderProfiles, rides);
+  const uniqueRiders = uniqueProfilesByUserId([...riderProfiles, ...recoveredRiders]);
+  const driversByStatus = { active: 0, suspended: 0, inactive: 0 };
+  const ridersByStatus = { active: 0, suspended: 0, inactive: 0 };
+  const driversByApproval = { approved: 0, pending: 0, rejected: 0 };
+  const driversByType: Record<string, number> = {};
+  let onlineDrivers = 0;
+
+  for (const driver of uniqueDrivers) {
+    driversByStatus[normalizedAccountStatus(driver.account_status)] += 1;
+    const approval = cleanIdentityText(driver.approval_status, 40)?.toLowerCase();
+    if (approval === 'approved' || approval === 'rejected') driversByApproval[approval] += 1;
+    else driversByApproval.pending += 1;
+    const driverType = normalizedDriverType(driver);
+    driversByType[driverType] = (driversByType[driverType] || 0) + 1;
+    if (driver.is_online === true || driver.availability_status === 'online') onlineDrivers += 1;
+  }
+
+  for (const rider of uniqueRiders) ridersByStatus[normalizedAccountStatus(rider.account_status)] += 1;
+
+  return {
+    drivers: {
+      totalRegistered: uniqueDrivers.length,
+      online: onlineDrivers,
+      byStatus: driversByStatus,
+      byApproval: driversByApproval,
+      byType: driversByType,
+    },
+    riders: {
+      totalRegistered: uniqueRiders.length,
+      byStatus: ridersByStatus,
+      recoveredFromRideHistory: recoveredRiders.length,
+    },
+  };
+}
+
 /** See riderIdentityRecoveryPatch: this deliberately excludes approval and vehicle fields. */
 export function driverIdentityRecoveryPatch(profile: Record<string, any>, ride: Record<string, any>) {
   const patch: Record<string, string | boolean> = {};
@@ -360,6 +427,32 @@ function accountCreateInput(input: Record<string, any>) {
  * retaining profile, ride, payment, commission, and safety records for review.
  */
 export function registerAdminAccountRoutes(app: Express) {
+  app.get('/api/admin/account-summary', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+
+    try {
+      const [driversResult, ridersResult, ridesResult] = await Promise.all([
+        adminFirestore.listAll(ADMIN_COLLECTIONS.DRIVER_PROFILES),
+        adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES),
+        adminFirestore.listAll(ADMIN_COLLECTIONS.RIDES),
+      ]);
+      const summary = accountRegistrationSummary(
+        driversResult.records,
+        ridersResult.records,
+        ridesResult.records,
+      );
+      response.json({
+        ...summary,
+        generatedAt: new Date().toISOString(),
+        complete: !driversResult.truncated && !ridersResult.truncated && !ridesResult.truncated,
+      });
+    } catch (error) {
+      console.error('[Admin accounts] Failed to calculate registration summary:', error);
+      response.status(503).json({ error: 'Registration totals are temporarily unavailable. Please refresh.' });
+    }
+  });
+
   app.get('/api/admin/accounts', async (request: Request, response: Response) => {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  accountRegistrationSummary,
   driverIdentityRecoveryPatch,
   legacyRiderContactMatches,
   newest,
@@ -104,6 +105,38 @@ describe('admin account profile ordering', () => {
 
   it('does not create a Rider profile from an anonymous malformed ride', () => {
     expect(riderProfileFromRide({ rider_id: 'anonymous-rider' }, 1)).toBeNull();
+  });
+
+  it('reports distinct registered drivers and Riders without manual counting', () => {
+    const summary = accountRegistrationSummary(
+      [
+        { id: 'driver-a-old', user_id: 'driver-a', service_type: 'car', approval_status: 'approved', is_online: true, created_date: '2026-10-01T01:00:00.000Z' },
+        { id: 'driver-a-new', user_id: 'driver-a', service_type: 'car', approval_status: 'approved', is_online: true, updated_date: '2026-10-02T01:00:00.000Z' },
+        { id: 'driver-b', user_id: 'driver-b', service_type: 'okada', approval_status: 'pending', account_status: 'suspended' },
+        { id: 'driver-c', user_id: 'driver-c', service_type: 'delivery', approval_status: 'rejected', account_status: 'inactive' },
+      ],
+      [{ id: 'rider-a', user_id: 'rider-a', full_name: 'Yaw Gad' }],
+      [
+        { id: 'ride-1', rider_id: 'rider-a', rider_name: 'Yaw Gad' },
+        { id: 'ride-2', riderId: 'rider-b', rider_name: 'ASANTE', rider_phone: '0541220725' },
+        { id: 'ride-3', rider_id: 'rider-b', rider_name: 'ASANTE', rider_phone: '0541220725' },
+      ],
+    );
+
+    expect(summary).toEqual({
+      drivers: {
+        totalRegistered: 3,
+        online: 1,
+        byStatus: { active: 1, suspended: 1, inactive: 1 },
+        byApproval: { approved: 1, pending: 1, rejected: 1 },
+        byType: { car: 1, okada: 1, delivery: 1 },
+      },
+      riders: {
+        totalRegistered: 2,
+        byStatus: { active: 2, suspended: 0, inactive: 0 },
+        recoveredFromRideHistory: 1,
+      },
+    });
   });
 
   it('repairs a blank Driver name only from that Driver’s assigned ride snapshot', () => {
