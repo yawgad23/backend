@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { newest, riderIdentityRecoveryPatch, sortProfilesNewestFirst } from './adminAccountRoutes';
+import {
+  driverIdentityRecoveryPatch,
+  newest,
+  riderIdentityRecoveryPatch,
+  sortProfilesNewestFirst,
+} from './adminAccountRoutes';
 
 describe('admin account profile ordering', () => {
   it('keeps legacy Rider profiles with no created_date visible', () => {
@@ -54,5 +59,30 @@ describe('admin account profile ordering', () => {
       { id: 'rider-2', user_id: 'rider-2', full_name: '', phone: '', email: '' },
       { rider_id: 'rider-2', rider_name: 'Rider', rider_phone: '+233241234567' },
     )).toEqual({ phone: '+233241234567', identity_recovered_from_ride: true });
+  });
+
+  it('repairs a blank Driver name only from that Driver’s assigned ride snapshot', () => {
+    const patch = driverIdentityRecoveryPatch(
+      { id: 'driver-1', user_id: 'driver-1', full_name: '', phone: '', approval_status: 'pending' },
+      {
+        driver_id: 'driver-1',
+        driver_name: 'Kofi Mensah',
+        driver: { name: 'Kofi Mensah', phone: '+233244000222' },
+      },
+    );
+
+    expect(patch).toEqual({
+      full_name: 'Kofi Mensah',
+      phone: '+233244000222',
+      identity_recovered_from_ride: true,
+    });
+    expect(patch).not.toHaveProperty('approval_status');
+  });
+
+  it('does not promote generic Driver fallback text into a Driver account name', () => {
+    expect(driverIdentityRecoveryPatch(
+      { id: 'driver-2', user_id: 'driver-2', full_name: '', phone: '' },
+      { driver_id: 'driver-2', driver_name: 'HY3N Driver' },
+    )).toEqual({});
   });
 });
