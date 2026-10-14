@@ -23,20 +23,25 @@ service cloud.firestore {
       ]) && (next == prior || (prior == 'rejected' && next == 'pending'));
     }
 
-    // Only the Driver and admins can read full application records.
+    // Driver applications are written only by the authenticated backend. This
+    // protects unique phone/email claims and prevents client-side approval or
+    // contact-field tampering.
     match /driver_profiles/{driverId} {
       allow read: if isAdmin() || isSelf('user_id');
-      allow create: if isAdmin() || pendingOwnDriverApplication();
-      allow update: if isAdmin() || safeDriverSelfUpdate();
-      allow delete: if isAdmin() || isSelf('user_id');
+      allow create, update, delete: if isAdmin();
     }
     // Server-owned, map-safe data: no documents, personal contacts, or payout data.
     match /driver_presence/{driverId} { allow read: if signedIn(); allow write: if false; }
 
     match /rider_profiles/{riderId} {
-      allow read, update, delete: if isAdmin() || isSelf('user_id');
-      allow create: if isAdmin() || isNewSelf('user_id');
+      // The protected API atomically claims the email/phone and writes the
+      // canonical profile. Direct client writes could otherwise race that
+      // claim and allow one phone number in multiple accounts.
+      allow read: if isAdmin() || isSelf('user_id');
+      allow create, update, delete: if isAdmin();
     }
+    // Claim docs store only a contact hash and are backend-only.
+    match /account_contact_claims/{claimId} { allow read, write: if false; }
     match /wallets/{userId} { allow read: if signedIn() && request.auth.uid == userId; allow write: if false; }
     match /wallet_transactions/{transactionId} { allow read: if isSelf('user_id'); allow write: if false; }
 
