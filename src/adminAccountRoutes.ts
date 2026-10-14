@@ -34,6 +34,17 @@ function cleanIdentityText(value: unknown, maxLength: number): string | null {
   return normalized ? normalized.slice(0, maxLength) : null;
 }
 
+function normalizedPhone(value: unknown): string | null {
+  const digits = cleanIdentityText(value, 40)?.replace(/\D/g, '') || '';
+  if (!digits) return null;
+  if (/^0\d{9}$/.test(digits)) return `233${digits.slice(1)}`;
+  return digits;
+}
+
+function normalizedEmail(value: unknown): string | null {
+  return cleanIdentityText(value, 160)?.toLowerCase() || null;
+}
+
 function usableRiderName(value: unknown): string | null {
   const name = cleanIdentityText(value, 120);
   return name && !['rider', 'hy3n rider', 'unknown', 'unnamed account'].includes(name.toLowerCase()) ? name : null;
@@ -66,6 +77,16 @@ export function riderIdentityRecoveryPatch(profile: Record<string, any>, ride: R
   return patch;
 }
 
+/** A legacy phone-auth profile may have a newer Firebase UID than its ride history. */
+export function legacyRiderContactMatches(profile: Record<string, any>, ride: Record<string, any>) {
+  const nestedRider = ride.rider && typeof ride.rider === 'object' ? ride.rider as Record<string, unknown> : null;
+  const profilePhone = normalizedPhone(profile.phone || profile.phone_number);
+  const ridePhone = normalizedPhone(ride.rider_phone || nestedRider?.phone);
+  const profileEmail = normalizedEmail(profile.email);
+  const rideEmail = normalizedEmail(ride.rider_email || nestedRider?.email);
+  return Boolean((profilePhone && profilePhone === ridePhone) || (profileEmail && profileEmail === rideEmail));
+}
+
 /** See riderIdentityRecoveryPatch: this deliberately excludes approval and vehicle fields. */
 export function driverIdentityRecoveryPatch(profile: Record<string, any>, ride: Record<string, any>) {
   const patch: Record<string, string | boolean> = {};
@@ -84,7 +105,10 @@ export function driverIdentityRecoveryPatch(profile: Record<string, any>, ride: 
   return patch;
 }
 
-async function recoverRiderIdentity(profile: Record<string, any>) {
+async function recoverRiderIdentity(
+  profile: Record<string, any>,
+  loadLegacyRiderRides: () => Promise<Array<Record<string, any>>>,
+) {
   const userId = profileUserId(profile);
   if (!userId) return profile;
 
@@ -95,7 +119,18 @@ async function recoverRiderIdentity(profile: Record<string, any>) {
   if (name) return profile;
 
   const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { rider_id: userId }, 'created_date', 'desc', 25);
-  for (const ride of rides) {
+  const candidates = [...rides];
+  // Phone-auth can create a different Firebase UID from the earlier email UID.
+  // Fall back only to an exact normalized phone/email match, only for a blank
+  // account name, and only if the UID lookup did not find a real Rider name.
+  if (!candidates.some((ride) => usableRiderName(ride.rider_name || (ride.rider as Record<string, unknown> | undefined)?.name))) {
+    const legacyMatches = (await loadLegacyRiderRides()).filter((ride) => legacyRiderContactMatches(profile, ride));
+    for (const legacyRide of legacyMatches) {
+      if (!candidates.some((candidate) => candidate.id === legacyRide.id)) candidates.push(legacyRide);
+    }
+  }
+
+  for (const ride of candidates) {
     const patch = riderIdentityRecoveryPatch(profile, ride);
     if (Object.keys(patch).length === 0) continue;
     const saved = await adminFirestore.update(ADMIN_COLLECTIONS.RIDER_PROFILES, String(profile.id), {
@@ -296,11 +331,16 @@ export function registerAdminAccountRoutes(app: Express) {
         if (!userId) continue;
         unique.set(userId, unique.has(userId) ? newest(unique.get(userId)!, record) : record);
       }
+      let legacyRiderRides: Promise<Array<Record<string, any>>> | null = null;
+      const loadLegacyRiderRides = () => {
+        legacyRiderRides ??= adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 500);
+        return legacyRiderRides;
+      };
       const profiles = (accountRole === 'rider' || accountRole === 'driver')
         ? await Promise.all([...unique.values()].map(async (profile) => {
             try {
               return accountRole === 'rider'
-                ? await recoverRiderIdentity(profile)
+                ? await recoverRiderIdentity(profile, loadLegacyRiderRides)
                 : await recoverDriverIdentity(profile);
             } catch (error) {
               // An account list must remain available if one historic ride is

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   driverIdentityRecoveryPatch,
+  legacyRiderContactMatches,
   newest,
   riderIdentityRecoveryPatch,
   sortProfilesNewestFirst,
@@ -59,6 +60,20 @@ describe('admin account profile ordering', () => {
       { id: 'rider-2', user_id: 'rider-2', full_name: '', phone: '', email: '' },
       { rider_id: 'rider-2', rider_name: 'Rider', rider_phone: '+233241234567' },
     )).toEqual({ phone: '+233241234567', identity_recovered_from_ride: true });
+  });
+
+  it('recognizes a legacy Rider ride by the same normalized Ghana phone number', () => {
+    expect(legacyRiderContactMatches(
+      { id: 'new-phone-auth-uid', user_id: 'new-phone-auth-uid', phone: '+233 59 516 7067' },
+      { rider_id: 'former-email-uid', rider_phone: '0595167067', rider_name: 'Emmanuel Owusu' },
+    )).toBe(true);
+  });
+
+  it('does not match a legacy Rider ride when phone and email belong to another account', () => {
+    expect(legacyRiderContactMatches(
+      { id: 'rider-1', user_id: 'rider-1', phone: '+233595167067', email: 'first@example.com' },
+      { rider_id: 'rider-2', rider_phone: '+233541220725', rider_email: 'second@example.com' },
+    )).toBe(false);
   });
 
   it('repairs a blank Driver name only from that Driver’s assigned ride snapshot', () => {
