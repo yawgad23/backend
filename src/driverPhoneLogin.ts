@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 import { AccountContactConflictError, claimAccountContacts } from './accountContactClaims';
+import { driverProfileForAuthenticatedUser } from './driverProfileRead';
 
 /** Normalize Ghana mobile input to the Firebase/Firestore E.164 representation. */
 export function normalizeGhanaPhone(value: unknown): string | null {
@@ -73,6 +74,36 @@ async function authenticatedPhoneSession(request: Request, response: Response) {
  * server-side: the app never chooses a profile ID or rewrites approval state.
  */
 export function registerDriverPhoneLoginRoutes(app: Express) {
+  app.get('/api/driver/profile/current', async (request, response) => {
+    const authorization = String(request.headers.authorization || '');
+    const idToken = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+    if (!idToken) {
+      response.status(401).json({ success: false, message: 'Please sign in again.' });
+      return;
+    }
+
+    let session: { uid: string };
+    try {
+      session = await getAdminAuth().verifyIdToken(idToken, true);
+    } catch {
+      response.status(401).json({ success: false, message: 'Please sign in again.' });
+      return;
+    }
+
+    try {
+      const profile = await driverProfileForAuthenticatedUser(session.uid);
+      if (!profile) {
+        response.status(404).json({ success: false, message: 'Your Driver profile is not linked to this account.' });
+        return;
+      }
+      response.setHeader('Cache-Control', 'no-store');
+      response.json({ success: true, profile });
+    } catch (error: any) {
+      console.error('[Driver profile] Protected profile read failed:', { message: String(error?.message || 'unknown error') });
+      response.status(503).json({ success: false, message: 'Your Driver profile could not be loaded right now. Please try again.' });
+    }
+  });
+
   app.post('/api/driver/phone-login/link', async (request, response) => {
     const session = await authenticatedPhoneSession(request, response);
     if (!session) return;
