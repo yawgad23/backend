@@ -11,6 +11,11 @@ import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numer
 import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverPayoutRequest } from './driverCashCollectionPolicy';
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
+import {
+  GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
+  isGlobalDriverFeeBypassActive,
+  PLATFORM_SETTINGS_COLLECTION,
+} from './driverFeeGlobalBypass';
 import { sendDriverRideOfferPush } from './driverOfferPush';
 import { assignmentReleaseRedispatchPatch } from './rideRedispatch';
 import {
@@ -308,8 +313,11 @@ export function canPassDriverPlatformFeeGate(
   driverProfile: Record<string, any> | null | undefined,
   hasConfirmedFee: boolean,
   date = dateKey(),
+  globalFeeBypass?: Record<string, any> | null,
 ) {
-  return hasConfirmedFee || isDriverFeeBypassActive(driverProfile, date);
+  return hasConfirmedFee
+    || isDriverFeeBypassActive(driverProfile, date)
+    || isGlobalDriverFeeBypassActive(globalFeeBypass, date);
 }
 
 async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<string, any> | null) {
@@ -318,10 +326,21 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
   // production, a paid commission remains valid for 24 hours.
   if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') return true;
   if (hasDriverFeeTestBypass(driverId)) return true;
+
+  // Read the all-Driver pass before the short-lived per-Driver cache so an
+  // administrator can remove a global emergency pass without waiting for a
+  // cache timeout. The pass is same-day only and does not mark any fee paid.
+  const today = dateKey();
+  const globalFeeBypass = await adminFirestore.get(
+    PLATFORM_SETTINGS_COLLECTION,
+    GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
+  );
+  if (isGlobalDriverFeeBypassActive(globalFeeBypass, today)) return true;
+
   const cacheUntil = currentDriverFeeCache.get(driverId) || 0;
   if (cacheUntil > Date.now()) return true;
   const driverProfile = knownProfile ?? await profile(driverId);
-  if (canPassDriverPlatformFeeGate(driverProfile, false)) {
+  if (canPassDriverPlatformFeeGate(driverProfile, false, today, globalFeeBypass)) {
     currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
     return true;
   }
@@ -338,7 +357,7 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
     const paidTime = new Date(paidAt || 0).getTime();
     return Number.isFinite(paidTime) && Date.now() - paidTime < 24 * 60 * 60 * 1000;
   });
-  const allowed = canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee);
+  const allowed = canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee, today, globalFeeBypass);
   if (allowed) currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
   else currentDriverFeeCache.delete(driverId);
   return allowed;

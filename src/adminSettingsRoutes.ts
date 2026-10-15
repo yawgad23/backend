@@ -12,6 +12,13 @@ import {
   normalizeFareCategory,
   setFareRateConfig,
 } from './fareConfig';
+import {
+  buildGlobalDriverFeeBypass,
+  GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
+  PLATFORM_SETTINGS_COLLECTION,
+  revokeGlobalDriverFeeBypass,
+  visibleGlobalDriverFeeBypass,
+} from './driverFeeGlobalBypass';
 
 const OWNER_EMAIL = 'yawgad23@gmail.com';
 const ACCESS_COLLECTION = 'admin_access';
@@ -61,10 +68,16 @@ export function registerAdminSettingsRoutes(app: Express) {
     try {
       const fees = await Promise.all(SERVICE_TYPES.map((serviceType) => getDailyPlatformFee(serviceType)));
       const fareRates = await listFareRateConfigs();
+      const today = new Date().toISOString().slice(0, 10);
+      const globalFeeBypass = visibleGlobalDriverFeeBypass(
+        await adminFirestore.get(PLATFORM_SETTINGS_COLLECTION, GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT),
+        today,
+      );
       response.json({
         administrator: { email: adminEmail, canManageAccess: isOwner(adminEmail) },
         platformFees: fees,
         fareRates,
+        globalDriverFeeBypass: globalFeeBypass,
       });
     } catch (error) {
       console.error('[Admin settings] Failed to load settings:', error);
@@ -83,6 +96,52 @@ export function registerAdminSettingsRoutes(app: Express) {
       response.json({ fee });
     } catch (error: any) {
       response.status(400).json({ error: error?.message || 'Enter a valid daily platform fee.' });
+    }
+  });
+
+  /**
+   * A same-day all-Driver fee-gate pass for an operational incident. This is
+   * server-controlled, does not create paid commission records, and leaves
+   * approval, account status, and the individual Driver bypass unchanged.
+   */
+  app.patch('/api/admin/settings/driver-fee-bypass', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    const enabled = request.body?.enabled === true;
+    const reason = String(request.body?.reason || '').trim();
+    if (enabled && !reason) {
+      response.status(400).json({ error: 'Enter a reason for the all-Driver fee pass.' });
+      return;
+    }
+    if (reason.length > 500) {
+      response.status(400).json({ error: 'The pass reason must be 500 characters or fewer.' });
+      return;
+    }
+
+    try {
+      const now = new Date().toISOString();
+      const date = now.slice(0, 10);
+      const current = visibleGlobalDriverFeeBypass(
+        await adminFirestore.get(PLATFORM_SETTINGS_COLLECTION, GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT),
+        date,
+      );
+      const bypass = enabled
+        ? buildGlobalDriverFeeBypass(date, reason, adminEmail, now)
+        : revokeGlobalDriverFeeBypass(current, adminEmail, now);
+      await adminFirestore.set(PLATFORM_SETTINGS_COLLECTION, GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT, bypass);
+      await adminFirestore.create('account_lifecycle_events', {
+        account_role: 'driver',
+        action: enabled ? 'all_driver_fee_bypass_granted' : 'all_driver_fee_bypass_revoked',
+        actor_type: 'administrator',
+        actor_id: adminEmail,
+        fee_bypass_scope: 'all_approved_drivers',
+        fee_bypass_date: date,
+        fee_bypass_reason: enabled ? bypass.reason : null,
+      });
+      response.json({ success: true, bypass: enabled ? bypass : null });
+    } catch (error) {
+      console.error('[Admin settings] Failed to update all-Driver fee bypass:', error);
+      response.status(503).json({ error: 'The all-Driver fee pass could not be updated. Please try again.' });
     }
   });
 

@@ -15,6 +15,11 @@ import { getTripChargeTotal } from "./fareAuthority";
 import { hubtelPaymentState, isHubtelStatusResponseAccepted, readHubtelPaymentDetails } from './hubtelPaymentStatus';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
+  GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
+  isGlobalDriverFeeBypassActive,
+  PLATFORM_SETTINGS_COLLECTION,
+} from './driverFeeGlobalBypass';
+import {
   buildRiderWalletTopUpPayment,
 } from './riderWalletTopUp';
 
@@ -31,6 +36,7 @@ type DriverFeeCheck = {
   feeGateDisabled?: boolean;
   testAccessGranted?: boolean;
   adminFeeBypassGranted?: boolean;
+  allDriversFeeBypassGranted?: boolean;
   bypassDate?: string;
 };
 
@@ -58,6 +64,16 @@ async function recentDriverFeeRecords(driverId: string) {
 
 async function currentDriverFeeCheck(driverId: string): Promise<DriverFeeCheck> {
   const today = new Date().toISOString().split('T')[0];
+  // This lookup deliberately precedes the per-Driver cache. An administrator
+  // can therefore revoke a global pass immediately, without a stale client
+  // status keeping a Driver through the fee gate.
+  const globalFeeBypass = await adminFirestore.get(
+    PLATFORM_SETTINGS_COLLECTION,
+    GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
+  );
+  if (isGlobalDriverFeeBypassActive(globalFeeBypass, today)) {
+    return { isPaid: true, allDriversFeeBypassGranted: true, bypassDate: today };
+  }
   const cacheKey = `${driverId}:${today}`;
   const cached = driverFeeCheckCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
