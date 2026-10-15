@@ -40,6 +40,7 @@ import { registerAdminNotificationRoutes } from "./adminNotifications";
 import { registerPasswordResetRoutes } from './passwordReset';
 import { registerWebsiteIntakeRoutes } from './websiteIntake';
 import { registerAccountProfileRoutes } from './accountProfileRoutes';
+import { requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
 import { riderOwnsRideStatus } from './riderRideStatus';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
@@ -774,6 +775,30 @@ export function createApp(): Express {
       return;
     }
 
+    // The client request must never be the authority for a Rider's identity.
+    // Resolve the canonical server-owned profile before accepting a trip, so an
+    // incomplete sign-in cannot create another "Unnamed account" ride record.
+    let riderIdentity: ReturnType<typeof requiredRiderIdentity>;
+    try {
+      const canonicalProfile = await adminFirestore.get(ADMIN_COLLECTIONS.RIDER_PROFILES, tokenUid);
+      const matchingProfile = canonicalProfile || (await adminFirestore.list(
+        ADMIN_COLLECTIONS.RIDER_PROFILES,
+        { user_id: tokenUid },
+        null,
+        'desc',
+        1,
+      ))[0];
+      riderIdentity = requiredRiderIdentity(matchingProfile);
+    } catch (error) {
+      console.error('[Ride request] Could not resolve Rider account identity:', error);
+      res.status(503).json({ success: false, message: 'Your account details are temporarily unavailable. Please try again.' });
+      return;
+    }
+    if (!riderIdentity) {
+      res.status(403).json({ success: false, code: 'RIDER_PROFILE_INCOMPLETE', message: riderProfileCompletionMessage() });
+      return;
+    }
+
     const parsed = riderRideRequestInput.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, message: "Please check the ride details and try again." });
@@ -875,14 +900,14 @@ export function createApp(): Express {
         cardCheckoutTransactionId: input.cardCheckoutTransactionId,
         rideData: {
         rider_id: input.riderId,
-        rider_name: input.riderName,
-        rider_phone: input.riderPhone,
-        rider_email: input.riderEmail || '',
+        rider_name: riderIdentity.fullName,
+        rider_phone: riderIdentity.phone,
+        rider_email: riderIdentity.email,
         booking_for_other: Boolean(input.bookingForOther),
-        booked_by_name: input.bookedByName || input.riderName,
-        booked_by_phone: input.bookedByPhone || input.riderPhone,
-        passenger_name: input.passengerName || input.riderName,
-        passenger_phone: input.passengerPhone || input.riderPhone,
+        booked_by_name: riderIdentity.fullName,
+        booked_by_phone: riderIdentity.phone,
+        passenger_name: input.passengerName || riderIdentity.fullName,
+        passenger_phone: input.passengerPhone || riderIdentity.phone,
         passenger_pickup_note: input.passengerPickupNote || null,
         ...deliveryRideFields(input.delivery),
         pickup: input.pickup,

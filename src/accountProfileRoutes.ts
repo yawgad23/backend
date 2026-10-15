@@ -8,6 +8,7 @@ import {
   normalizeAccountPhone,
 } from './accountContactClaims';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
+import { requiredAccountFullName, requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -141,11 +142,20 @@ export function registerAccountProfileRoutes(app: Express) {
 
     try {
       const contacts = assertedContacts(parsed.data, session.email);
-      await claimAccountContacts({ ownerUid: session.uid, role: 'rider', contacts });
-      const profile = await writeCanonicalProfile('rider', session.uid, {
+      const riderIdentity = requiredRiderIdentity({
         full_name: parsed.data.fullName,
         email: contacts.email,
         phone: contacts.phone,
+      });
+      if (!riderIdentity) {
+        response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: riderProfileCompletionMessage() });
+        return;
+      }
+      await claimAccountContacts({ ownerUid: session.uid, role: 'rider', contacts });
+      const profile = await writeCanonicalProfile('rider', session.uid, {
+        full_name: riderIdentity.fullName,
+        email: riderIdentity.email,
+        phone: riderIdentity.phone,
         account_status: 'active',
         registration_source: 'rider_app',
         contact_claimed_at: new Date().toISOString(),
@@ -175,12 +185,17 @@ export function registerAccountProfileRoutes(app: Express) {
 
     try {
       const contacts = assertedContacts(parsed.data, session.email);
+      const fullName = requiredAccountFullName(parsed.data.fullName);
+      if (!fullName) {
+        response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: 'Enter your real full name before submitting a Driver application.' });
+        return;
+      }
       await claimAccountContacts({ ownerUid: session.uid, role: 'driver', contacts });
       const documents = parsed.data.documents;
       const existing = await existingProfile('driver', session.uid);
       const priorApproval = String(existing?.approval_status || 'pending').toLowerCase();
       const profile = await writeCanonicalProfile('driver', session.uid, {
-        full_name: parsed.data.fullName,
+        full_name: fullName,
         email: contacts.email,
         phone: contacts.phone,
         momo_number: parsed.data.momoNumber,
@@ -240,9 +255,32 @@ export function registerAccountProfileRoutes(app: Express) {
         email: parsed.data.email || String(existing.email || ''),
         phone: parsed.data.phone || String(existing.phone || existing.phone_number || ''),
       }, session.email);
+      const fullName = requiredAccountFullName(
+        parsed.data.fullName || existing.full_name || existing.name || existing.display_name,
+      );
+      if (!fullName) {
+        response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: role === 'rider'
+          ? riderProfileCompletionMessage()
+          : 'Enter your real full name before saving account details.' });
+        return;
+      }
+      const riderIdentity = role === 'rider'
+        ? requiredRiderIdentity({
+            ...existing,
+            full_name: fullName,
+            email: contacts.email,
+            phone: contacts.phone,
+          })
+        : null;
+      if (role === 'rider' && !riderIdentity) {
+        response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: riderProfileCompletionMessage() });
+        return;
+      }
       await claimAccountContacts({ ownerUid: session.uid, role, contacts });
       const profile = await writeCanonicalProfile(role, session.uid, {
-        ...(parsed.data.fullName ? { full_name: parsed.data.fullName } : {}),
+        ...(role === 'rider'
+          ? { full_name: riderIdentity!.fullName }
+          : { full_name: fullName }),
         email: contacts.email,
         phone: contacts.phone,
         contact_claimed_at: new Date().toISOString(),
