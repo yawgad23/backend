@@ -41,7 +41,7 @@ function finiteNonNegative(value: unknown, fallback = 0): number {
 }
 
 function standardShortTripCap(rate: FareRate, category: string, distanceKm: number, durationMinutes: number): number | null {
-  if (category !== 'standard') return null;
+  if (category !== 'standard' && category !== 'car_delivery') return null;
   const cap = Number(rate.shortTripCap);
   const maximumDistance = Number(rate.shortTripMaxDistanceKm);
   const maximumDuration = Number(rate.shortTripMaxDurationMinutes);

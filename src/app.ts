@@ -50,7 +50,7 @@ import {
   riderDriverRatingRejectionPayload,
   type RiderDriverRatingRejection,
 } from './riderDriverRatings';
-import { deliveryDetailsInput, deliveryRideFields, isExpressDeliveryCategory } from './deliveryBooking';
+import { deliveryDetailsInput, deliveryRideFields, isDeliveryCategory } from './deliveryBooking';
 import {
   checkHubtelCardCheckout,
   createCardCheckoutReference,
@@ -790,12 +790,12 @@ export function createApp(): Express {
       return;
     }
     const normalizedCategory = normalizeFareCategory(input.category);
-    if (isExpressDeliveryCategory(normalizedCategory) && !input.delivery) {
-      res.status(400).json({ success: false, message: 'Provide the sender, recipient, and package details for an Express Delivery request.' });
+    if (isDeliveryCategory(normalizedCategory) && !input.delivery) {
+      res.status(400).json({ success: false, message: 'Provide the sender, recipient, and package details for a delivery request.' });
       return;
     }
-    if (!isExpressDeliveryCategory(normalizedCategory) && input.delivery) {
-      res.status(400).json({ success: false, message: 'Delivery details can only be included with an Express Delivery request.' });
+    if (!isDeliveryCategory(normalizedCategory) && input.delivery) {
+      res.status(400).json({ success: false, message: 'Delivery details can only be included with a delivery request.' });
       return;
     }
 
@@ -932,7 +932,7 @@ export function createApp(): Express {
             payment_display_name: paymentDisplayName,
             payment_collection: paymentCollection,
             booking_for_other: Boolean(input.bookingForOther),
-            is_delivery: isExpressDeliveryCategory(normalizedCategory),
+            is_delivery: isDeliveryCategory(normalizedCategory),
           },
           created_at: now,
         });

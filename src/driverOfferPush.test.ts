@@ -62,4 +62,14 @@ describe('Driver ride-offer push recipients', () => {
       presence({ id: 'driver-2', user_id: 'driver-2' }),
     ], now)).toEqual(['driver-2']);
   });
+
+  it('sends Car Delivery requests only to opted-in car Drivers, including legacy Executive cars', () => {
+    const carDeliveryRide = { ...ride, category: 'car_delivery' };
+    expect(driverOfferRecipients(carDeliveryRide, [
+      presence({ id: 'legacy-executive', user_id: 'legacy-executive', ride_categories: ['executive'] }),
+      presence({ id: 'car-delivery', user_id: 'car-delivery', ride_categories: ['car_delivery'] }),
+      presence({ id: 'standard-only', user_id: 'standard-only', ride_categories: ['standard'] }),
+      presence({ id: 'parcel-driver', user_id: 'parcel-driver', service_type: 'delivery', ride_categories: ['express_delivery'] }),
+    ], now)).toEqual(['legacy-executive', 'car-delivery']);
+  });
 });

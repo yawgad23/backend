@@ -25,7 +25,7 @@ const driverProfileInput = z.object({
   momoNumber: z.string().trim().max(40).optional().default(''),
   city: z.string().trim().min(1).max(120),
   serviceType: z.enum(['car', 'okada', 'delivery']),
-  rideCategories: z.array(z.enum(['standard', 'comfort', 'kantanka', 'executive', 'okada', 'express_delivery'])).min(1).max(6),
+  rideCategories: z.array(z.enum(['standard', 'comfort', 'kantanka', 'car_delivery', 'executive', 'okada', 'express_delivery'])).min(1).max(6),
   vehicleMake: z.string().trim().min(1).max(80),
   vehicleModel: z.string().trim().min(1).max(120),
   vehiclePlate: z.string().trim().min(1).max(40),

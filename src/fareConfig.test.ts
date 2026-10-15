@@ -1,10 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFareCategory, normalizeFareRate, validateFareRateUpdate } from './fareConfig';
+import { getDefaultFareRate, normalizeFareCategory, normalizeFareRate, validateFareRateUpdate } from './fareConfig';
 
 describe('fare configuration validation', () => {
   it('only accepts HY3N category identifiers', () => {
     expect(normalizeFareCategory('comfort')).toBe('comfort');
+    expect(normalizeFareCategory('car_delivery')).toBe('car_delivery');
     expect(normalizeFareCategory('unknown-category')).toBe('standard');
+  });
+
+  it('uses the Standard formula for Car Delivery and retires Executive quotes', () => {
+    const standard = getDefaultFareRate('standard');
+    const carDelivery = getDefaultFareRate('car_delivery');
+    expect(carDelivery).toMatchObject({
+      baseFare: standard.baseFare,
+      pricePerKm: standard.pricePerKm,
+      pricePerMinute: standard.pricePerMinute,
+      minFare: standard.minFare,
+      waitingFeePerMinute: standard.waitingFeePerMinute,
+      shortTripCap: standard.shortTripCap,
+      shortTripMaxDistanceKm: standard.shortTripMaxDistanceKm,
+      shortTripMaxDurationMinutes: standard.shortTripMaxDurationMinutes,
+      isActive: true,
+    });
+    expect(normalizeFareRate({ isActive: true }, 'executive').isActive).toBe(false);
   });
 
   it('keeps persisted pricing within supported bounds', () => {
@@ -34,7 +52,7 @@ describe('fare configuration validation', () => {
 
   it('rejects an incomplete Standard short-trip cap configuration', () => {
     expect(() => validateFareRateUpdate({ shortTripCap: 19, shortTripMaxDistanceKm: 2 }, 'standard'))
-      .toThrow('Provide the Standard short-trip cap');
+      .toThrow('Provide the short-trip cap');
   });
 
   it('retains historic snapshot fees but removes them from all new fare configurations', () => {

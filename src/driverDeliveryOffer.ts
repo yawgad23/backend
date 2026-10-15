@@ -1,4 +1,4 @@
-import { isExpressDeliveryCategory } from './deliveryBooking';
+import { isDeliveryCategory } from './deliveryBooking';
 
 const PRIVATE_DELIVERY_FIELDS = [
   'delivery',
@@ -22,7 +22,7 @@ const PRIVATE_DELIVERY_FIELDS = [
  * or recipient contact information until the delivery is assigned to them.
  */
 export function driverOfferView(ride: Record<string, unknown>): Record<string, unknown> {
-  if (!isExpressDeliveryCategory(ride.category)) return ride;
+  if (!isDeliveryCategory(ride.category)) return ride;
 
   const offer = { ...ride };
   for (const key of PRIVATE_DELIVERY_FIELDS) delete offer[key];

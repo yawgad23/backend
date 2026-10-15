@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 export const EXPRESS_DELIVERY_CATEGORY = 'express_delivery';
+export const CAR_DELIVERY_CATEGORY = 'car_delivery';
+export const DELIVERY_CATEGORIES = [EXPRESS_DELIVERY_CATEGORY, CAR_DELIVERY_CATEGORY] as const;
 
 const deliveryContactInput = z.object({
   name: z.string().trim().min(2).max(120),
@@ -17,8 +19,13 @@ export const deliveryDetailsInput = z.object({
 
 export type DeliveryDetails = z.infer<typeof deliveryDetailsInput>;
 
+export function isDeliveryCategory(category: unknown): boolean {
+  return DELIVERY_CATEGORIES.includes(String(category || '').trim().toLowerCase() as typeof DELIVERY_CATEGORIES[number]);
+}
+
+/** @deprecated Use isDeliveryCategory so every parcel service receives protection. */
 export function isExpressDeliveryCategory(category: unknown): boolean {
-  return String(category || '').trim().toLowerCase() === EXPRESS_DELIVERY_CATEGORY;
+  return isDeliveryCategory(category);
 }
 
 /** Stores a deliberate, bounded delivery snapshot; fare authority remains separate. */

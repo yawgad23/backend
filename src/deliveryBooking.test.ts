@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deliveryDetailsInput, deliveryRideFields, isExpressDeliveryCategory } from './deliveryBooking';
+import { deliveryDetailsInput, deliveryRideFields, isDeliveryCategory } from './deliveryBooking';
 import { driverOfferView } from './driverDeliveryOffer';
 
 const delivery = {
@@ -14,8 +14,9 @@ describe('Express Delivery contract', () => {
   it('requires complete, bounded delivery details for an Express Delivery booking', () => {
     expect(deliveryDetailsInput.safeParse(delivery).success).toBe(true);
     expect(deliveryDetailsInput.safeParse({ ...delivery, recipient: { name: '', phone: '0241234567' } }).success).toBe(false);
-    expect(isExpressDeliveryCategory('express_delivery')).toBe(true);
-    expect(isExpressDeliveryCategory('standard')).toBe(false);
+    expect(isDeliveryCategory('express_delivery')).toBe(true);
+    expect(isDeliveryCategory('car_delivery')).toBe(true);
+    expect(isDeliveryCategory('standard')).toBe(false);
   });
 
   it('persists delivery information only as an immutable request snapshot', () => {
@@ -40,5 +41,16 @@ describe('Express Delivery contract', () => {
     expect(offer).not.toHaveProperty('delivery');
     expect(offer).not.toHaveProperty('delivery_sender_phone');
     expect(offer).not.toHaveProperty('delivery_recipient_phone');
+  });
+
+  it('applies the same privacy boundary to Car Delivery', () => {
+    const offer = driverOfferView({
+      id: 'ride-car-delivery',
+      category: 'car_delivery',
+      rider_name: 'Yaw Mensah',
+      ...deliveryRideFields(delivery),
+    });
+    expect(offer.rider_name).toBe('Delivery request');
+    expect(offer).not.toHaveProperty('delivery_sender_phone');
   });
 });

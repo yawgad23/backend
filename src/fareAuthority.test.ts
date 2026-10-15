@@ -91,6 +91,27 @@ describe('metered trip fares', () => {
     expect(breakdown).toMatchObject({ shortTripCap: 19, shortTripCapApplied: true, waitingFee: 2.2, total: 21 });
   });
 
+  it('applies the same short-trip cap to Car Delivery at the Standard rate', () => {
+    const breakdown = getMeteredFareBreakdown({
+      category: 'car_delivery',
+      distanceKm: 1.8,
+      durationMinutes: 9,
+      fareRate: {
+        baseFare: 10,
+        pricePerKm: 5,
+        pricePerMinute: 0.8,
+        minFare: 16.5,
+        bookingFee: 2.5,
+        waitingFeePerMinute: 0.55,
+        shortTripCap: 19,
+        shortTripMaxDistanceKm: 2,
+        shortTripMaxDurationMinutes: 10,
+        isActive: true,
+      },
+    });
+    expect(breakdown).toMatchObject({ category: 'car_delivery', shortTripCap: 19, shortTripCapApplied: true, total: 19 });
+  });
+
   it('does not cap Standard trips outside either approved short-trip limit', () => {
     const breakdown = getMeteredFareBreakdown({
       category: 'standard',

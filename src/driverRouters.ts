@@ -376,6 +376,9 @@ export function driverCanServeRideCategory(profileData: Record<string, any>, cat
   if (requested === 'okada') return serviceType.includes('okada') || serviceType.includes('moto') || categories.includes('okada');
   if (requested === 'express_delivery') return serviceType.includes('deliver') || categories.includes('express_delivery');
   if (serviceType.includes('okada') || serviceType.includes('moto') || serviceType.includes('deliver')) return false;
+  // Car Delivery replaces Executive for new bookings. Existing Executive car
+  // Drivers remain eligible until an admin updates their service categories.
+  if (requested === 'car_delivery') return categories.includes('car_delivery') || categories.includes('executive');
 
   // Kantanka vehicles can receive Comfort requests. Comfort-only vehicles can
   // never receive Kantanka requests; every other car category stays exact.
