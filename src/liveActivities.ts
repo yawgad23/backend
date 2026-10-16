@@ -173,7 +173,6 @@ export async function liveActivityPresentation(
   const destinationName = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_name, 'your destination', 80);
   const pickupName = cleanText(ride.pickup?.name || ride.pickup?.address || ride.pickup_name, 'your pickup point', 80);
   const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your HY3N driver', 60);
-  const vehicle = cleanText(ride.driver_vehicle || `${ride.driver_vehicle_make || ''} ${ride.driver_vehicle_model || ''}`, '', 70);
 
   // Ending an activity must never wait on external route calculation. It is
   // sent synchronously by the completion handler so an old trip cannot remain
@@ -235,7 +234,9 @@ export async function liveActivityPresentation(
   return {
     event: 'update' as ActivityEvent,
     title: `Pickup in ${etaMinutes} min`,
-    subtitle: `${driverName}${vehicle ? ` · ${vehicle}` : ''} is heading to ${pickupName}`,
+    // The pre-pickup lock-screen message refers to the Rider's pickup rather
+    // than a short address label, which can look like the trip destination.
+    subtitle: `${driverName} is heading to your pickup`,
     arrivalAt,
     progress: 0,
   };

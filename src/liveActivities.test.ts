@@ -78,4 +78,19 @@ describe('Rider Live Activity trip progress', () => {
     })).toBe(true);
     expect(liveActivityPushPriority({ force: true, previousProgress: 0.4, nextProgress: 0.4 })).toBe('10');
   });
+
+  it('uses a clear Rider-facing pickup message before the trip starts', async () => {
+    await expect(liveActivityPresentation({
+      id: 'ride-pickup-1',
+      status: 'driver_arriving',
+      driver_name: 'Kofi',
+      driver_vehicle: 'White Toyota Vitz',
+      pickup: { name: 'Adenta', lat: 5.704, lng: -0.177 },
+      destination: { name: 'Accra Mall', lat: 5.605, lng: -0.174 },
+    })).resolves.toMatchObject({
+      title: 'Pickup in 5 min',
+      subtitle: 'Kofi is heading to your pickup',
+      progress: 0,
+    });
+  });
 });
