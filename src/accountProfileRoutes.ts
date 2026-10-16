@@ -163,11 +163,8 @@ async function legacyRiderRecovery(
   contacts: { email: string; phone: string },
 ) {
   if (!session.email && !session.phone) return null;
-  const [riderProfiles, driverProfiles] = await Promise.all([
-    adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES),
-    adminFirestore.listAll(ADMIN_COLLECTIONS.DRIVER_PROFILES),
-  ]);
-  if (riderProfiles.truncated || driverProfiles.truncated) throw new AccountContactCapacityError();
+  const riderProfiles = await adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES);
+  if (riderProfiles.truncated) throw new AccountContactCapacityError();
   return selectVerifiedRiderAccountRecovery({
     currentUid: session.uid,
     sessionEmail: session.email,
@@ -175,7 +172,6 @@ async function legacyRiderRecovery(
     requestedEmail: contacts.email,
     requestedPhone: contacts.phone,
     riderProfiles: riderProfiles.records,
-    driverProfiles: driverProfiles.records,
   });
 }
 

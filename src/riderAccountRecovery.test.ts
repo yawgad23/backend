@@ -19,7 +19,6 @@ function select(overrides: Partial<Parameters<typeof selectVerifiedRiderAccountR
     requestedEmail: 'rider@example.com',
     requestedPhone: '+233541220725',
     riderProfiles: [legacyRider],
-    driverProfiles: [],
     ...overrides,
   });
 }
@@ -50,14 +49,23 @@ describe('verified Rider account recovery', () => {
     expect(select({ sessionEmail: null, sessionPhone: '+233241234567' })).toBeNull();
   });
 
-  it('keeps recovery blocked when another account owns either matching contact', () => {
+  it('uses only Rider profiles for recovery selection', () => {
+    // A Driver profile intentionally is not an input to the Rider selector:
+    // Rider and Driver may share the same email and phone.
+    expect(select()).toMatchObject({ legacyOwnerUid: 'legacy-rider-owner' });
+  });
+
+  it('keeps recovery blocked when a different Rider owns either matching contact', () => {
     expect(select({
-      driverProfiles: [{
-        id: 'different-driver-document',
-        user_id: 'different-driver-owner',
-        email: 'other@example.com',
-        phone: '0541220725',
-      }],
+      riderProfiles: [
+        legacyRider,
+        {
+          id: 'different-rider-document',
+          user_id: 'different-rider-owner',
+          email: 'other@example.com',
+          phone: '0541220725',
+        },
+      ],
     })).toBeNull();
   });
 

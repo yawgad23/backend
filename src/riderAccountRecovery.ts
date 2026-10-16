@@ -12,7 +12,6 @@ type RecoveryInput = {
   requestedEmail: string | null;
   requestedPhone: string | null;
   riderProfiles: Array<Record<string, any>>;
-  driverProfiles: Array<Record<string, any>>;
 };
 
 function profileOwnerUid(profile: Record<string, any>): string | null {
@@ -61,11 +60,11 @@ export function selectVerifiedRiderAccountRecovery(input: RecoveryInput): RiderA
   if (candidateByOwner.size !== 1) return null;
   const [legacyOwnerUid, profile] = [...candidateByOwner.entries()][0];
 
-  // Both contacts must point only at the signed-in user or this exact legacy
-  // profile across Rider and Driver data. Any third owner is a collision that
-  // must stay blocked for support review rather than be transferred.
+  // Rider and Driver are separate apps. Only another Rider profile can make
+  // this recovery ambiguous; a legitimate Driver account may use both the
+  // same email and phone without blocking the Rider account.
   const unrelatedOwners = new Set<string>();
-  for (const record of [...input.riderProfiles, ...input.driverProfiles]) {
+  for (const record of input.riderProfiles) {
     const ownerUid = profileOwnerUid(record);
     if (!ownerUid || ownerUid === input.currentUid || ownerUid === legacyOwnerUid) continue;
     const contacts = profileContacts(record);

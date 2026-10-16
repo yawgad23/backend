@@ -18,8 +18,9 @@ describe('account contact claims', () => {
   it('normalizes email casing and creates opaque deterministic claim IDs', () => {
     const email = normalizeAccountEmail('  Rider@Example.com ');
     expect(email).toBe('rider@example.com');
-    expect(contactClaimDocumentId('email', email!)).toMatch(/^[a-f0-9]{64}$/);
-    expect(contactClaimDocumentId('email', email!)).not.toBe(contactClaimDocumentId('phone', email!));
+    expect(contactClaimDocumentId('rider', 'email', email!)).toMatch(/^[a-f0-9]{64}$/);
+    expect(contactClaimDocumentId('rider', 'email', email!)).not.toBe(contactClaimDocumentId('rider', 'phone', email!));
+    expect(contactClaimDocumentId('rider', 'email', email!)).not.toBe(contactClaimDocumentId('driver', 'email', email!));
   });
 
   it('indexes duplicate legacy contacts across Rider and Driver profiles', () => {

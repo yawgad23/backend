@@ -47,16 +47,19 @@ export function normalizeAccountPhone(value: unknown): string | null {
   return /^\+233\d{9}$/.test(normalized) ? normalized : null;
 }
 
-export function contactClaimDocumentId(kind: ContactKind, normalizedValue: string): string {
-  return createHash('sha256').update(`hy3n-account-contact:v1:${kind}:${normalizedValue}`).digest('hex');
+export function contactClaimDocumentId(role: AccountRole, kind: ContactKind, normalizedValue: string): string {
+  // Rider and Driver are separate applications. The same verified contact may
+  // own one Rider account and one Driver account, but may not duplicate an
+  // account of the same role. v2 deliberately stops using legacy global IDs.
+  return createHash('sha256').update(`hy3n-account-contact:v2:${role}:${kind}:${normalizedValue}`).digest('hex');
 }
 
-export function normalizedContactEntries(contacts: AccountContacts): Array<{ kind: ContactKind; value: string; claimId: string }> {
+export function normalizedContactEntries(contacts: AccountContacts): Array<{ kind: ContactKind; value: string }> {
   const email = normalizeAccountEmail(contacts.email);
   const phone = normalizeAccountPhone(contacts.phone);
   return [
-    ...(email ? [{ kind: 'email' as const, value: email, claimId: contactClaimDocumentId('email', email) }] : []),
-    ...(phone ? [{ kind: 'phone' as const, value: phone, claimId: contactClaimDocumentId('phone', phone) }] : []),
+    ...(email ? [{ kind: 'email' as const, value: email }] : []),
+    ...(phone ? [{ kind: 'phone' as const, value: phone }] : []),
   ];
 }
 
@@ -114,19 +117,18 @@ export async function claimAccountContacts(input: {
   contacts: AccountContacts;
   transferableOwnerUids?: Iterable<string>;
 }) {
-  const entries = normalizedContactEntries(input.contacts);
+  const entries = normalizedContactEntries(input.contacts).map((entry) => ({
+    ...entry,
+    claimId: contactClaimDocumentId(input.role, entry.kind, entry.value),
+  }));
   if (entries.length === 0) return;
   const transferableOwnerUids = new Set(input.transferableOwnerUids || []);
-  const [driverProfiles, riderProfiles] = await Promise.all([
-    adminFirestore.listAll(ADMIN_COLLECTIONS.DRIVER_PROFILES),
-    adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES),
-  ]);
-  if (driverProfiles.truncated || riderProfiles.truncated) throw new AccountContactCapacityError();
+  const roleProfiles = await adminFirestore.listAll(
+    input.role === 'rider' ? ADMIN_COLLECTIONS.RIDER_PROFILES : ADMIN_COLLECTIONS.DRIVER_PROFILES,
+  );
+  if (roleProfiles.truncated) throw new AccountContactCapacityError();
 
-  const legacyOwners = legacyContactOwners([
-    ...driverProfiles.records,
-    ...riderProfiles.records,
-  ]);
+  const legacyOwners = legacyContactOwners(roleProfiles.records);
   assertLegacyOwners(entries, input.ownerUid, legacyOwners, transferableOwnerUids);
 
   const db: Firestore = getAdminDb();
