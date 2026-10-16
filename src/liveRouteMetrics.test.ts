@@ -3,6 +3,7 @@ import {
   bookingRouteCacheKey,
   decodeGooglePolyline,
   firestoreSafeLiveRoutePoints,
+  liveRouteOffPathMeters,
   liveRouteTarget,
   parseGoogleTrafficRoute,
   parseOsrmRoute,
@@ -126,6 +127,25 @@ describe('server road route metrics', () => {
     expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS - 1)).toBe(true);
     expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS)).toBe(false);
     expect(shouldReuseCachedRoute(cachedPickupRoute, destinationKey, 1_001)).toBe(false);
+  });
+
+  it('forces a new route immediately when the Driver leaves the cached green line', () => {
+    const destination = { latitude: 5.61, longitude: -0.19 };
+    const cachedRoute = {
+      requestedAt: 1_000,
+      targetKey: routeTargetKey(destination),
+      metrics: {
+        distanceKm: 1,
+        durationMinutes: 4,
+        points: [[5.6, -0.2], [5.6, -0.19]] as [number, number][],
+        source: 'google_routes_traffic' as const,
+      },
+    };
+
+    expect(liveRouteOffPathMeters({ latitude: 5.60002, longitude: -0.195 }, cachedRoute.metrics.points)).toBeLessThan(5);
+    expect(liveRouteOffPathMeters({ latitude: 5.601, longitude: -0.195 }, cachedRoute.metrics.points)).toBeGreaterThan(45);
+    expect(shouldReuseCachedRoute(cachedRoute, cachedRoute.targetKey, 1_001, { latitude: 5.60002, longitude: -0.195 })).toBe(true);
+    expect(shouldReuseCachedRoute(cachedRoute, cachedRoute.targetKey, 1_001, { latitude: 5.601, longitude: -0.195 })).toBe(false);
   });
 
   it('uses a Driver-approved active stop before the final destination', () => {

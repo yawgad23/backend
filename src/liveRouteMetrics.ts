@@ -26,6 +26,10 @@ export type RoadRouteMetrics = {
 
 const ACTIVE_STATUSES = ['matched', 'driver_arriving', 'driver_arrived', 'in_progress'];
 export const ROUTE_REFRESH_MS = 8_000;
+// A GPS fix this far from the last server road geometry means the Driver has
+// genuinely left that guidance. It is deliberately wider than normal GPS
+// drift, but small enough that Riders do not keep seeing a route already missed.
+export const LIVE_ROUTE_OFF_PATH_METERS = 45;
 const MAX_ROUTE_POINTS = 180;
 const COORDINATE_ROAD_DISTANCE_FACTOR = 1.28;
 const COORDINATE_FALLBACK_SPEED_KMH = 22;
@@ -46,6 +50,49 @@ function validPoint(point: Point | null | undefined): point is Point {
     && point.latitude >= -90 && point.latitude <= 90
     && point.longitude >= -180 && point.longitude <= 180,
   );
+}
+
+function validRoutePoint(point: unknown): point is RoutePoint {
+  return Array.isArray(point)
+    && point.length >= 2
+    && Number.isFinite(Number(point[0]))
+    && Number.isFinite(Number(point[1]))
+    && Math.abs(Number(point[0])) <= 90
+    && Math.abs(Number(point[1])) <= 180;
+}
+
+/**
+ * Measures the nearest point on a server-owned route. This is display routing
+ * only: it decides when to request a newer line and never affects the fare,
+ * trip meter, or settlement.
+ */
+export function liveRouteOffPathMeters(from: Point, routePoints: RoutePoint[]): number | null {
+  if (!validPoint(from)) return null;
+  const route = routePoints.filter(validRoutePoint);
+  if (route.length < 2) return null;
+
+  const latitudeScale = (Math.PI * 6_371_000) / 180;
+  const longitudeScale = latitudeScale * Math.cos((from.latitude * Math.PI) / 180);
+  const toLocal = (point: RoutePoint): [number, number] => [
+    (point[1] - from.longitude) * longitudeScale,
+    (point[0] - from.latitude) * latitudeScale,
+  ];
+
+  let nearest = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < route.length - 1; index += 1) {
+    const [startX, startY] = toLocal(route[index]);
+    const [endX, endY] = toLocal(route[index + 1]);
+    const deltaX = endX - startX;
+    const deltaY = endY - startY;
+    const squaredLength = deltaX * deltaX + deltaY * deltaY;
+    if (squaredLength < 0.01) continue;
+    const progress = Math.max(0, Math.min(1, -(startX * deltaX + startY * deltaY) / squaredLength));
+    const closestX = startX + deltaX * progress;
+    const closestY = startY + deltaY * progress;
+    nearest = Math.min(nearest, Math.hypot(closestX, closestY));
+  }
+
+  return Number.isFinite(nearest) ? nearest : null;
 }
 
 function greatCircleDistanceKm(from: Point, to: Point): number {
@@ -107,11 +154,21 @@ export function routeTargetKey(to: Point) {
 
 /** Reuse only same-destination guidance; a pickup-to-trip phase change must route immediately. */
 export function shouldReuseCachedRoute(
-  previous: Pick<CachedRoute, 'requestedAt' | 'targetKey'> | undefined,
+  previous: (Pick<CachedRoute, 'requestedAt' | 'targetKey'> & { metrics?: RoadRouteMetrics | null }) | undefined,
   targetKey: string,
   now: number,
+  from?: Point,
 ): boolean {
-  return Boolean(previous && previous.targetKey === targetKey && now - previous.requestedAt < ROUTE_REFRESH_MS);
+  if (!previous || previous.targetKey !== targetKey || now - previous.requestedAt >= ROUTE_REFRESH_MS) return false;
+
+  // Do not hold an eight-second cache window after the Driver has passed the
+  // server road line. A fresh road route is then requested by the very next
+  // authenticated GPS upload, rather than leaving a misleading green line on
+  // the Rider map until the normal timer expires.
+  const offPathMeters = from && previous.metrics
+    ? liveRouteOffPathMeters(from, previous.metrics.points)
+    : null;
+  return offPathMeters === null || offPathMeters <= LIVE_ROUTE_OFF_PATH_METERS;
 }
 
 function boundedRoutePoints(points: RoutePoint[]): RoutePoint[] {
@@ -422,7 +479,7 @@ async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<
   const now = Date.now();
   const targetKey = routeTargetKey(to);
   const previous = routeCache.get(rideId);
-  if (shouldReuseCachedRoute(previous, targetKey, now)) return previous!.metrics;
+  if (shouldReuseCachedRoute(previous, targetKey, now, from)) return previous!.metrics;
 
   // A new destination target (for example, Start Trip) must never render an
   // old pickup route if a provider is temporarily unavailable.
