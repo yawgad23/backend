@@ -6,7 +6,8 @@ import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin
 
 const LIVE_ACTIVITY_COLLECTION = 'rider_live_activities';
 const UPDATE_INTERVAL_MS = 30_000;
-export const HY3N_LIVE_ACTIVITY_IMAGE_NAME = 'hy3n_wordmark';
+const MAX_ACTIVE_TRIP_PROGRESS = 0.98;
+export const HY3N_LIVE_ACTIVITY_IMAGE_NAME = 'hy3n_trip_car';
 const activityTokenInput = z.object({
   rideId: z.string().min(1).max(160),
   activityId: z.string().min(1).max(220),
@@ -20,6 +21,11 @@ type ActivityEvent = 'update' | 'end';
 function cleanText(value: unknown, fallback = '', maximum = 120) {
   const text = String(value ?? fallback).replace(/[\u0000-\u001f<>]/g, ' ').replace(/\s+/g, ' ').trim();
   return text.slice(0, maximum) || fallback;
+}
+
+function finiteNonNegative(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 function maybePoint(value: any): Point | null {
@@ -47,6 +53,39 @@ function formatAccraTime(timestamp: number) {
 
 function activityDocumentId(rideId: string, activityId: string) {
   return crypto.createHash('sha256').update(`${rideId}:${activityId}`).digest('hex');
+}
+
+function latestLiveRoute(ride: Record<string, any>) {
+  const route = ride.live_route_metrics && typeof ride.live_route_metrics === 'object'
+    ? ride.live_route_metrics as Record<string, unknown>
+    : {};
+  return {
+    distanceKm: finiteNonNegative(route.distance_km),
+    durationMinutes: finiteNonNegative(route.duration_minutes),
+    phase: cleanText(route.phase, '', 40),
+  };
+}
+
+/**
+ * Display-only route progress. The backend derives it from the server quote
+ * distance and live server road distance; it does not read a client meter and
+ * never changes fares, wallets, Driver earnings, or ride settlement.
+ */
+export function liveActivityTripProgress(input: {
+  status?: unknown;
+  quotedDistanceKm?: unknown;
+  remainingDistanceKm?: unknown;
+  previousProgress?: unknown;
+}) {
+  const previous = Math.min(MAX_ACTIVE_TRIP_PROGRESS, Math.max(0, finiteNonNegative(input.previousProgress) ?? 0));
+  if (String(input.status) !== 'in_progress') return 0;
+
+  const total = finiteNonNegative(input.quotedDistanceKm);
+  const remaining = finiteNonNegative(input.remainingDistanceKm);
+  if (total === null || total <= 0 || remaining === null) return previous;
+
+  const measured = Math.min(MAX_ACTIVE_TRIP_PROGRESS, Math.max(0, 1 - (remaining / total)));
+  return Math.max(previous, measured);
 }
 
 async function authenticatedUid(req: Request, res: Response) {
@@ -86,7 +125,11 @@ async function roadRouteMetrics(from?: Point, to?: Point) {
   }
 }
 
-export async function liveActivityPresentation(ride: Record<string, any>, driverLocation?: Point) {
+export async function liveActivityPresentation(
+  ride: Record<string, any>,
+  driverLocation?: Point,
+  previousProgress = 0,
+) {
   const status = cleanText(ride.status, 'driver_arriving', 40);
   const onTrip = status === 'in_progress';
   const completed = status === 'completed' || status === 'cancelled';
@@ -113,21 +156,26 @@ export async function liveActivityPresentation(ride: Record<string, any>, driver
     ? Number(ride.estimated_duration_minutes ?? ride.duration ?? 12)
     : Number(ride.eta_minutes ?? 5);
   const directKm = driverLocation && target ? distanceKm(driverLocation, target) : NaN;
-  // A conservative road/traffic estimate. The Rider foreground map replaces it
-  // with OSRM when open; this server value keeps the Lock Screen useful when it
-  // is not open without exposing a third-party map key.
   const routeKm = Number.isFinite(directKm) ? directKm * 1.23 : NaN;
   const speedKmh = onTrip ? 22 : 18;
-  const road = await roadRouteMetrics(driverLocation, target || undefined);
-  const etaMinutes = road
-    ? Math.max(1, Math.ceil(road.durationMinutes))
+  const freshRoad = await roadRouteMetrics(driverLocation, target || undefined);
+  const storedRoute = latestLiveRoute(ride);
+  const remainingDistanceKm = freshRoad?.distanceKm ?? storedRoute.distanceKm;
+  const remainingDurationMinutes = freshRoad?.durationMinutes ?? storedRoute.durationMinutes;
+  const etaMinutes = remainingDurationMinutes !== null && remainingDurationMinutes !== undefined
+    ? Math.max(1, Math.ceil(remainingDurationMinutes))
     : Number.isFinite(routeKm)
       ? Math.max(1, Math.ceil((routeKm / speedKmh) * 60))
-    : Math.max(1, Math.ceil(Number.isFinite(fallbackMinutes) ? fallbackMinutes : 5));
+      : Math.max(1, Math.ceil(Number.isFinite(fallbackMinutes) ? fallbackMinutes : 5));
   const bookedDistanceKm = Number(ride.estimated_distance_km ?? ride.distance_km ?? ride.distance);
-  const routeProgress = onTrip && road && Number.isFinite(bookedDistanceKm) && bookedDistanceKm > 0
-    ? Math.max(0.02, Math.min(0.98, 1 - (road.distanceKm / bookedDistanceKm)))
-    : onTrip ? 0.5 : 0.15;
+  const routeProgress = liveActivityTripProgress({
+    status,
+    quotedDistanceKm: bookedDistanceKm,
+    remainingDistanceKm: onTrip && storedRoute.phase && storedRoute.phase !== 'destination'
+      ? undefined
+      : remainingDistanceKm,
+    previousProgress,
+  });
   const arrivalAt = Date.now() + etaMinutes * 60_000;
   if (status === 'driver_arrived') {
     return {
@@ -135,13 +183,13 @@ export async function liveActivityPresentation(ride: Record<string, any>, driver
       title: 'Your driver has arrived',
       subtitle: `Meet ${driverName} at ${pickupName}`,
       arrivalAt: Date.now() + 60_000,
-      progress: 1,
+      progress: 0,
     };
   }
   if (onTrip) {
     return {
       event: 'update' as ActivityEvent,
-      title: `Dropoff at ${formatAccraTime(arrivalAt)}`,
+      title: `Drop-off at ${formatAccraTime(arrivalAt)}`,
       subtitle: `Heading to ${destinationName}`,
       arrivalAt,
       progress: routeProgress,
@@ -150,9 +198,9 @@ export async function liveActivityPresentation(ride: Record<string, any>, driver
   return {
     event: 'update' as ActivityEvent,
     title: `Pickup in ${etaMinutes} min`,
-      subtitle: `${driverName}${vehicle ? ` · ${vehicle}` : ''} is heading to ${pickupName}`,
-      arrivalAt,
-      progress: routeProgress,
+    subtitle: `${driverName}${vehicle ? ` · ${vehicle}` : ''} is heading to ${pickupName}`,
+    arrivalAt,
+    progress: 0,
   };
 }
 
@@ -183,6 +231,7 @@ export function registerLiveActivityRoutes(app: Express) {
       active: true,
       token_updated_at: new Date().toISOString(),
       last_push_at: null,
+      last_progress: 0,
     });
     res.status(201).json({ success: true });
   });
@@ -219,9 +268,14 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
     return options.force || !Number.isFinite(lastPushAt) || now - lastPushAt >= UPDATE_INTERVAL_MS || ['completed', 'cancelled'].includes(String(ride.status));
   });
   if (!deliverableActivities.length) return { attempted: activities.length, sent: 0 };
-  const presentation = await liveActivityPresentation(ride, options.driverLocation || maybePoint(ride.driver?.location) || maybePoint(ride.driver_location) || undefined);
+
   let sent = 0;
   await Promise.all(deliverableActivities.map(async (activity) => {
+    const presentation = await liveActivityPresentation(
+      ride,
+      options.driverLocation || maybePoint(ride.driver?.location) || maybePoint(ride.driver_location) || undefined,
+      Number(activity.last_progress || 0),
+    );
 
     try {
       await getMessaging().send({
@@ -258,6 +312,7 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
       await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, {
         last_push_at: new Date(now).toISOString(),
         last_status: ride.status,
+        last_progress: presentation.progress,
       });
       if (presentation.event === 'end') {
         await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, { active: false, ended_at: new Date(now).toISOString() });

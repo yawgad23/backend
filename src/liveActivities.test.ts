@@ -1,12 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { HY3N_LIVE_ACTIVITY_IMAGE_NAME, liveActivityPresentation } from './liveActivities';
+import {
+  HY3N_LIVE_ACTIVITY_IMAGE_NAME,
+  liveActivityPresentation,
+  liveActivityTripProgress,
+} from './liveActivities';
 
-describe('Rider Live Activity terminal states', () => {
-  it('uses the transparent HY3N wordmark asset for native Island updates', () => {
-    expect(HY3N_LIVE_ACTIVITY_IMAGE_NAME).toBe('hy3n_wordmark');
+describe('Rider Live Activity trip progress', () => {
+  it('uses the owned HY3N vehicle asset for native Island updates', () => {
+    expect(HY3N_LIVE_ACTIVITY_IMAGE_NAME).toBe('hy3n_trip_car');
   });
 
-  it('ends a completed trip immediately without waiting for route calculation', async () => {
+  it('advances only as the server road distance to destination shrinks', () => {
+    expect(liveActivityTripProgress({ status: 'in_progress', quotedDistanceKm: 10, remainingDistanceKm: 10 })).toBe(0);
+    expect(liveActivityTripProgress({ status: 'in_progress', quotedDistanceKm: 10, remainingDistanceKm: 6 })).toBeCloseTo(0.4, 5);
+    expect(liveActivityTripProgress({ status: 'in_progress', quotedDistanceKm: 10, remainingDistanceKm: 2, previousProgress: 0.4 })).toBeCloseTo(0.8, 5);
+  });
+
+  it('cannot look complete before the server confirms terminal trip state', () => {
+    expect(liveActivityTripProgress({ status: 'in_progress', quotedDistanceKm: 10, remainingDistanceKm: 0, previousProgress: 0.8 })).toBe(0.98);
+    expect(liveActivityTripProgress({ status: 'in_progress', quotedDistanceKm: 10, remainingDistanceKm: 8, previousProgress: 0.8 })).toBe(0.8);
+    expect(liveActivityTripProgress({ status: 'driver_arrived', quotedDistanceKm: 10, remainingDistanceKm: 0.5, previousProgress: 0.8 })).toBe(0);
+  });
+
+  it('does not let the display-only progress mutate terminal Live Activity handling', async () => {
     const start = Date.now();
     const presentation = await liveActivityPresentation({
       id: 'ride-complete-1',
