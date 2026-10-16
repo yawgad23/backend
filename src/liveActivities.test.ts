@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   HY3N_LIVE_ACTIVITY_IMAGE_NAME,
+  liveActivityPushPriority,
   liveActivityPresentation,
   liveActivityTripProgress,
+  shouldDeliverLiveActivityUpdate,
 } from './liveActivities';
 
 describe('Rider Live Activity trip progress', () => {
@@ -48,5 +50,32 @@ describe('Rider Live Activity trip progress', () => {
       arrivalAt: null,
       progress: 1,
     });
+  });
+
+  it('delivers real movement promptly while keeping unchanged ETA refreshes budget-safe', () => {
+    const now = 1_000_000;
+    const lastPushAt = new Date(now - 20_000).toISOString();
+    expect(shouldDeliverLiveActivityUpdate({
+      now, lastPushAt, previousProgress: 0.2, nextProgress: 0.205,
+    })).toBe(true);
+    expect(liveActivityPushPriority({ previousProgress: 0.2, nextProgress: 0.205 })).toBe('10');
+    expect(shouldDeliverLiveActivityUpdate({
+      now, lastPushAt, previousProgress: 0.2, nextProgress: 0.2,
+    })).toBe(false);
+    expect(shouldDeliverLiveActivityUpdate({
+      now, lastPushAt: new Date(now - 45_000).toISOString(), previousProgress: 0.2, nextProgress: 0.2,
+    })).toBe(true);
+    expect(liveActivityPushPriority({ previousProgress: 0.2, nextProgress: 0.2 })).toBe('5');
+  });
+
+  it('always sends a forced start, route-state, or terminal update', () => {
+    expect(shouldDeliverLiveActivityUpdate({
+      now: 1_000_000,
+      lastPushAt: new Date(999_999).toISOString(),
+      force: true,
+      previousProgress: 0.4,
+      nextProgress: 0.4,
+    })).toBe(true);
+    expect(liveActivityPushPriority({ force: true, previousProgress: 0.4, nextProgress: 0.4 })).toBe('10');
   });
 });

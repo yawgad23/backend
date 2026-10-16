@@ -5,7 +5,12 @@ import { z } from 'zod';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 
 const LIVE_ACTIVITY_COLLECTION = 'rider_live_activities';
-const UPDATE_INTERVAL_MS = 30_000;
+// Driver GPS can arrive more often than a Lock Screen needs to redraw. Send a
+// position change promptly but keep a slower safety refresh to respect the
+// system's ActivityKit notification budget.
+const MOVEMENT_UPDATE_INTERVAL_MS = 20_000;
+const FULL_REFRESH_INTERVAL_MS = 45_000;
+const MEANINGFUL_PROGRESS_DELTA = 0.003;
 const MAX_ACTIVE_TRIP_PROGRESS = 0.98;
 export const HY3N_LIVE_ACTIVITY_IMAGE_NAME = 'hy3n_trip_car';
 const activityTokenInput = z.object({
@@ -86,6 +91,38 @@ export function liveActivityTripProgress(input: {
 
   const measured = Math.min(MAX_ACTIVE_TRIP_PROGRESS, Math.max(0, 1 - (remaining / total)));
   return Math.max(previous, measured);
+}
+
+export function shouldDeliverLiveActivityUpdate(input: {
+  lastPushAt?: unknown;
+  now?: number;
+  force?: boolean;
+  previousProgress?: unknown;
+  nextProgress?: unknown;
+}) {
+  if (input.force) return true;
+  const now = input.now ?? Date.now();
+  const lastPushAt = Date.parse(String(input.lastPushAt || ''));
+  if (!Number.isFinite(lastPushAt)) return true;
+  const elapsed = Math.max(0, now - lastPushAt);
+  if (elapsed >= FULL_REFRESH_INTERVAL_MS) return true;
+
+  const previous = finiteNonNegative(input.previousProgress) ?? 0;
+  const next = finiteNonNegative(input.nextProgress) ?? 0;
+  return elapsed >= MOVEMENT_UPDATE_INTERVAL_MS && next - previous >= MEANINGFUL_PROGRESS_DELTA;
+}
+
+export function liveActivityPushPriority(input: {
+  force?: boolean;
+  previousProgress?: unknown;
+  nextProgress?: unknown;
+}) {
+  const previous = finiteNonNegative(input.previousProgress) ?? 0;
+  const next = finiteNonNegative(input.nextProgress) ?? 0;
+  // Apple permits priority 10 for updates that need quick delivery. Reserve it
+  // for an explicit state change or real Driver route movement; periodic ETA
+  // refreshes stay at 5 so the activity is not throttled.
+  return input.force || next - previous >= MEANINGFUL_PROGRESS_DELTA ? '10' : '5';
 }
 
 async function authenticatedUid(req: Request, res: Response) {
@@ -263,19 +300,37 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
   if (!activities.length) return { attempted: 0, sent: 0 };
 
   const now = Date.now();
-  const deliverableActivities = activities.filter((activity) => {
+  const candidateActivities = activities.filter((activity) => {
     const lastPushAt = Date.parse(String(activity.last_push_at || ''));
-    return options.force || !Number.isFinite(lastPushAt) || now - lastPushAt >= UPDATE_INTERVAL_MS || ['completed', 'cancelled'].includes(String(ride.status));
+    return options.force
+      || ['completed', 'cancelled'].includes(String(ride.status))
+      || !Number.isFinite(lastPushAt)
+      || now - lastPushAt >= MOVEMENT_UPDATE_INTERVAL_MS;
   });
-  if (!deliverableActivities.length) return { attempted: activities.length, sent: 0 };
+  if (!candidateActivities.length) return { attempted: activities.length, sent: 0 };
 
   let sent = 0;
-  await Promise.all(deliverableActivities.map(async (activity) => {
+  await Promise.all(candidateActivities.map(async (activity) => {
     const presentation = await liveActivityPresentation(
       ride,
       options.driverLocation || maybePoint(ride.driver?.location) || maybePoint(ride.driver_location) || undefined,
       Number(activity.last_progress || 0),
     );
+    const mustDeliver = options.force || presentation.event === 'end';
+    if (!shouldDeliverLiveActivityUpdate({
+      lastPushAt: activity.last_push_at,
+      now,
+      force: mustDeliver,
+      previousProgress: activity.last_progress,
+      nextProgress: presentation.progress,
+    })) return;
+    const priority = presentation.event === 'end'
+      ? '10'
+      : liveActivityPushPriority({
+        force: options.force,
+        previousProgress: activity.last_progress,
+        nextProgress: presentation.progress,
+      });
 
     try {
       await getMessaging().send({
@@ -284,7 +339,7 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
           headers: {
             'apns-push-type': 'liveactivity',
             'apns-topic': 'com.hy3n.rider.push-type.liveactivity',
-            'apns-priority': presentation.event === 'end' ? '10' : '5',
+            'apns-priority': priority,
           },
           liveActivityToken: String(activity.activity_push_token),
           payload: {
@@ -304,6 +359,9 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
               // Briefly confirm the final state, then remove the Lock Screen
               // card instead of leaving an old destination visible.
               ...(presentation.event === 'end' ? { 'dismissal-date': Math.floor(now / 1000) + 30 } : {}),
+              // Let iOS mark the display stale if connection loss prevents the
+              // next Driver movement update from arriving.
+              ...(presentation.event === 'end' ? {} : { 'stale-date': Math.floor(now / 1000) + 120 }),
             },
           },
         },
