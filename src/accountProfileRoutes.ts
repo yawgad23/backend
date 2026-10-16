@@ -65,7 +65,11 @@ async function authenticatedIdentity(request: Request, response: Response) {
   }
   try {
     const decoded = await getAdminAuth().verifyIdToken(token, true);
-    return { uid: decoded.uid, email: normalizeAccountEmail(decoded.email) };
+    return {
+      uid: decoded.uid,
+      email: normalizeAccountEmail(decoded.email),
+      phone: normalizeAccountPhone(decoded.phone_number),
+    };
   } catch {
     response.status(401).json({ success: false, code: 'AUTH_REQUIRED', message: 'Your session has expired. Please sign in again.' });
     return null;
@@ -114,14 +118,20 @@ function duplicateResponse(response: Response, error: unknown) {
   return false;
 }
 
-function assertedContacts(input: { email: string; phone: string }, sessionEmail: string | null) {
+function assertedContacts(
+  input: { email: string; phone: string },
+  session: { email: string | null; phone: string | null },
+) {
   const email = normalizeAccountEmail(input.email);
   const phone = normalizeAccountPhone(input.phone);
   if (!email || !phone) throw new Error('Enter a valid email address and Ghana mobile number.');
   // Do not let a signed-in user reserve an arbitrary person’s email. The email
   // ownership source is Firebase Authentication, not the request body.
-  if (sessionEmail && sessionEmail !== email) throw new Error('Use the email address linked to this HY3N sign-in.');
-  return { email: sessionEmail || email, phone };
+  if (session.email && session.email !== email) throw new Error('Use the email address linked to this HY3N sign-in.');
+  // A phone-authenticated Firebase session likewise proves one exact phone
+  // number. It must not claim an unrelated profile by submitting another one.
+  if (session.phone && session.phone !== phone) throw new Error('Use the phone number verified by this HY3N sign-in.');
+  return { email: session.email || email, phone: session.phone || phone };
 }
 
 async function existingProfile(role: AccountRole, uid: string) {
@@ -148,8 +158,11 @@ async function writeCanonicalProfile(role: AccountRole, uid: string, patch: Reco
   return { id: uid, ...profile };
 }
 
-async function legacyRiderRecovery(session: { uid: string; email: string | null }, phone: string) {
-  if (!session.email) return null;
+async function legacyRiderRecovery(
+  session: { uid: string; email: string | null; phone: string | null },
+  contacts: { email: string; phone: string },
+) {
+  if (!session.email && !session.phone) return null;
   const [riderProfiles, driverProfiles] = await Promise.all([
     adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES),
     adminFirestore.listAll(ADMIN_COLLECTIONS.DRIVER_PROFILES),
@@ -158,7 +171,9 @@ async function legacyRiderRecovery(session: { uid: string; email: string | null 
   return selectVerifiedRiderAccountRecovery({
     currentUid: session.uid,
     sessionEmail: session.email,
-    requestedPhone: phone,
+    sessionPhone: session.phone,
+    requestedEmail: contacts.email,
+    requestedPhone: contacts.phone,
     riderProfiles: riderProfiles.records,
     driverProfiles: driverProfiles.records,
   });
@@ -175,7 +190,7 @@ export function registerAccountProfileRoutes(app: Express) {
     }
 
     try {
-      const contacts = assertedContacts(parsed.data, session.email);
+      const contacts = assertedContacts(parsed.data, session);
       const riderIdentity = requiredRiderIdentity({
         full_name: parsed.data.fullName,
         email: contacts.email,
@@ -191,7 +206,7 @@ export function registerAccountProfileRoutes(app: Express) {
       // match this authenticated session; this also repairs an incomplete
       // profile previously created under the current UID. Any collision stays
       // blocked rather than selecting an account.
-      const recovery = await legacyRiderRecovery(session, contacts.phone);
+      const recovery = await legacyRiderRecovery(session, contacts);
       await claimAccountContacts({
         ownerUid: session.uid,
         role: 'rider',
@@ -242,7 +257,7 @@ export function registerAccountProfileRoutes(app: Express) {
     }
 
     try {
-      const contacts = assertedContacts(parsed.data, session.email);
+      const contacts = assertedContacts(parsed.data, session);
       const fullName = requiredAccountFullName(parsed.data.fullName);
       if (!fullName) {
         response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: 'Enter your real full name before submitting a Driver application.' });
@@ -312,7 +327,7 @@ export function registerAccountProfileRoutes(app: Express) {
       const contacts = assertedContacts({
         email: parsed.data.email || String(existing.email || ''),
         phone: parsed.data.phone || String(existing.phone || existing.phone_number || ''),
-      }, session.email);
+      }, session);
       const fullName = requiredAccountFullName(
         parsed.data.fullName || existing.full_name || existing.name || existing.display_name,
       );

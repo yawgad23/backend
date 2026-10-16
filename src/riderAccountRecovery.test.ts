@@ -15,6 +15,8 @@ function select(overrides: Partial<Parameters<typeof selectVerifiedRiderAccountR
   return selectVerifiedRiderAccountRecovery({
     currentUid: 'signed-in-firebase-owner',
     sessionEmail: 'RIDER@example.com',
+    sessionPhone: null,
+    requestedEmail: 'rider@example.com',
     requestedPhone: '+233541220725',
     riderProfiles: [legacyRider],
     driverProfiles: [],
@@ -30,12 +32,22 @@ describe('verified Rider account recovery', () => {
     });
   });
 
-  it('does not transfer a profile without a token-derived session email', () => {
-    expect(select({ sessionEmail: null })).toBeNull();
+  it('recovers the same account when the Rider signs in with the verified phone', () => {
+    expect(select({ sessionEmail: null, sessionPhone: '+233541220725' })).toMatchObject({
+      legacyOwnerUid: 'legacy-rider-owner',
+    });
+  });
+
+  it('does not transfer a profile without a token-derived matching contact', () => {
+    expect(select({ sessionEmail: null, sessionPhone: null })).toBeNull();
   });
 
   it('does not transfer a profile if the entered phone does not match the legacy profile', () => {
     expect(select({ requestedPhone: '+233241234567' })).toBeNull();
+  });
+
+  it('does not transfer a profile for a phone session whose verified number is different', () => {
+    expect(select({ sessionEmail: null, sessionPhone: '+233241234567' })).toBeNull();
   });
 
   it('keeps recovery blocked when another account owns either matching contact', () => {
