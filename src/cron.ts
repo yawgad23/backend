@@ -77,10 +77,9 @@ export function registerCronRoutes(app: Express) {
                 const transactionId = details.transactionId;
                 const state = hubtelPaymentState(response);
                 if (state === 'paid') {
-                  await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, record.id, {
-                    status: 'paid',
-                    hubtel_transaction_id: transactionId,
-                    hubtel_status: status,
+                  await adminFirestore.settleDriverPlatformFee(ref, {
+                    transactionId,
+                    status,
                   });
                   stats.commissionsUpdated++;
                 } else if (state === 'failed') {

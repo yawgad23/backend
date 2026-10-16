@@ -22,6 +22,7 @@ import {
 import {
   buildRiderWalletTopUpPayment,
 } from './riderWalletTopUp';
+import { currentDriverPlatformFeeAccess } from './commissionLedger';
 
 function hasDriverFeeTestBypass(driverId: string) {
   return String(process.env.DRIVER_FEE_TEST_BYPASS_DRIVER_IDS || '')
@@ -33,6 +34,11 @@ function hasDriverFeeTestBypass(driverId: string) {
 
 type DriverFeeCheck = {
   isPaid: boolean;
+  status: 'paid' | 'expired' | 'unpaid';
+  confirmedPaidAt: string | null;
+  accessExpiresAt: string | null;
+  remainingMs: number;
+  validityLabel: string;
   feeGateDisabled?: boolean;
   testAccessGranted?: boolean;
   adminFeeBypassGranted?: boolean;
@@ -42,6 +48,15 @@ type DriverFeeCheck = {
 
 const DRIVER_FEE_CHECK_CACHE_MS = 14_000;
 const driverFeeCheckCache = new Map<string, { value: DriverFeeCheck; expiresAt: number }>();
+
+function feeCheckCacheExpiresAt(value: DriverFeeCheck, nowMs: number): number {
+  const shortExpiry = nowMs + DRIVER_FEE_CHECK_CACHE_MS;
+  const accessExpiry = value.accessExpiresAt ? Date.parse(value.accessExpiresAt) : Number.NaN;
+  // A cache must never keep a paid Driver through the exact payment expiry.
+  return value.isPaid && Number.isFinite(accessExpiry)
+    ? Math.min(shortExpiry, accessExpiry)
+    : shortExpiry;
+}
 
 async function recentDriverFeeRecords(driverId: string) {
   try {
@@ -72,7 +87,16 @@ async function currentDriverFeeCheck(driverId: string): Promise<DriverFeeCheck> 
     GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
   );
   if (isGlobalDriverFeeBypassActive(globalFeeBypass, today)) {
-    return { isPaid: true, allDriversFeeBypassGranted: true, bypassDate: today };
+    return {
+      isPaid: true,
+      status: 'paid',
+      confirmedPaidAt: null,
+      accessExpiresAt: null,
+      remainingMs: 0,
+      validityLabel: 'An administrator has granted a same-day operational fee pass.',
+      allDriversFeeBypassGranted: true,
+      bypassDate: today,
+    };
   }
   const cacheKey = `${driverId}:${today}`;
   const cached = driverFeeCheckCache.get(cacheKey);
@@ -80,26 +104,54 @@ async function currentDriverFeeCheck(driverId: string): Promise<DriverFeeCheck> 
 
   let value: DriverFeeCheck;
   if (process.env.DRIVER_PLATFORM_FEE_GATE_ENABLED === 'false') {
-    value = { isPaid: true, feeGateDisabled: true };
+    value = {
+      isPaid: true,
+      status: 'paid',
+      confirmedPaidAt: null,
+      accessExpiresAt: null,
+      remainingMs: 0,
+      validityLabel: 'The Driver platform fee gate is disabled for this environment.',
+      feeGateDisabled: true,
+    };
   } else if (hasDriverFeeTestBypass(driverId)) {
-    value = { isPaid: true, testAccessGranted: true };
+    value = {
+      isPaid: true,
+      status: 'paid',
+      confirmedPaidAt: null,
+      accessExpiresAt: null,
+      remainingMs: 0,
+      validityLabel: 'Test access is enabled for this environment.',
+      testAccessGranted: true,
+    };
   } else {
     const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, driverId);
     if (isDriverFeeBypassActive(driverProfile, today)) {
-      value = { isPaid: true, adminFeeBypassGranted: true, bypassDate: today };
+      value = {
+        isPaid: true,
+        status: 'paid',
+        confirmedPaidAt: null,
+        accessExpiresAt: null,
+        remainingMs: 0,
+        validityLabel: 'An administrator has granted a same-day operational fee pass.',
+        adminFeeBypassGranted: true,
+        bypassDate: today,
+      };
     } else {
       const records = await recentDriverFeeRecords(driverId);
-      const isPaid = records.some((record: any) => {
-        if (!['paid', 'confirmed', 'completed'].includes(String(record.status || '').toLowerCase())) return false;
-        const paidAt = record.submitted_at || record.admin_override_at || record.created_date || record.date;
-        const paymentTime = new Date(paidAt || 0).getTime();
-        return Number.isFinite(paymentTime) && Date.now() - paymentTime < 24 * 60 * 60 * 1000;
-      });
-      value = { isPaid };
+      const access = currentDriverPlatformFeeAccess(records);
+      value = {
+        isPaid: access.isPaid,
+        status: access.status,
+        confirmedPaidAt: access.confirmedPaidAt,
+        accessExpiresAt: access.accessExpiresAt,
+        remainingMs: access.remainingMs,
+        validityLabel: access.validityLabel,
+      };
     }
   }
 
-  driverFeeCheckCache.set(cacheKey, { value, expiresAt: Date.now() + DRIVER_FEE_CHECK_CACHE_MS });
+  const nowMs = Date.now();
+  driverFeeCheckCache.set(cacheKey, { value, expiresAt: feeCheckCacheExpiresAt(value, nowMs) });
   return value;
 }
 
@@ -194,11 +246,19 @@ export const appRouter = router({
           }, "");
 
           if (commissionRecords && commissionRecords.length > 0) {
-            await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, commissionRecords[0].id, {
-              status: dbStatus,
-              hubtel_transaction_id: transactionId,
-              hubtel_status: status,
-            });
+            const record = commissionRecords[0];
+            if (dbStatus === 'paid') {
+              await adminFirestore.settleDriverPlatformFee(ref, {
+                transactionId,
+                status,
+              });
+            } else if (record.status !== 'paid') {
+              await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, record.id, {
+                status: dbStatus,
+                hubtel_transaction_id: transactionId || record.hubtel_transaction_id || null,
+                hubtel_status: status,
+              });
+            }
           } else {
             // 2. Try Wallet Transaction
             const walletRecords = await adminFirestore.list(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {
@@ -267,7 +327,9 @@ export const appRouter = router({
         date: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
-        const date = input.date || new Date().toISOString().split('T')[0];
+        // The client-supplied date is legacy display/audit data only. A server
+        // timestamp governs both the payment record and the rolling window.
+        const date = new Date().toISOString().split('T')[0];
         // Read the global setting at charge time so an administrator can
         // safely change the test fee without rebuilding the Driver app.
         const driverProfile = await adminFirestore.get(ADMIN_COLLECTIONS.DRIVER_PROFILES, input.driverId);
@@ -279,6 +341,48 @@ export const appRouter = router({
         const channel = getMomoChannel(input.momoNetwork || 'mtn-gh');
         const clientReference = generateReference();
 
+        const reservation = await adminFirestore.createDriverPlatformFeeCharge(input.driverId, {
+          driver_name: driverProfile?.full_name || driverProfile?.name || input.driverName || 'Driver',
+          date,
+          amount,
+          service_type: serviceType,
+          momo_number: input.momoNumber,
+          momo_network: input.momoNetwork || 'mtn-gh',
+          hubtel_reference: clientReference,
+          charge_method: 'hubtel_auto',
+        });
+
+        if (!reservation.created) {
+          const existing = reservation.record;
+          if (reservation.decision === 'active') {
+            const access = currentDriverPlatformFeeAccess([existing]);
+            return {
+              success: true,
+              status: 'paid' as const,
+              transactionId: existing.hubtel_transaction_id || null,
+              message: 'Your platform-fee payment is still valid.',
+              amount: Number(existing.amount ?? amount),
+              date,
+              feeSource: feeSetting.source,
+              clientReference: existing.hubtel_reference || null,
+              commissionRecord: existing,
+              confirmedPaidAt: access.confirmedPaidAt,
+              accessExpiresAt: access.accessExpiresAt,
+            };
+          }
+          return {
+            success: true,
+            status: 'pending' as const,
+            transactionId: existing.hubtel_transaction_id || null,
+            message: 'A payment request is already awaiting your MoMo approval.',
+            amount: Number(existing.amount ?? amount),
+            date,
+            feeSource: feeSetting.source,
+            clientReference: existing.hubtel_reference || null,
+            commissionRecord: existing,
+          };
+        }
+
         // `chargeDriverCommission` applies one consistent Ghana MSISDN
         // normalization. Passing the original input here prevents a +233
         // value from becoming the invalid string "233+233...".
@@ -287,27 +391,37 @@ export const appRouter = router({
         const result = await chargeDriverCommission({
           customerMsisdn: phone,
           amount,
-          customerName: input.driverName,
-          description: `HY3N daily platform fee - ${date}`,
+          customerName: driverProfile?.full_name || driverProfile?.name || input.driverName,
+          description: `HY3N platform fee - ${date}`,
           clientReference,
           channel,
         });
 
-        let commissionRecord = null;
-        if (result.success) {
-          commissionRecord = await adminFirestore.create(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
-            driver_id: input.driverId,
-            driver_name: input.driverName,
-            date,
-            amount,
-            service_type: serviceType,
-            momo_number: input.momoNumber,
-            momo_network: input.momoNetwork || 'mtn-gh',
-            hubtel_transaction_id: result.transactionId,
-            hubtel_reference: clientReference,
-            status: result.status === 'paid' ? 'paid' : 'processing',
-            charge_method: 'hubtel_auto',
-            submitted_at: new Date().toISOString(),
+        let commissionRecord = reservation.record;
+        let confirmedPaidAt: string | null = null;
+        let accessExpiresAt: string | null = null;
+        if (result.success && result.status === 'paid') {
+          const settlement = await adminFirestore.settleDriverPlatformFee(clientReference, {
+            transactionId: result.transactionId,
+            status: 'Completed',
+            message: result.message,
+          });
+          commissionRecord = settlement.record || commissionRecord;
+          confirmedPaidAt = commissionRecord?.confirmed_paid_at || null;
+          accessExpiresAt = commissionRecord?.access_expires_at || null;
+        } else if (result.success) {
+          commissionRecord = await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, reservation.record.id, {
+            status: 'processing',
+            hubtel_transaction_id: result.transactionId || null,
+            hubtel_status: result.status || 'Pending',
+            hubtel_message: result.message || null,
+          });
+        } else {
+          commissionRecord = await adminFirestore.update(ADMIN_COLLECTIONS.DAILY_COMMISSION, reservation.record.id, {
+            status: 'failed',
+            hubtel_transaction_id: result.transactionId || null,
+            hubtel_status: result.status || 'Failed',
+            hubtel_message: result.message || 'Hubtel did not accept the payment request.',
           });
         }
 
@@ -321,6 +435,8 @@ export const appRouter = router({
           feeSource: feeSetting.source,
           clientReference,
           commissionRecord,
+          confirmedPaidAt,
+          accessExpiresAt,
         };
       }),
 
@@ -344,29 +460,26 @@ export const appRouter = router({
         return { success: true, fee };
       }),
 
-    /**
-     * Get the commission status for a driver on a given date.
-     * Used by the driver app to check if today's fee has been paid.
-     *
-     * Note: The Firestore record is the source of truth for the app UI —
-     * the driver app writes/reads directly from Firestore. This endpoint
-     * just returns the reference so the client can look it up.
-     */
+    /** Server-authoritative status for the current 24-hour fee access window. */
     getStatus: driverProcedure(z.object({
         driverId: z.string(),
         date: z.string().optional(),
       }))
       .query(async ({ input }) => {
-        const date = input.date || new Date().toISOString().split('T')[0];
-        const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, {
-          driver_id: input.driverId,
-          date,
-        }, "");
-        const clientReference = records[0]?.hubtel_reference || "";
+        const date = new Date().toISOString().split('T')[0];
+        const records = await recentDriverFeeRecords(input.driverId);
+        const access = currentDriverPlatformFeeAccess(records);
+        const clientReference = access.record?.hubtel_reference || '';
         return {
           driverId: input.driverId,
           date,
           clientReference,
+          isPaid: access.isPaid,
+          status: access.status,
+          confirmedPaidAt: access.confirmedPaidAt,
+          accessExpiresAt: access.accessExpiresAt,
+          remainingMs: access.remainingMs,
+          validityLabel: access.validityLabel,
         };
       }),
 

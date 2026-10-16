@@ -28,6 +28,10 @@ import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry'
 import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
 import { driverOfferView } from './driverDeliveryOffer';
 import { canPersistDriverTripMeter } from './driverTripLifecycle';
+import {
+  currentDriverPlatformFeeAccess,
+  liveDriverPlatformFeePayment,
+} from './commissionLedger';
 
 const now = () => new Date().toISOString();
 const dateKey = () => now().slice(0, 10);
@@ -338,13 +342,14 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
   );
   if (isGlobalDriverFeeBypassActive(globalFeeBypass, today)) return true;
 
-  const cacheUntil = currentDriverFeeCache.get(driverId) || 0;
-  if (cacheUntil > Date.now()) return true;
   const driverProfile = knownProfile ?? await profile(driverId);
+  // A date-bound administrator waiver is intentionally checked before any
+  // cache, so a revocation takes effect on the next offer lookup.
   if (canPassDriverPlatformFeeGate(driverProfile, false, today, globalFeeBypass)) {
-    currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
     return true;
   }
+  const cacheUntil = currentDriverFeeCache.get(driverId) || 0;
+  if (cacheUntil > Date.now()) return true;
   const records = await adminFirestore.list(
     ADMIN_COLLECTIONS.DAILY_COMMISSION,
     { driver_id: driverId },
@@ -352,14 +357,16 @@ async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<str
     'desc',
     100,
   );
-  const hasConfirmedFee = records.some((record: any) => {
-    if (record.status !== 'paid' && record.status !== 'confirmed' && record.status !== 'completed') return false;
-    const paidAt = record.submitted_at || record.admin_override_at || record.created_date || record.date;
-    const paidTime = new Date(paidAt || 0).getTime();
-    return Number.isFinite(paidTime) && Date.now() - paidTime < 24 * 60 * 60 * 1000;
-  });
-  const allowed = canPassDriverPlatformFeeGate(driverProfile, hasConfirmedFee, today, globalFeeBypass);
-  if (allowed) currentDriverFeeCache.set(driverId, Date.now() + DRIVER_FEE_CACHE_MS);
+  const access = currentDriverPlatformFeeAccess(records);
+  const allowed = canPassDriverPlatformFeeGate(driverProfile, access.isPaid, today, globalFeeBypass);
+  if (allowed) {
+    const nowMs = Date.now();
+    const paymentExpiry = access.accessExpiresAt ? Date.parse(access.accessExpiresAt) : Number.NaN;
+    currentDriverFeeCache.set(
+      driverId,
+      Number.isFinite(paymentExpiry) ? Math.min(nowMs + DRIVER_FEE_CACHE_MS, paymentExpiry) : nowMs + DRIVER_FEE_CACHE_MS,
+    );
+  }
   else currentDriverFeeCache.delete(driverId);
   return allowed;
 }
@@ -1147,7 +1154,8 @@ export const driverFinance = router({
       const dailyPlatformFee = periodFees
         .reduce((sum, fee) => sum + Number(fee.amount ?? currentFee.amount), 0);
       const today = dateKey();
-      const todayFee = fees.find((fee) => fee.date === today && ['paid', 'completed', 'processing'].includes(fee.status));
+      const access = currentDriverPlatformFeeAccess(fees);
+      const pendingFee = liveDriverPlatformFeePayment(fees);
       const total = gross + tips;
       const savedGoal = await adminFirestore.get('driver_goals', `${input.driverId}_${period}`);
       const goal = savedGoal?.targetAmount
@@ -1175,8 +1183,10 @@ export const driverFinance = router({
         },
         dailyFee: {
           amount: currentFee.amount,
-          status: todayFee?.status === 'paid' || todayFee?.status === 'completed' ? 'paid' : 'unpaid',
+          status: access.isPaid ? 'paid' : pendingFee ? 'processing' : 'unpaid',
           date: today,
+          confirmedPaidAt: access.confirmedPaidAt,
+          accessExpiresAt: access.accessExpiresAt,
         },
         trend: earningsTrend(completedRides),
         insights: {
@@ -1211,8 +1221,19 @@ export const driverSupport = router({
 
 export const checkPaidToday = driverProcedure(driverIdInput).query(async ({ input }) => {
   const date = dateKey();
-  const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId, date }, '', 'desc', 20);
-  const paid = records.some((record) => record.status === 'paid' || record.status === 'completed');
+  const records = await adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, { driver_id: input.driverId }, null, 'desc', 100);
+  const access = currentDriverPlatformFeeAccess(records);
   const fee = await getDailyPlatformFee();
-  return { paid, isPaid: paid, status: paid ? 'paid' : 'unpaid', amount: fee.amount, date, record: records[0] || null };
+  return {
+    paid: access.isPaid,
+    isPaid: access.isPaid,
+    status: access.status,
+    amount: fee.amount,
+    date,
+    confirmedPaidAt: access.confirmedPaidAt,
+    accessExpiresAt: access.accessExpiresAt,
+    remainingMs: access.remainingMs,
+    validityLabel: access.validityLabel,
+    record: access.record,
+  };
 });

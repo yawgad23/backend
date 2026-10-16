@@ -99,13 +99,30 @@ export async function handleHubtelWebhook(req: Request, res: Response) {
     if (commissions.length) {
       const record = commissions[0];
       const state = callbackState(rawPayload);
-      await adminFirestore.update(COLLECTIONS.DAILY_COMMISSION, record.id, {
-        status: state,
-        hubtel_webhook_received_at: new Date().toISOString(),
-        hubtel_transaction_id: details.transactionId || record.hubtel_transaction_id || null,
-        hubtel_status: savedProviderStatus(rawPayload, state === 'paid' ? 'Completed' : state === 'failed' ? 'Failed' : 'Pending'),
-        hubtel_message: safeProviderMessage(rawPayload) || null,
-      });
+      const status = savedProviderStatus(rawPayload, state === 'paid' ? 'Completed' : state === 'failed' ? 'Failed' : 'Pending');
+      const message = safeProviderMessage(rawPayload) || null;
+      if (state === 'paid') {
+        // The transaction writes confirmed_paid_at/access_expires_at only on
+        // the first confirmed transition. Duplicate callbacks cannot extend it.
+        const settlement = await adminFirestore.settleDriverPlatformFee(details.clientReference, {
+          transactionId: details.transactionId,
+          status,
+          message: message || undefined,
+        });
+        if (settlement.found && settlement.record) {
+          await adminFirestore.update(COLLECTIONS.DAILY_COMMISSION, settlement.record.id, {
+            hubtel_webhook_received_at: new Date().toISOString(),
+          });
+        }
+      } else if (record.status !== 'paid') {
+        await adminFirestore.update(COLLECTIONS.DAILY_COMMISSION, record.id, {
+          status: state,
+          hubtel_webhook_received_at: new Date().toISOString(),
+          hubtel_transaction_id: details.transactionId || record.hubtel_transaction_id || null,
+          hubtel_status: status,
+          hubtel_message: message,
+        });
+      }
       console.log('[Hubtel] Processed Driver fee callback:', { paymentState: state });
       res.json({ success: true, message: 'Driver fee updated', status: state });
       return;

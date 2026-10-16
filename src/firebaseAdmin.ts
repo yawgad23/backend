@@ -12,6 +12,10 @@ import { FieldPath, getFirestore, type Firestore } from 'firebase-admin/firestor
 import { getAuth } from 'firebase-admin/auth';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 import { driverTripCountProfilePatch, nextCompletedTripCount } from './driverTripCounts';
+import {
+  buildDriverPlatformFeeConfirmation,
+  driverPlatformFeePaymentDecision,
+} from './commissionLedger';
 
 // ─── App singleton ────────────────────────────────────────────────────────────
 
@@ -252,6 +256,148 @@ export const adminFirestore = {
       };
       await getDb().collection(collectionName).doc(id).set(payload, { merge: true });
       return { id, ...payload };
+    });
+  },
+
+  /**
+   * Atomically creates the only live Driver fee request for a Driver. The lock
+   * prevents two near-simultaneous taps from reaching Hubtel as two charges.
+   */
+  async createDriverPlatformFeeCharge(
+    driverId: string,
+    charge: Record<string, any>,
+  ): Promise<{
+    created: boolean;
+    decision: 'charge_required' | 'active' | 'processing';
+    record: Record<string, any>;
+  }> {
+    return withFirestoreErrorHandling(`createDriverPlatformFeeCharge(${driverId})`, async () => {
+      const db = getDb();
+      const lockRef = db.collection('driver_platform_fee_locks').doc(driverId);
+      const commissionRef = db.collection(ADMIN_COLLECTIONS.DAILY_COMMISSION).doc();
+      return db.runTransaction(async (transaction) => {
+        const driverFeesQuery = db.collection(ADMIN_COLLECTIONS.DAILY_COMMISSION)
+          .where('driver_id', '==', driverId)
+          .limit(100);
+        const [, driverFeesSnapshot] = await Promise.all([
+          transaction.get(lockRef),
+          transaction.get(driverFeesQuery),
+        ]);
+        const driverFees = driverFeesSnapshot.docs.map((document) => ({
+          id: document.id,
+          ...(document.data() || {}),
+        })) as Record<string, any>[];
+        const existingDecision = driverPlatformFeePaymentDecision(driverFees);
+        if (existingDecision.state === 'active') {
+          return { created: false, decision: 'active' as const, record: existingDecision.access.record || driverFees[0] };
+        }
+        if (existingDecision.state === 'processing') {
+          return { created: false, decision: 'processing' as const, record: existingDecision.record };
+        }
+
+        const timestamp = new Date().toISOString();
+        const record = {
+          ...charge,
+          id: commissionRef.id,
+          driver_id: driverId,
+          status: 'processing',
+          submitted_at: timestamp,
+          created_date: timestamp,
+          updated_date: timestamp,
+        };
+        transaction.set(commissionRef, record);
+        transaction.set(lockRef, {
+          driver_id: driverId,
+          commission_id: commissionRef.id,
+          hubtel_reference: charge.hubtel_reference || null,
+          requested_at: timestamp,
+          updated_date: timestamp,
+        }, { merge: true });
+        return { created: true, decision: 'charge_required' as const, record };
+      });
+    });
+  },
+
+  /**
+   * Records a provider-confirmed Driver payment exactly once. The first server
+   * confirmation writes the exact paid time and its 24-hour expiry; duplicate
+   * callbacks/polls return the earlier values without extending the window.
+   */
+  async settleDriverPlatformFee(reference: string, hubtel: {
+    transactionId?: string;
+    status?: string;
+    message?: string;
+  }) {
+    return withFirestoreErrorHandling(`settleDriverPlatformFee(${reference})`, async () => {
+      const db = getDb();
+      return db.runTransaction(async (transaction) => {
+        const query = db.collection(ADMIN_COLLECTIONS.DAILY_COMMISSION)
+          .where('hubtel_reference', '==', reference)
+          .limit(1);
+        const snapshot = await transaction.get(query);
+        if (snapshot.empty) {
+          return {
+            found: false,
+            settled: false,
+            alreadyConfirmed: false,
+            record: null as Record<string, any> | null,
+          };
+        }
+
+        const commissionDoc = snapshot.docs[0];
+        const record = { id: commissionDoc.id, ...(commissionDoc.data() || {}) } as Record<string, any>;
+        const confirmation = buildDriverPlatformFeeConfirmation(record);
+        if (confirmation.alreadyConfirmed) {
+          const hasStoredConfirmation = Boolean(record.confirmed_paid_at || record.paid_at);
+          // A legacy provider-confirmed row may have only a bounded server
+          // update/webhook time. Freeze that first resolved value now, before
+          // recording this duplicate callback, so future updates cannot move
+          // the 24-hour anchor forward.
+          if (!hasStoredConfirmation && confirmation.confirmedPaidAt && confirmation.accessExpiresAt) {
+            const legacyPatch = {
+              status: 'paid',
+              confirmed_paid_at: confirmation.confirmedPaidAt,
+              paid_at: confirmation.confirmedPaidAt,
+              access_expires_at: confirmation.accessExpiresAt,
+              confirmed_paid_source: 'legacy_server_record',
+              updated_date: new Date().toISOString(),
+            };
+            transaction.update(commissionDoc.ref, legacyPatch);
+            return {
+              found: true,
+              settled: true,
+              alreadyConfirmed: true,
+              record: { ...record, ...legacyPatch },
+            };
+          }
+          return {
+            found: true,
+            settled: false,
+            alreadyConfirmed: true,
+            record: {
+              ...record,
+              confirmed_paid_at: confirmation.confirmedPaidAt || record.confirmed_paid_at || null,
+              access_expires_at: confirmation.accessExpiresAt || record.access_expires_at || null,
+            },
+          };
+        }
+
+        const updatedDate = new Date().toISOString();
+        const patch = {
+          ...confirmation.patch,
+          hubtel_transaction_id: hubtel.transactionId || record.hubtel_transaction_id || null,
+          hubtel_status: hubtel.status || record.hubtel_status || 'Completed',
+          hubtel_message: hubtel.message || record.hubtel_message || null,
+          updated_date: updatedDate,
+        };
+        transaction.update(commissionDoc.ref, patch);
+        return {
+          found: true,
+          settled: true,
+          alreadyConfirmed: false,
+          record: { ...record, ...patch },
+        };
+      });
     });
   },
 
