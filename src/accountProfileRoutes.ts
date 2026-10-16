@@ -9,6 +9,7 @@ import {
 } from './accountContactClaims';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 import { requiredAccountFullName, requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
+import { selectVerifiedRiderAccountRecovery } from './riderAccountRecovery';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -85,6 +86,22 @@ function profileForResponse(profile: Record<string, any>) {
   };
 }
 
+function profileWithoutIdentityFields(profile: Record<string, any>): Record<string, any> {
+  const {
+    id: _id,
+    user_id: _userId,
+    full_name: _fullName,
+    name: _name,
+    display_name: _displayName,
+    email: _email,
+    phone: _phone,
+    phone_number: _phoneNumber,
+    mobile_number: _mobileNumber,
+    ...safeProfileFields
+  } = profile;
+  return safeProfileFields;
+}
+
 function duplicateResponse(response: Response, error: unknown) {
   if (error instanceof AccountContactConflictError) {
     response.status(409).json({ success: false, code: error.code, message: error.message });
@@ -118,8 +135,9 @@ async function existingProfile(role: AccountRole, uid: string) {
 async function writeCanonicalProfile(role: AccountRole, uid: string, patch: Record<string, any>) {
   const collection = collectionFor(role);
   const existing = await existingProfile(role, uid);
+  const existingData = existing ? profileWithoutIdentityFields(existing) : {};
   const profile = {
-    ...(existing || {}),
+    ...existingData,
     ...patch,
     user_id: uid,
   };
@@ -128,6 +146,22 @@ async function writeCanonicalProfile(role: AccountRole, uid: string, patch: Reco
     await adminFirestore.set(collection, String(existing.id), patch);
   }
   return { id: uid, ...profile };
+}
+
+async function legacyRiderRecovery(session: { uid: string; email: string | null }, phone: string) {
+  if (!session.email) return null;
+  const [riderProfiles, driverProfiles] = await Promise.all([
+    adminFirestore.listAll(ADMIN_COLLECTIONS.RIDER_PROFILES),
+    adminFirestore.listAll(ADMIN_COLLECTIONS.DRIVER_PROFILES),
+  ]);
+  if (riderProfiles.truncated || driverProfiles.truncated) throw new AccountContactCapacityError();
+  return selectVerifiedRiderAccountRecovery({
+    currentUid: session.uid,
+    sessionEmail: session.email,
+    requestedPhone: phone,
+    riderProfiles: riderProfiles.records,
+    driverProfiles: driverProfiles.records,
+  });
 }
 
 export function registerAccountProfileRoutes(app: Express) {
@@ -151,21 +185,45 @@ export function registerAccountProfileRoutes(app: Express) {
         response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: riderProfileCompletionMessage() });
         return;
       }
-      await claimAccountContacts({ ownerUid: session.uid, role: 'rider', contacts });
+      const currentProfile = await existingProfile('rider', session.uid);
+      // Some legacy Rider profiles predate the current Firebase UID. Transfer
+      // only the one profile whose saved email and Ghana phone both exactly
+      // match this authenticated session; this also repairs an incomplete
+      // profile previously created under the current UID. Any collision stays
+      // blocked rather than selecting an account.
+      const recovery = await legacyRiderRecovery(session, contacts.phone);
+      await claimAccountContacts({
+        ownerUid: session.uid,
+        role: 'rider',
+        contacts,
+        ...(recovery ? { transferableOwnerUids: [recovery.legacyOwnerUid] } : {}),
+      });
+      const preservedProfile = { ...(currentProfile || {}), ...(recovery?.profile || {}) };
       const profile = await writeCanonicalProfile('rider', session.uid, {
+        ...profileWithoutIdentityFields(preservedProfile),
         full_name: riderIdentity.fullName,
         email: riderIdentity.email,
         phone: riderIdentity.phone,
-        account_status: 'active',
-        registration_source: 'rider_app',
+        account_status: preservedProfile.account_status || 'active',
+        registration_source: recovery ? 'verified_rider_account_recovery' : (preservedProfile.registration_source || 'rider_app'),
         contact_claimed_at: new Date().toISOString(),
         ...(parsed.data.inviteCode ? { invite_code_used: parsed.data.inviteCode.toUpperCase() } : {}),
-        loyalty_points: 0,
-        loyalty_tier: 'Bronze',
-        rating: 5,
-        total_rides: 0,
-        saved_locations: [],
+        loyalty_points: preservedProfile.loyalty_points ?? 0,
+        loyalty_tier: preservedProfile.loyalty_tier ?? 'Bronze',
+        rating: preservedProfile.rating ?? 5,
+        total_rides: preservedProfile.total_rides ?? 0,
+        saved_locations: preservedProfile.saved_locations ?? [],
       });
+      if (recovery && recovery.profile.id !== session.uid) {
+        // Keep the old document as an internal legacy alias so historical
+        // reference IDs remain traceable, but map it to the one recovered UID.
+        await adminFirestore.set(ADMIN_COLLECTIONS.RIDER_PROFILES, String(recovery.profile.id), {
+          user_id: session.uid,
+          profile_migrated_to: session.uid,
+          profile_migrated_at: new Date().toISOString(),
+          profile_migration_reason: 'verified_email_and_phone_recovery',
+        });
+      }
       response.status(200).json({ success: true, profile: profileForResponse(profile) });
     } catch (error) {
       if (duplicateResponse(response, error)) return;
