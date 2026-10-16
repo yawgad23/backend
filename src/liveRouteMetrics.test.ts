@@ -3,6 +3,7 @@ import {
   bookingRouteCacheKey,
   decodeGooglePolyline,
   firestoreSafeLiveRoutePoints,
+  liveRouteTarget,
   parseGoogleTrafficRoute,
   parseOsrmRoute,
   preferGoogleRouteWithFastFallback,
@@ -125,5 +126,13 @@ describe('server road route metrics', () => {
     expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS - 1)).toBe(true);
     expect(shouldReuseCachedRoute(cachedPickupRoute, pickupKey, 1_000 + ROUTE_REFRESH_MS)).toBe(false);
     expect(shouldReuseCachedRoute(cachedPickupRoute, destinationKey, 1_001)).toBe(false);
+  });
+
+  it('uses a Driver-approved active stop before the final destination', () => {
+    expect(liveRouteTarget({
+      status: 'in_progress',
+      destination: { lat: 5.605, lng: -0.167 },
+      route_target: { kind: 'stop', location: { lat: 5.625, lng: -0.173 } },
+    })).toEqual({ latitude: 5.625, longitude: -0.173 });
   });
 });

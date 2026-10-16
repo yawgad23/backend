@@ -100,7 +100,7 @@ async function pushDevicesForRecipient(uid: string, role: PushRole): Promise<Pus
 }
 
 async function recordDelivery(input: {
-  type?: 'chat_message' | 'ride_status';
+  type?: 'chat_message' | 'ride_status' | 'trip_route_change';
   messageId: string;
   rideId: string;
   recipientUid: string;
@@ -331,6 +331,73 @@ export async function sendRideStatusPush(
     return { attempted: devices.length, sent };
   } catch (error) {
     console.error('[Push] Ride status notification dispatch failed', { rideId, status: nextStatus, error });
+    return { attempted: devices.length, sent: 0 };
+  }
+}
+
+/**
+ * Wakes only the assigned Driver when their current Rider asks to change the
+ * live route. The actual route data stays in the authenticated active-ride
+ * document, so a push cannot disclose a Rider location by itself.
+ */
+export async function sendDriverTripRouteChangePush(rideId: string, ride: Record<string, any>) {
+  const request = ride?.route_change_request;
+  const status = normalizedStatus(request?.status);
+  const driverId = cleanText(ride?.driver_id || ride?.driverId, '');
+  const kind = request?.kind === 'add_stop' ? 'add a stop' : 'change the destination';
+  if (!rideId || !driverId || status !== 'pending') return { attempted: 0, sent: 0 };
+
+  const devices = await pushDevicesForRecipient(driverId, 'driver');
+  if (devices.length === 0) return { attempted: 0, sent: 0 };
+
+  const payload = devices.map((device) => ({
+    to: device.token,
+    title: 'Route change requested',
+    body: `Your Rider wants to ${kind}. Open HY3N Driver to review it.`,
+    sound: 'default',
+    priority: 'high',
+    channelId: 'rides',
+    data: { type: 'trip_route_change', rideId },
+  }));
+
+  try {
+    const response = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({})) as { data?: ExpoTicket[]; errors?: unknown[] };
+    if (!response.ok || !Array.isArray(result.data)) {
+      console.error('[Push] Expo rejected Driver route-change notifications', { rideId, responseStatus: response.status, errors: result.errors || null });
+      return { attempted: devices.length, sent: 0 };
+    }
+
+    let sent = 0;
+    await Promise.all(result.data.map(async (ticket, index) => {
+      const device = devices[index];
+      if (!device) return;
+      await recordDelivery({
+        type: 'trip_route_change',
+        messageId: `route-change:${rideId}:${cleanText(request?.id, 'pending')}`,
+        rideId,
+        recipientUid: driverId,
+        recipientRole: 'driver',
+        device,
+        ticket,
+      });
+      if (ticket.status === 'ok') {
+        sent += 1;
+      } else if (ticket.details?.error === 'DeviceNotRegistered') {
+        await retirePushDevice(device, 'DeviceNotRegistered');
+      }
+    }));
+    return { attempted: devices.length, sent };
+  } catch (error) {
+    console.error('[Push] Driver route-change notification dispatch failed', { rideId, error });
     return { attempted: devices.length, sent: 0 };
   }
 }

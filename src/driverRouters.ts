@@ -7,6 +7,7 @@ import { canCancelRideBeforeTrip, canCompleteTrip, canStartTrip, cancelledRideNo
 import { advanceTripMeter, initializeTripMeter } from './tripMeter';
 import { sendDriverLocationLiveActivityUpdates, sendRideLiveActivityUpdate } from './liveActivities';
 import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
+import { completeActiveTripStop, reviewTripRouteChange } from './tripRouteChange';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
 import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverPayoutRequest } from './driverCashCollectionPolicy';
 import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
@@ -889,6 +890,64 @@ export const driverTrips = router({
     }
     publishLiveActivity(updated);
     return { success: true, accepted, incrementKm, ignoredReason: ignoredReason || null, actualDistanceKm: meter.distance_km };
+  }),
+  /**
+   * A Rider can request, but never apply, an in-progress route change. The
+   * assigned Driver explicitly accepts or declines it here; the server writes
+   * the map target both apps observe and does not touch fare or wallet fields.
+   */
+  reviewRouteChange: driverProcedure(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+    decision: z.enum(['accept', 'decline']),
+  })).mutation(async ({ input }) => {
+    const updated = await reviewTripRouteChange(input);
+    await recordRideEvent({
+      rideId: input.rideId,
+      type: input.decision === 'accept' ? 'route_change_accepted' : 'route_change_declined',
+      actorId: input.driverId,
+      actorRole: 'driver',
+      status: String(updated.status || 'in_progress'),
+      metadata: {
+        route_change_kind: updated.route_change_request?.kind || null,
+        route_change_request_id: updated.route_change_request?.id || null,
+      },
+    });
+    publishLiveActivity(updated, true);
+    if (input.decision === 'accept') {
+      const currentDriverLocation = locationOf((await profile(input.driverId)) || {});
+      if (currentDriverLocation) {
+        void refreshDriverActiveRideRoutes(input.driverId, {
+          latitude: currentDriverLocation.lat,
+          longitude: currentDriverLocation.lng,
+        }).catch((error) => console.error('[RoadRoute] Route-change refresh failed:', error));
+      }
+    }
+    return { success: true, ride: updated };
+  }),
+  /** Advances a confirmed in-trip stop to the next pending stop or final destination. */
+  completeRouteStop: driverProcedure(z.object({
+    driverId: z.string(),
+    rideId: z.string(),
+  })).mutation(async ({ input }) => {
+    const updated = await completeActiveTripStop(input);
+    await recordRideEvent({
+      rideId: input.rideId,
+      type: 'in_trip_stop_completed',
+      actorId: input.driverId,
+      actorRole: 'driver',
+      status: String(updated.status || 'in_progress'),
+      metadata: { next_route_target: updated.route_target?.kind || 'destination' },
+    });
+    publishLiveActivity(updated, true);
+    const currentDriverLocation = locationOf((await profile(input.driverId)) || {});
+    if (currentDriverLocation) {
+      void refreshDriverActiveRideRoutes(input.driverId, {
+        latitude: currentDriverLocation.lat,
+        longitude: currentDriverLocation.lng,
+      }).catch((error) => console.error('[RoadRoute] Stop-complete route refresh failed:', error));
+    }
+    return { success: true, ride: updated };
   }),
   complete: driverProcedure(z.object({
     driverId: z.string(),

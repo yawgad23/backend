@@ -91,10 +91,12 @@ function pointFrom(value: any): Point | null {
   return validPoint(point) ? point : null;
 }
 
-function routeTarget(ride: Record<string, any>): Point | null {
-  return String(ride.status) === 'in_progress'
-    ? pointFrom(ride.destination)
-    : pointFrom(ride.pickup);
+export function liveRouteTarget(ride: Record<string, any>): Point | null {
+  if (String(ride.status) !== 'in_progress') return pointFrom(ride.pickup);
+  // A Driver-approved in-trip stop is the current navigation target. The
+  // fallback remains the immutable/current destination, so malformed or old
+  // records cannot strand a live route without a target.
+  return pointFrom(ride.route_target?.location) || pointFrom(ride.destination);
 }
 
 export function routeTargetKey(to: Point) {
@@ -448,7 +450,7 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
   let updated = 0;
   await Promise.all(rides.map(async (ride) => {
     const rideId = String(ride.id || '');
-    const target = routeTarget(ride);
+    const target = liveRouteTarget(ride);
     if (!rideId || !target) return;
     const metrics = await cachedRoadRoute(rideId, driverLocation, target);
     if (!metrics) return;
@@ -461,6 +463,7 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
         phase,
         points: firestoreSafeLiveRoutePoints(metrics.points),
         source: metrics.source,
+        target_kind: phase === 'destination' && ride.route_target?.kind === 'stop' ? 'stop' : phase,
         traffic: metrics.traffic || null,
         updated_at: new Date().toISOString(),
       },

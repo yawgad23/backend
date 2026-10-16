@@ -41,6 +41,7 @@ import { registerPasswordResetRoutes } from './passwordReset';
 import { registerWebsiteIntakeRoutes } from './websiteIntake';
 import { registerAccountProfileRoutes } from './accountProfileRoutes';
 import { registerRiderHistoryRoutes } from './riderHistory';
+import { registerTripRouteChangeRoutes } from './tripRouteChange';
 import { requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
 import { riderOwnsRideStatus } from './riderRideStatus';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
@@ -290,6 +291,9 @@ export function createApp(): Express {
   // Ride History is a server-owned, Rider-specific display projection. It
   // avoids broad mobile Firestore queries while preserving private ownership.
   registerRiderHistoryRoutes(app);
+  // Only the signed-in Rider may request a change; the assigned Driver still
+  // has to accept it before either active-trip map target is updated.
+  registerTripRouteChangeRoutes(app);
   // Rider's active-trip Share Trip action calls these authenticated endpoints.
   // Keep the public tracking read path registered before the generic API routes.
   registerTripShareRoutes(app);
