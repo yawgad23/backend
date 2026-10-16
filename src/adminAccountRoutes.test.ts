@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   accountRegistrationSummary,
+  blocksAdministratorSelfDisable,
   driverIdentityRecoveryPatch,
   legacyRiderContactMatches,
   newest,
@@ -11,6 +12,13 @@ import {
 } from './adminAccountRoutes';
 
 describe('admin account profile ordering', () => {
+  it('prevents an administrator from suspending or deactivating their own Firebase login', () => {
+    expect(blocksAdministratorSelfDisable('admin-1', 'admin-1', 'suspended')).toBe(true);
+    expect(blocksAdministratorSelfDisable('admin-1', 'admin-1', 'inactive')).toBe(true);
+    expect(blocksAdministratorSelfDisable('admin-1', 'admin-1', 'active')).toBe(false);
+    expect(blocksAdministratorSelfDisable('admin-1', 'rider-1', 'suspended')).toBe(false);
+  });
+
   it('keeps legacy Rider profiles with no created_date visible', () => {
     const legacyRider = {
       id: 'legacy-rider',

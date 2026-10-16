@@ -53,6 +53,15 @@ function accountStatus(value: unknown): AccountStatus | null {
   return normalized === 'active' || normalized === 'suspended' || normalized === 'inactive' ? normalized : null;
 }
 
+/** A signed-in administrator must never be able to lock their own Firebase login. */
+export function blocksAdministratorSelfDisable(
+  administratorUid: string,
+  targetUserId: string,
+  status: AccountStatus,
+) {
+  return administratorUid === targetUserId && accountIsDisabled(status);
+}
+
 function accountCollection(accountRole: AccountRole): string {
   return accountRole === 'driver' ? ADMIN_COLLECTIONS.DRIVER_PROFILES : ADMIN_COLLECTIONS.RIDER_PROFILES;
 }
@@ -683,6 +692,17 @@ export function registerAdminAccountRoutes(app: Express) {
     const status = accountStatus(request.body?.status);
     if (!userId || !accountRole || !status) {
       response.status(400).json({ error: 'A valid account and status are required.' });
+      return;
+    }
+
+    // The normal account status controls disable Firebase Auth. Never allow an
+    // authenticated administrator to suspend/deactivate the same UID that is
+    // currently authorizing this dashboard request, otherwise they lose their
+    // own Google/email administrator login.
+    const accessToken = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    const administratorUid = (await getAdminAuth().verifyIdToken(accessToken)).uid;
+    if (blocksAdministratorSelfDisable(administratorUid, userId, status)) {
+      response.status(400).json({ error: 'You cannot suspend or deactivate your own administrator login.' });
       return;
     }
 
