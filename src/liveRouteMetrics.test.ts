@@ -3,8 +3,10 @@ import {
   bookingRouteCacheKey,
   decodeGooglePolyline,
   firestoreSafeLiveRoutePoints,
+  isCurrentRouteRefresh,
   liveRouteOffPathMeters,
   liveRouteTarget,
+  PENDING_ROUTE_REUSE_METERS,
   parseGoogleTrafficRoute,
   parseOsrmRoute,
   preferGoogleRouteWithFastFallback,
@@ -146,6 +148,27 @@ describe('server road route metrics', () => {
     expect(liveRouteOffPathMeters({ latitude: 5.601, longitude: -0.195 }, cachedRoute.metrics.points)).toBeGreaterThan(45);
     expect(shouldReuseCachedRoute(cachedRoute, cachedRoute.targetKey, 1_001, { latitude: 5.60002, longitude: -0.195 })).toBe(true);
     expect(shouldReuseCachedRoute(cachedRoute, cachedRoute.targetKey, 1_001, { latitude: 5.601, longitude: -0.195 })).toBe(false);
+  });
+
+  it('does not hold a pending route request after the Driver has materially moved', () => {
+    const targetKey = routeTargetKey({ latitude: 5.61, longitude: -0.19 });
+    const pendingRoute = {
+      requestedAt: 1_000,
+      targetKey,
+      metrics: null,
+      inFlight: true,
+      requestedFrom: { latitude: 5.6, longitude: -0.19 },
+    };
+
+    expect(PENDING_ROUTE_REUSE_METERS).toBeGreaterThan(0);
+    expect(shouldReuseCachedRoute(pendingRoute, targetKey, 1_001, { latitude: 5.60005, longitude: -0.19 })).toBe(true);
+    expect(shouldReuseCachedRoute(pendingRoute, targetKey, 1_001, { latitude: 5.6004, longitude: -0.19 })).toBe(false);
+  });
+
+  it('rejects a late route response after a newer GPS request owns the ride', () => {
+    expect(isCurrentRouteRefresh(8, 7)).toBe(false);
+    expect(isCurrentRouteRefresh(8, 8)).toBe(true);
+    expect(isCurrentRouteRefresh(undefined, 8)).toBe(false);
   });
 
   it('uses a Driver-approved active stop before the final destination', () => {

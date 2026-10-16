@@ -36,11 +36,23 @@ const COORDINATE_FALLBACK_SPEED_KMH = 22;
 const FAST_GOOGLE_ROUTE_WAIT_MS = 1_500;
 const BOOKING_ROUTE_CACHE_TTL_MS = 20_000;
 const MAX_BOOKING_ROUTE_CACHE_ENTRIES = 120;
-type CachedRoute = { requestedAt: number; targetKey: string; metrics: RoadRouteMetrics | null };
+// When a route call is already running, retain it only for a nearby GPS sample.
+// A materially newer point must replace the pending request so an old road line
+// cannot win a Driver's genuine off-route movement.
+export const PENDING_ROUTE_REUSE_METERS = 20;
+type CachedRoute = {
+  requestedAt: number;
+  targetKey: string;
+  metrics: RoadRouteMetrics | null;
+  requestedFrom: Point;
+  requestId: number;
+  inFlight: boolean;
+};
 type CachedBookingRoute = { expiresAt: number; metrics: RoadRouteMetrics };
 const routeCache = new Map<string, CachedRoute>();
 const bookingRouteCache = new Map<string, CachedBookingRoute>();
 const bookingRouteInFlight = new Map<string, Promise<RoadRouteMetrics | null>>();
+let nextRouteRequestId = 0;
 
 function validPoint(point: Point | null | undefined): point is Point {
   return Boolean(
@@ -154,12 +166,24 @@ export function routeTargetKey(to: Point) {
 
 /** Reuse only same-destination guidance; a pickup-to-trip phase change must route immediately. */
 export function shouldReuseCachedRoute(
-  previous: (Pick<CachedRoute, 'requestedAt' | 'targetKey'> & { metrics?: RoadRouteMetrics | null }) | undefined,
+  previous: (Pick<CachedRoute, 'requestedAt' | 'targetKey'> & {
+    metrics?: RoadRouteMetrics | null;
+    requestedFrom?: Point;
+    inFlight?: boolean;
+  }) | undefined,
   targetKey: string,
   now: number,
   from?: Point,
 ): boolean {
   if (!previous || previous.targetKey !== targetKey || now - previous.requestedAt >= ROUTE_REFRESH_MS) return false;
+
+  // A pending response cannot be treated as a route line. Keep it only while
+  // the Driver has moved a negligible distance; otherwise request from the
+  // newest GPS sample and discard the stale response when it eventually ends.
+  if (previous.inFlight) {
+    if (!from || !previous.requestedFrom) return true;
+    return greatCircleDistanceKm(from, previous.requestedFrom) * 1_000 <= PENDING_ROUTE_REUSE_METERS;
+  }
 
   // Do not hold an eight-second cache window after the Driver has passed the
   // server road line. A fresh road route is then requested by the very next
@@ -169,6 +193,13 @@ export function shouldReuseCachedRoute(
     ? liveRouteOffPathMeters(from, previous.metrics.points)
     : null;
   return offPathMeters === null || offPathMeters <= LIVE_ROUTE_OFF_PATH_METERS;
+}
+
+/** A late routing response must never overwrite a newer GPS route request. */
+export function isCurrentRouteRefresh(currentRequestId: number | undefined, completedRequestId: number) {
+  return Number.isInteger(currentRequestId)
+    && Number.isInteger(completedRequestId)
+    && currentRequestId === completedRequestId;
 }
 
 function boundedRoutePoints(points: RoutePoint[]): RoutePoint[] {
@@ -485,11 +516,29 @@ async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<
   // old pickup route if a provider is temporarily unavailable.
   const sameTargetFallback = previous?.targetKey === targetKey ? previous.metrics : null;
 
-  // Mark the request before awaiting it so duplicate REST/tRPC location paths
-  // cannot fan out multiple routing calls for the same ride in one instance.
-  routeCache.set(rideId, { requestedAt: now, targetKey, metrics: sameTargetFallback });
+  // Mark the request before awaiting it. A later GPS request receives a new
+  // request ID; this older response is then ignored rather than writing a
+  // route from the Driver's previous position over the current one.
+  const requestId = ++nextRouteRequestId;
+  routeCache.set(rideId, {
+    requestedAt: now,
+    targetKey,
+    metrics: sameTargetFallback,
+    requestedFrom: from,
+    requestId,
+    inFlight: true,
+  });
   const metrics = await fetchRoadRoute(from, to);
-  routeCache.set(rideId, { requestedAt: now, targetKey, metrics: metrics || sameTargetFallback });
+  const current = routeCache.get(rideId);
+  if (!isCurrentRouteRefresh(current?.requestId, requestId)) return null;
+  routeCache.set(rideId, {
+    requestedAt: now,
+    targetKey,
+    metrics: metrics || sameTargetFallback,
+    requestedFrom: from,
+    requestId,
+    inFlight: false,
+  });
   return metrics || sameTargetFallback;
 }
 
