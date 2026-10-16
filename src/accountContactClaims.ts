@@ -15,7 +15,7 @@ export class AccountContactConflictError extends Error {
 
   constructor() {
     // Keep this response useful without disclosing which contact or account owns it.
-    super('This phone number or email is already attached to a HY3N account. Sign in to that account or use different contact details.');
+    super('This phone number or email is already attached to another account in this HY3N app. Use different contact details or correct the existing account.');
   }
 }
 
@@ -165,6 +165,35 @@ export async function claimAccountContacts(input: {
         created_date: timestamp,
         updated_date: timestamp,
       });
+    });
+  });
+}
+
+/**
+ * Releases only obsolete same-role contact claims owned by this exact account.
+ * Call this only after the replacement contact claim and profile patch succeed.
+ * It deliberately leaves another role's claim untouched: Rider and Driver
+ * contacts are separate by product policy.
+ */
+export async function releaseAccountContacts(input: {
+  ownerUid: string;
+  role: AccountRole;
+  contacts: AccountContacts;
+}) {
+  const entries = normalizedContactEntries(input.contacts).map((entry) => ({
+    ...entry,
+    claimId: contactClaimDocumentId(input.role, entry.kind, entry.value),
+  }));
+  if (entries.length === 0) return;
+
+  const db: Firestore = getAdminDb();
+  await db.runTransaction(async (transaction) => {
+    const references = entries.map((entry) => db.collection(ADMIN_COLLECTIONS.ACCOUNT_CONTACT_CLAIMS).doc(entry.claimId));
+    const snapshots = await Promise.all(references.map((reference) => transaction.get(reference)));
+    snapshots.forEach((snapshot) => {
+      if (!snapshot.exists) return;
+      const currentOwner = String(snapshot.get('owner_uid') || '').trim();
+      if (currentOwner === input.ownerUid) transaction.delete(snapshot.ref);
     });
   });
 }

@@ -3,12 +3,49 @@ import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin
 import { requireAdministrator } from './adminAuthorization';
 import { accountIsDisabled, accountStatusPatch, type AccountStatus } from './accountLifecycle';
 import { buildDriverFeeBypass, revokeDriverFeeBypass, visibleDriverFeeBypass } from './driverFeeBypass';
+import {
+  AccountContactCapacityError,
+  AccountContactConflictError,
+  claimAccountContacts,
+  normalizeAccountEmail,
+  normalizeAccountPhone,
+  normalizedContactEntries,
+  profileContacts,
+  releaseAccountContacts,
+} from './accountContactClaims';
+import { requiredAccountFullName } from './riderIdentity';
 
 type AccountRole = 'rider' | 'driver';
+
+export type AdminAccountIdentityCorrection = {
+  role: AccountRole;
+  fullName: string;
+  email: string;
+  phone: string;
+  reason: string;
+};
+
+export type AdminAccountIdentityCorrectionResult =
+  | { correction: AdminAccountIdentityCorrection; error: null }
+  | { correction: null; error: string };
 
 function role(value: unknown): AccountRole | null {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === 'rider' || normalized === 'driver' ? normalized : null;
+}
+
+/** Validates the narrow, auditable identity fields that an administrator may correct. */
+export function adminAccountIdentityCorrectionInput(value: Record<string, unknown>): AdminAccountIdentityCorrectionResult {
+  const accountRole = role(value.role);
+  const fullName = requiredAccountFullName(value.fullName);
+  const email = normalizeAccountEmail(value.email);
+  const phone = normalizeAccountPhone(value.phone);
+  const reason = cleanIdentityText(value.reason, 500);
+  if (!accountRole) return { correction: null, error: 'Choose the Rider or Driver account to correct.' };
+  if (!fullName) return { correction: null, error: 'Enter the account holder’s real full name.' };
+  if (!email || !phone) return { correction: null, error: 'Enter a valid email address and Ghana mobile number.' };
+  if (!reason || reason.length < 3) return { correction: null, error: 'Enter a short reason for this account correction.' };
+  return { correction: { role: accountRole, fullName, email, phone, reason }, error: null };
 }
 
 function accountStatus(value: unknown): AccountStatus | null {
@@ -408,6 +445,77 @@ async function setAccountStatus(accountRole: AccountRole, userId: string, status
   return normalizedProfile({ ...newest(records[0], records[records.length - 1]), ...patch }, accountRole);
 }
 
+/** Returns only the fields that actually changed, never the previous values. */
+export function correctedIdentityFields(
+  profile: Record<string, unknown>,
+  correction: Pick<AdminAccountIdentityCorrection, 'fullName' | 'email' | 'phone'>,
+) {
+  const currentName = requiredAccountFullName(profile.full_name ?? profile.name ?? profile.display_name) || '';
+  const currentEmail = normalizeAccountEmail(profile.email) || '';
+  const currentPhone = normalizeAccountPhone(profile.phone ?? profile.phone_number ?? profile.mobile_number) || '';
+  return [
+    ...(currentName !== correction.fullName ? ['full name'] : []),
+    ...(currentEmail !== correction.email ? ['email'] : []),
+    ...(currentPhone !== correction.phone ? ['phone'] : []),
+  ];
+}
+
+async function correctAccountIdentity(
+  correction: AdminAccountIdentityCorrection,
+  userId: string,
+  administrator: string,
+) {
+  const records = await profilesForUser(correction.role, userId);
+  if (records.length === 0) throw new Error('Account profile was not found.');
+
+  const current = records.reduce((latest, profile) => newest(latest, profile));
+  const changedFields = correctedIdentityFields(current, correction);
+  if (changedFields.length === 0) {
+    throw new Error('No identity or contact value has changed.');
+  }
+
+  const priorEntries = records.flatMap((profile) => normalizedContactEntries(profileContacts(profile)));
+  const currentEntries = new Set(normalizedContactEntries({ email: correction.email, phone: correction.phone })
+    .map((entry) => `${entry.kind}:${entry.value}`));
+  const obsoleteContacts = {
+    email: priorEntries.find((entry) => entry.kind === 'email' && !currentEntries.has(`${entry.kind}:${entry.value}`))?.value || null,
+    phone: priorEntries.find((entry) => entry.kind === 'phone' && !currentEntries.has(`${entry.kind}:${entry.value}`))?.value || null,
+  };
+  const now = new Date().toISOString();
+  const patch = {
+    user_id: userId,
+    full_name: correction.fullName,
+    email: correction.email,
+    phone: correction.phone,
+    identity_corrected_at: now,
+    identity_corrected_by: administrator,
+    contact_claimed_at: now,
+  };
+
+  // The claim occurs before profile writes, so a contact cannot race another
+  // same-app account. Do not change Firebase Auth login identifiers here:
+  // Rider and Driver can intentionally share a contact but Firebase Auth is
+  // project-wide; this operation corrects the role-specific profile record.
+  await claimAccountContacts({ ownerUid: userId, role: correction.role, contacts: correction });
+  await Promise.all(records.map((profile) => adminFirestore.set(
+    accountCollection(correction.role),
+    String(profile.id),
+    patch,
+  )));
+  await adminFirestore.set(accountCollection(correction.role), userId, patch);
+  await releaseAccountContacts({ ownerUid: userId, role: correction.role, contacts: obsoleteContacts });
+  await adminFirestore.create('account_lifecycle_events', {
+    user_id: userId,
+    account_role: correction.role,
+    action: 'account_identity_corrected',
+    actor_type: 'administrator',
+    actor_id: administrator,
+    correction_reason: correction.reason,
+    corrected_fields: changedFields,
+  });
+  return normalizedProfile({ ...current, ...patch }, correction.role);
+}
+
 function accountCreateInput(input: Record<string, any>) {
   const accountRole = role(input.role);
   if (!accountRole) throw new Error('Choose Rider or Driver.');
@@ -586,6 +694,38 @@ export function registerAdminAccountRoutes(app: Express) {
     }
   });
 
+  /**
+   * Admin-only correction for a genuine profile identity/contact mistake. This
+   * deliberately excludes IDs, roles, wallet/payment data, trip history,
+   * Driver verification, vehicle fields, and account-status controls.
+   */
+  app.patch('/api/admin/accounts/:userId/identity', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+    const userId = validUserId(request.params.userId);
+    const parsed = adminAccountIdentityCorrectionInput(request.body || {});
+    if (!userId || !parsed.correction) {
+      response.status(400).json({ error: !userId ? 'A valid account is required.' : parsed.error });
+      return;
+    }
+
+    try {
+      const account = await correctAccountIdentity(parsed.correction, userId, adminEmail);
+      response.json({ success: true, account });
+    } catch (error: any) {
+      if (error instanceof AccountContactConflictError) {
+        response.status(409).json({ error: error.message, code: error.code });
+        return;
+      }
+      if (error instanceof AccountContactCapacityError) {
+        response.status(503).json({ error: error.message, code: error.code });
+        return;
+      }
+      const message = error instanceof Error ? error.message : 'The account correction could not be saved.';
+      response.status(message === 'Account profile was not found.' ? 404 : 400).json({ error: message });
+    }
+  });
+
   app.get('/api/admin/accounts/:userId/lifecycle', async (request: Request, response: Response) => {
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;
@@ -609,6 +749,10 @@ export function registerAdminAccountRoutes(app: Express) {
           actorId: String(event.actor_id || ''),
           retained: event.retained === true,
           retentionReviewAfter: event.retention_review_after || null,
+          correctionReason: event.correction_reason || null,
+          correctedFields: Array.isArray(event.corrected_fields)
+            ? event.corrected_fields.filter((field: unknown) => typeof field === 'string').slice(0, 3)
+            : [],
           createdAt: event.created_date || null,
         })),
       });

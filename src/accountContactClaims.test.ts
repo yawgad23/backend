@@ -23,6 +23,12 @@ describe('account contact claims', () => {
     expect(contactClaimDocumentId('rider', 'email', email!)).not.toBe(contactClaimDocumentId('driver', 'email', email!));
   });
 
+  it('keeps corrected-contact ownership scoped to the same app role', () => {
+    const contact = '+233541220725';
+    expect(contactClaimDocumentId('rider', 'phone', contact))
+      .not.toBe(contactClaimDocumentId('driver', 'phone', contact));
+  });
+
   it('indexes duplicate legacy contacts across Rider and Driver profiles', () => {
     const owners = legacyContactOwners([
       { id: 'rider-uid', user_id: 'rider-uid', email: 'Rider@example.com', phone: '0241220725' },
