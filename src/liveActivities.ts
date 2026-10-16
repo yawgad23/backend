@@ -13,6 +13,7 @@ const FULL_REFRESH_INTERVAL_MS = 45_000;
 const MEANINGFUL_PROGRESS_DELTA = 0.003;
 const MAX_ACTIVE_TRIP_PROGRESS = 0.98;
 export const HY3N_LIVE_ACTIVITY_IMAGE_NAME = 'hy3n_trip_car';
+export const HY3N_LIVE_ACTIVITY_CONTENT_VERSION = 'pickup-v2';
 const activityTokenInput = z.object({
   rideId: z.string().min(1).max(160),
   activityId: z.string().min(1).max(220),
@@ -123,6 +124,14 @@ export function liveActivityPushPriority(input: {
   // for an explicit state change or real Driver route movement; periodic ETA
   // refreshes stay at 5 so the activity is not throttled.
   return input.force || next - previous >= MEANINGFUL_PROGRESS_DELTA ? '10' : '5';
+}
+
+/**
+ * Makes a one-time, prompt content correction for an already-visible Lock
+ * Screen card without increasing the normal location update cadence.
+ */
+export function liveActivityContentNeedsRefresh(version: unknown) {
+  return cleanText(version, '', 40) !== HY3N_LIVE_ACTIVITY_CONTENT_VERSION;
 }
 
 async function authenticatedUid(req: Request, res: Response) {
@@ -304,6 +313,7 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
   const candidateActivities = activities.filter((activity) => {
     const lastPushAt = Date.parse(String(activity.last_push_at || ''));
     return options.force
+      || liveActivityContentNeedsRefresh(activity.content_version)
       || ['completed', 'cancelled'].includes(String(ride.status))
       || !Number.isFinite(lastPushAt)
       || now - lastPushAt >= MOVEMENT_UPDATE_INTERVAL_MS;
@@ -317,7 +327,9 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
       options.driverLocation || maybePoint(ride.driver?.location) || maybePoint(ride.driver_location) || undefined,
       Number(activity.last_progress || 0),
     );
-    const mustDeliver = options.force || presentation.event === 'end';
+    const mustDeliver = options.force
+      || presentation.event === 'end'
+      || liveActivityContentNeedsRefresh(activity.content_version);
     if (!shouldDeliverLiveActivityUpdate({
       lastPushAt: activity.last_push_at,
       now,
@@ -372,6 +384,7 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
         last_push_at: new Date(now).toISOString(),
         last_status: ride.status,
         last_progress: presentation.progress,
+        content_version: HY3N_LIVE_ACTIVITY_CONTENT_VERSION,
       });
       if (presentation.event === 'end') {
         await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, { active: false, ended_at: new Date(now).toISOString() });

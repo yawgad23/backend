@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HY3N_LIVE_ACTIVITY_CONTENT_VERSION,
   HY3N_LIVE_ACTIVITY_IMAGE_NAME,
+  liveActivityContentNeedsRefresh,
   liveActivityPushPriority,
   liveActivityPresentation,
   liveActivityTripProgress,
@@ -10,6 +12,12 @@ import {
 describe('Rider Live Activity trip progress', () => {
   it('uses the owned HY3N vehicle asset for native Island updates', () => {
     expect(HY3N_LIVE_ACTIVITY_IMAGE_NAME).toBe('hy3n_trip_car');
+  });
+
+  it('marks only outdated Lock Screen content for a one-time refresh', () => {
+    expect(liveActivityContentNeedsRefresh(undefined)).toBe(true);
+    expect(liveActivityContentNeedsRefresh('pickup-v1')).toBe(true);
+    expect(liveActivityContentNeedsRefresh(HY3N_LIVE_ACTIVITY_CONTENT_VERSION)).toBe(false);
   });
 
   it('advances only as the server road distance to destination shrinks', () => {
