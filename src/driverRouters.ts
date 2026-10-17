@@ -27,6 +27,7 @@ import {
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
 import { driverOfferView } from './driverDeliveryOffer';
+import { driverCanReviewOffer } from './rideOfferLifecycle';
 import { canPersistDriverTripMeter } from './driverTripLifecycle';
 import {
   currentDriverPlatformFeeAccess,
@@ -325,7 +326,7 @@ export function canPassDriverPlatformFeeGate(
     || isGlobalDriverFeeBypassActive(globalFeeBypass, date);
 }
 
-async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<string, any> | null) {
+export async function hasCurrentPlatformFee(driverId: string, knownProfile?: Record<string, any> | null) {
   // Keep the offer listener aligned with the app's payment gate. When a test
   // environment explicitly disables the gate, offers are still allowed; in
   // production, a paid commission remains valid for 24 hours.
@@ -583,13 +584,20 @@ export const driverTrips = router({
     const driverLocation = locationOf(driverProfile);
     if (!driverLocation) return { offers: [] };
 
-    // Restrict the database query to live searches before local category and
-    // distance filtering. The index-backed query avoids reading unrelated
-    // completed rides every time an online Driver polls for an offer.
-    const recentRides = await currentSearchingRides();
+    // A Driver may review only a server-targeted offer. This direct equality
+    // query deliberately avoids the former shared searching-ride scan, which
+    // could expose the same request to several Drivers at once.
+    const recentRides = await adminFirestore.list(
+      ADMIN_COLLECTIONS.RIDES,
+      { offered_driver_id: input.driverId },
+      null,
+      'desc',
+      5,
+    );
     const nearbyOffers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
       .filter((ride) => !isRideSearchExpired(ride))
+      .filter((ride) => driverCanReviewOffer(ride, input.driverId))
       .filter((ride) => !Array.isArray(ride.declined_by_driver_ids) || !ride.declined_by_driver_ids.includes(input.driverId))
       .filter((ride) => hasCategory(driverProfile, ride.category))
       .map((ride) => ({ ...ride, pickup_distance_km: pickupDistanceKm(ride, driverLocation) }))
@@ -629,20 +637,13 @@ export const driverTrips = router({
     if (!hasFee) {
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }
-    if (isRideSearchExpired(ride)) {
-      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, expiredRideSearchPatch());
-      throw new Error('This ride request has expired.');
-    }
     if (input.decision === 'decline') {
-      const declined = Array.isArray(ride.declined_by_driver_ids) ? ride.declined_by_driver_ids : [];
-      const updated = withRide(ride, {
-        status: 'searching',
-        driver_id: null,
-        declined_by_driver_ids: [...new Set([...declined, input.driverId])],
-      });
-      await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+      const updated = await adminFirestore.declineTargetedSearchingRide(input.rideId, input.driverId);
+      if ((updated as Record<string, any>).status === 'cancelled') {
+        throw new Error('This ride request has expired.');
+      }
       await recordRideEvent({ rideId: input.rideId, type: 'offer_declined', actorId: input.driverId, actorRole: 'driver', status: updated.status });
-      return { success: true, ride: updated, decision: input.decision };
+      return { success: true, decision: input.decision };
     }
     if (input.queueAfterRideId) {
       const currentRide = await rideFor(input.driverId, input.queueAfterRideId);
@@ -715,7 +716,7 @@ export const driverTrips = router({
       matched_at: acceptedAt,
       queued_after_ride_id: input.queueAfterRideId || null,
     };
-    const updated = await adminFirestore.claimSearchingRide(input.rideId, input.driverId, patch);
+    const updated = await adminFirestore.claimTargetedSearchingRide(input.rideId, input.driverId, patch);
     if ((updated as Record<string, any>).status === 'cancelled') {
       throw new Error('This ride request has expired.');
     }
@@ -1209,7 +1210,10 @@ export const driverFinance = router({
 export const driverPerformance = router({ getOverview: driverProcedure(driverIdInput).query(async ({ input }) => { const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: input.driverId }, 'created_date', 'desc', 500); const completed = rides.filter(r => r.status === 'completed').length; const cancelled = rides.filter(r => r.cancelled_by === 'driver').length; const offered = rides.filter(r => r.driver_id === input.driverId).length; const ratings = rides.map(r => Number(r.driver_rating)).filter(n => Number.isFinite(n) && n > 0); return { metrics: { acceptanceRate: offered ? Number((completed / offered * 100).toFixed(1)) : 0, cancellationRate: rides.length ? Number((cancelled / rides.length * 100).toFixed(1)) : 0, rating: ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0, ratingsCount: ratings.length, completedTrips: completed } }; }) });
 
 export const driverScheduling = router({
-  listAvailable: driverProcedure(z.object({ driverId: z.string(), limit: z.number().optional() })).query(async ({ input }) => ({ rides: await adminFirestore.list(ADMIN_COLLECTIONS.SCHEDULED_RIDES, {}, 'scheduled_pickup_at', 'asc', input.limit || 30) })),
+  listAvailable: driverProcedure(z.object({ driverId: z.string(), limit: z.number().optional() })).query(async ({ input }) => ({
+    rides: (await adminFirestore.list(ADMIN_COLLECTIONS.SCHEDULED_RIDES, {}, 'scheduled_pickup_at', 'asc', input.limit || 30))
+      .map((ride) => driverOfferView(ride)),
+  })),
   reserve: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), driverName: z.string().optional() })).mutation(async ({ input }) => { const ride = await adminFirestore.get(ADMIN_COLLECTIONS.SCHEDULED_RIDES, input.rideId) || await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId); if (!ride) throw new Error('Scheduled ride not found.'); const updated = withRide(ride, { driver_id: input.driverId, driver_name: input.driverName, status: 'driver_scheduled' }); await adminFirestore.update(ride.collection || ADMIN_COLLECTIONS.SCHEDULED_RIDES, input.rideId, updated).catch(async () => { await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); }); return { success: true, ride: updated }; }),
   release: driverProcedure(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => { const ride = await adminFirestore.get(ADMIN_COLLECTIONS.SCHEDULED_RIDES, input.rideId) || await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId); if (!ride) throw new Error('Scheduled ride not found.'); const updated = withRide(ride, { driver_id: null, driver_name: null, status: 'scheduled' }); await adminFirestore.update(ADMIN_COLLECTIONS.SCHEDULED_RIDES, input.rideId, updated).catch(async () => { await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated); }); return { success: true, ride: updated }; }),
 });

@@ -3,7 +3,7 @@ import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/fire
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
 import { sendRideChatPush, sendRideStatusPush } from "./pushNotifications";
-import { sendDriverRideOfferPush } from './driverOfferPush';
+import { dispatchDueDriverRideOffers, dispatchNextDriverRideOffer } from './driverOfferDispatch';
 import { runDailyFinancialReconciliation } from './financialReconciliation';
 
 // Force deploy: 2026-07-18T17:10:00Z
@@ -79,9 +79,9 @@ export const chatMessagePush = onDocumentCreated(
 );
 
 /**
- * A new searching ride wakes nearby compatible Drivers immediately. Full ride
- * data is still read through the authenticated Driver offers endpoint, so a
- * push cannot expose a Rider's private details or bypass server eligibility.
+ * A new searching request is reserved for one nearby compatible Driver before
+ * any push is sent. The database lease, not the push delivery, is authoritative
+ * for who can review or accept the request.
  */
 export const driverRideOfferPush = onDocumentCreated(
   {
@@ -90,7 +90,30 @@ export const driverRideOfferPush = onDocumentCreated(
   },
   async (event) => {
     if (!event.data) return;
-    await sendDriverRideOfferPush(event.params.rideId, event.data.data());
+    await dispatchNextDriverRideOffer(event.params.rideId);
+  },
+);
+
+/**
+ * An explicit decline clears the current offer lease; this event immediately
+ * advances the same Rider request to the next nearby eligible Driver. Other
+ * updates are ignored so map/location writes cannot create duplicate offers.
+ */
+export const driverRideOfferRedispatch = onDocumentUpdated(
+  {
+    document: 'rides/{rideId}',
+    region: 'europe-west1',
+  },
+  async (event) => {
+    if (!event.data) return;
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const wasTargeted = Boolean(String(before.offered_driver_id || '').trim());
+    const isTargeted = Boolean(String(after.offered_driver_id || '').trim());
+    const stillSearching = String(after.status || '').toLowerCase() === 'searching' && !after.driver_id;
+    if (stillSearching && wasTargeted && !isTargeted) {
+      await dispatchNextDriverRideOffer(event.params.rideId);
+    }
   },
 );
 
@@ -130,5 +153,31 @@ export const dailyFinancialLedgerWalletReconciliation = onSchedule(
   },
   async () => {
     await runDailyFinancialReconciliation();
+  },
+);
+
+/**
+ * Recovery for unanswered offers. The normal decline trigger dispatches at
+ * once; this bounded server job moves a request on when the targeted Driver's
+ * phone is closed or never responds. It never touches payment, fare or Rider
+ * data and the transaction refuses to advance a still-valid offer lease.
+ */
+export const dueDriverRideOfferDispatch = onSchedule(
+  {
+    schedule: 'every 1 minutes',
+    timeZone: 'Africa/Accra',
+    region: 'europe-west1',
+    timeoutSeconds: 120,
+    memory: '256MiB',
+    maxInstances: 1,
+    retryCount: 3,
+    maxRetrySeconds: 300,
+    minBackoffSeconds: 15,
+    maxBackoffSeconds: 60,
+  },
+  async () => {
+    const result = await dispatchDueDriverRideOffers();
+    if (result.failures) console.error('[DriverOffers] Due-offer recovery completed with failures', result);
+    else console.info('[DriverOffers] Due-offer recovery completed', result);
   },
 );

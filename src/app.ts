@@ -939,6 +939,7 @@ export function createApp(): Express {
         pickup_code: pickupCode,
         ride_pin: pickupCode,
         status: 'searching',
+        search_started_at: now,
         search_expires_at: searchExpiresAt,
         driver_id: null,
         driver: null,

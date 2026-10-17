@@ -2,11 +2,12 @@ import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
 import { driverCanServeRideCategory } from './driverRouters';
 import { isOnlineWithFreshLocation } from './driverPresence';
 import { isExpoPushToken } from './pushNotifications';
+import { excludedDriverIdsForOffer } from './rideOfferLifecycle';
 
 const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
-const MAX_DRIVER_OFFER_RECIPIENTS = 12;
+const MAX_DRIVER_OFFER_CANDIDATES = 24;
 
-type DriverPresence = Record<string, unknown> & {
+export type DriverPresence = Record<string, unknown> & {
   id: string;
   user_id?: unknown;
   current_location?: unknown;
@@ -58,16 +59,17 @@ function configuredPickupRadiusKm(driver: DriverPresence): number {
 }
 
 /**
- * Selects only fresh, category-compatible Drivers from minimal presence data.
- * The authoritative accept endpoint still rechecks approval, availability,
- * platform-fee eligibility and atomic ride assignment before a ride is matched.
+ * Ranks fresh, category-compatible Drivers from minimal presence data. The
+ * dispatcher reserves only the first fee-eligible candidate; the downstream
+ * push sender delivers only to that persisted single recipient.
  */
-export function driverOfferRecipients(ride: Record<string, unknown>, presences: DriverPresence[], now = Date.now()): string[] {
-  const excludedDriverIds = new Set(
-    Array.isArray(ride.declined_by_driver_ids)
-      ? ride.declined_by_driver_ids.map((value) => cleanText(value)).filter(Boolean)
-      : [],
-  );
+export function driverOfferRecipients(
+  ride: Record<string, unknown>,
+  presences: DriverPresence[],
+  now = Date.now(),
+  maximum = 1,
+): string[] {
+  const excludedDriverIds = new Set(excludedDriverIdsForOffer(ride));
   return presences
     .filter((presence) => isOnlineWithFreshLocation(presence as Record<string, any>, now))
     .filter((presence) => driverCanServeRideCategory(presence as Record<string, any>, ride.category))
@@ -79,7 +81,7 @@ export function driverOfferRecipients(ride: Record<string, unknown>, presences: 
     }))
     .filter((candidate) => candidate.uid && candidate.distanceKm !== null && candidate.distanceKm <= candidate.radiusKm)
     .sort((left, right) => Number(left.distanceKm) - Number(right.distanceKm))
-    .slice(0, MAX_DRIVER_OFFER_RECIPIENTS)
+    .slice(0, Math.max(1, Math.min(MAX_DRIVER_OFFER_CANDIDATES, Math.floor(maximum) || 1)))
     .map((candidate) => candidate.uid);
 }
 
@@ -93,16 +95,11 @@ export async function sendDriverRideOfferPush(rideId: string, rawRide: Record<st
     return { attempted: 0, sent: 0 };
   }
 
-  try {
-    const presences = await adminFirestore.list('driver_presence', {}, null, 'desc', 500) as DriverPresence[];
-    const recipientIds = driverOfferRecipients(rawRide, presences);
-    if (recipientIds.length === 0) return { attempted: 0, sent: 0 };
+  const offeredDriverId = cleanText(rawRide.offered_driver_id);
+  if (!offeredDriverId) return { attempted: 0, sent: 0 };
 
-    const deviceReads = await Promise.all(recipientIds.map((uid) => (
-      adminFirestore.list(ADMIN_COLLECTIONS.PUSH_DEVICES, { uid }, null, 'desc', 20)
-    )));
-    const devices = deviceReads
-      .flat()
+  try {
+    const devices = (await adminFirestore.list(ADMIN_COLLECTIONS.PUSH_DEVICES, { uid: offeredDriverId }, null, 'desc', 20))
       .filter((device): device is PushDevice => (
         cleanText(device.role).toLowerCase() === 'driver'
         && device.active === true

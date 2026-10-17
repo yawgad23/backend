@@ -38,7 +38,7 @@ describe('Driver ride-offer push recipients', () => {
     ], now)).toEqual(['driver-1']);
   });
 
-  it('keeps recipient selection ordered by pickup distance and bounded', () => {
+  it('selects exactly the nearest eligible Driver for a sequential offer', () => {
     const drivers = Array.from({ length: 20 }, (_, index) => presence({
       id: `driver-${index}`,
       user_id: `driver-${index}`,
@@ -49,9 +49,21 @@ describe('Driver ride-offer push recipients', () => {
       },
     }));
     const recipients = driverOfferRecipients(ride, drivers, now);
-    expect(recipients).toHaveLength(12);
+    expect(recipients).toHaveLength(1);
     expect(recipients[0]).toBe('driver-0');
-    expect(recipients[11]).toBe('driver-11');
+  });
+
+  it('provides an ordered candidate list only to the server dispatcher, not the push sender', () => {
+    const drivers = Array.from({ length: 3 }, (_, index) => presence({
+      id: `driver-${index}`,
+      user_id: `driver-${index}`,
+      current_location: {
+        latitude: 5.6037 + (index + 1) / 10_000,
+        longitude: -0.187,
+        recorded_at: new Date(now - 20_000).toISOString(),
+      },
+    }));
+    expect(driverOfferRecipients(ride, drivers, now, 3)).toEqual(['driver-0', 'driver-1', 'driver-2']);
   });
 
   it('does not wake a Driver who cancelled the same request during re-dispatch', () => {
@@ -63,13 +75,13 @@ describe('Driver ride-offer push recipients', () => {
     ], now)).toEqual(['driver-2']);
   });
 
-  it('sends Car Delivery requests only to opted-in car Drivers, including legacy Executive cars', () => {
+  it('selects the nearest opted-in Car Delivery Driver, including legacy Executive cars', () => {
     const carDeliveryRide = { ...ride, category: 'car_delivery' };
     expect(driverOfferRecipients(carDeliveryRide, [
       presence({ id: 'legacy-executive', user_id: 'legacy-executive', ride_categories: ['executive'] }),
       presence({ id: 'car-delivery', user_id: 'car-delivery', ride_categories: ['car_delivery'] }),
       presence({ id: 'standard-only', user_id: 'standard-only', ride_categories: ['standard'] }),
       presence({ id: 'parcel-driver', user_id: 'parcel-driver', service_type: 'delivery', ride_categories: ['express_delivery'] }),
-    ], now)).toEqual(['legacy-executive', 'car-delivery']);
+    ], now)).toEqual(['legacy-executive']);
   });
 });

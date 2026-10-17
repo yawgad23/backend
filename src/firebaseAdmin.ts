@@ -11,6 +11,13 @@ import { initializeApp, getApps, cert, type App } from 'firebase-admin/app';
 import { FieldPath, getFirestore, type Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
+import {
+  declinedDriverOfferPatch,
+  driverCanReviewOffer,
+  nextDriverOfferPatch,
+  shouldDispatchDriverOffer,
+  waitingForDriverOfferPatch,
+} from './rideOfferLifecycle';
 import { driverTripCountProfilePatch, nextCompletedTripCount } from './driverTripCounts';
 import {
   buildDriverPlatformFeeConfirmation,
@@ -424,6 +431,117 @@ export const adminFirestore = {
         const payload = { ...data, driver_id: driverId, updated_date: new Date().toISOString() };
         transaction.update(ref, payload);
         return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
+   * Claims a searching ride only for its current server-selected recipient.
+   * Legacy open searches remain compatible until the dispatcher writes the
+   * first target, but a late accept can never claim a newer Driver's offer.
+   */
+  async claimTargetedSearchingRide(rideId: string, driverId: string, data: Record<string, any>) {
+    return withFirestoreErrorHandling(`claimTargetedSearchingRide(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (ride.status !== 'searching' || ride.driver_id) {
+          throw new Error('This ride has already been accepted by another driver.');
+        }
+        if (isRideSearchExpired(ride)) {
+          const expired = expiredRideSearchPatch();
+          transaction.update(ref, expired);
+          return { ...ride, ...expired };
+        }
+        if (!driverCanReviewOffer(ride, driverId)) {
+          throw new Error('This ride offer is no longer available to you.');
+        }
+        const payload = {
+          ...data,
+          driver_id: driverId,
+          offered_driver_id: null,
+          driver_offer_status: 'accepted',
+          driver_offer_expires_at: null,
+          driver_offer_retry_at: null,
+          updated_date: new Date().toISOString(),
+        };
+        transaction.update(ref, payload);
+        return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
+   * Records a decline only while this Driver owns the live targeted offer.
+   * The document remains searching; the server handoff trigger selects the
+   * next nearby eligible Driver without altering the locked trip data.
+   */
+  async declineTargetedSearchingRide(rideId: string, driverId: string) {
+    return withFirestoreErrorHandling(`declineTargetedSearchingRide(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error('Ride not found.');
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (ride.status !== 'searching' || ride.driver_id) {
+          throw new Error('This ride is no longer available to decline.');
+        }
+        if (isRideSearchExpired(ride)) {
+          const expired = expiredRideSearchPatch();
+          transaction.update(ref, expired);
+          return { ...ride, ...expired };
+        }
+        if (!driverCanReviewOffer(ride, driverId)) {
+          throw new Error('This ride offer is no longer available to you.');
+        }
+        const patch = declinedDriverOfferPatch(ride, driverId);
+        transaction.update(ref, patch);
+        return { ...ride, ...patch };
+      });
+    });
+  },
+
+  /**
+   * Atomically reserves one searching request for the closest currently
+   * eligible candidate. Competing triggers observe the new target and return
+   * it unchanged, so they cannot send an offer to two Drivers at once.
+   */
+  async targetNextSearchingRideOffer(rideId: string, candidateDriverIds: string[]) {
+    return withFirestoreErrorHandling(`targetNextSearchingRideOffer(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) return { changed: false, dispatched: false, ride: null as Record<string, any> | null };
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (String(ride.status || '').toLowerCase() !== 'searching' || ride.driver_id) {
+          return { changed: false, dispatched: false, ride };
+        }
+        if (isRideSearchExpired(ride)) {
+          const expired = expiredRideSearchPatch();
+          transaction.update(ref, expired);
+          return { changed: true, dispatched: false, ride: { ...ride, ...expired } };
+        }
+        if (!shouldDispatchDriverOffer(ride)) {
+          return { changed: false, dispatched: false, ride };
+        }
+
+        const nextDriverId = candidateDriverIds
+          .map((id) => String(id || '').trim())
+          .find(Boolean);
+        const patch = nextDriverId
+          ? nextDriverOfferPatch(ride, nextDriverId)
+          : waitingForDriverOfferPatch(ride);
+        transaction.update(ref, patch);
+        return {
+          changed: true,
+          dispatched: Boolean(nextDriverId),
+          ride: { ...ride, ...patch },
+        };
       });
     });
   },
