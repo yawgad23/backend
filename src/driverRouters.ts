@@ -79,6 +79,12 @@ function withRide(ride: Record<string, any>, patch: Record<string, any>): Record
   return { ...ride, ...patch, updated_date: now() };
 }
 
+/** A late decline is terminal after the offer has expired or been handed off. */
+export function isTerminalDriverOfferDeclineError(error: unknown): boolean {
+  const message = String((error as { message?: unknown } | null)?.message || error || '').toLowerCase();
+  return /no longer available to decline|offer is no longer available to you/.test(message);
+}
+
 function publishLiveActivity(ride: Record<string, any>, force = false) {
   // The ride write is authoritative and already delivered through Firestore.
   // ActivityKit is a supplementary presentation: never hold a Driver action
@@ -637,19 +643,27 @@ export const driverTrips = router({
     const driverProfile = await profile(input.driverId);
     if (!isApprovedDriverProfile(driverProfile)) throw approvalRequiredError();
     if (!isOnline(driverProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
-    // The fee gate and ride record do not depend on one another. Reading them
-    // together removes one Firestore round trip from the Driver's Accept tap.
-    const [hasFee, ride] = await Promise.all([
-      input.decision === 'accept'
-        ? hasCurrentPlatformFee(input.driverId, driverProfile)
-        : Promise.resolve(true),
-      rideFor(input.driverId, input.rideId),
-    ]);
+    // A decline is settled solely by its atomic targeted-offer transaction.
+    // Only an Accept needs the current platform-fee entitlement check.
+    const hasFee = input.decision === 'accept'
+      ? await hasCurrentPlatformFee(input.driverId, driverProfile)
+      : true;
     if (!hasFee) {
       throw new Error('Pay today’s platform fee before accepting ride requests.');
     }
     if (input.decision === 'decline') {
-      const updated = await adminFirestore.declineTargetedSearchingRide(input.rideId, input.driverId);
+      let updated: Record<string, any>;
+      try {
+        updated = await adminFirestore.declineTargetedSearchingRide(input.rideId, input.driverId);
+      } catch (error) {
+        // An old card can outlive a server handoff by one UI frame. The current
+        // request was never changed by this Driver, so acknowledge this terminal
+        // tap without exposing a misleading client failure.
+        if (isTerminalDriverOfferDeclineError(error)) {
+          return { success: true, decision: 'expired' as const };
+        }
+        throw error;
+      }
       if ((updated as Record<string, any>).status === 'cancelled') {
         // The overall Rider search elapsed before this Driver's tap reached the
         // server. The transaction has already closed it safely, so this is a
@@ -659,6 +673,7 @@ export const driverTrips = router({
       await recordRideEvent({ rideId: input.rideId, type: 'offer_declined', actorId: input.driverId, actorRole: 'driver', status: updated.status });
       return { success: true, decision: input.decision };
     }
+    const ride = await rideFor(input.driverId, input.rideId);
     if (input.queueAfterRideId) {
       const currentRide = await rideFor(input.driverId, input.queueAfterRideId);
       if (currentRide.status !== 'in_progress') {
