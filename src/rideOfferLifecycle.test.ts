@@ -6,6 +6,7 @@ import {
   isCurrentDriverOffer,
   nextDriverOfferPatch,
   shouldDispatchDriverOffer,
+  timedOutDriverOfferPatch,
   waitingForDriverOfferPatch,
 } from './rideOfferLifecycle';
 
@@ -50,6 +51,14 @@ describe('server-owned Driver offer lifecycle', () => {
     });
     expect(driverCanReviewOffer({ ...first, ...next }, 'driver-1', startedAt + DRIVER_OFFER_RESPONSE_MS + 1)).toBe(false);
     expect(driverCanReviewOffer({ ...first, ...next }, 'driver-2', startedAt + DRIVER_OFFER_RESPONSE_MS + 1)).toBe(true);
+  });
+
+  it('marks an elapsed lease ready for immediate server handoff when its Driver is still polling', () => {
+    const first = { ...baseRide, ...nextDriverOfferPatch(baseRide, 'driver-1', new Date(startedAt)) };
+    const timedOut = { ...first, ...timedOutDriverOfferPatch(first, new Date(startedAt + DRIVER_OFFER_RESPONSE_MS)) };
+    expect(timedOut).toMatchObject({ offered_driver_id: null, driver_offer_status: 'timed_out' });
+    expect(shouldDispatchDriverOffer(timedOut, startedAt + DRIVER_OFFER_RESPONSE_MS)).toBe(true);
+    expect(driverCanReviewOffer(timedOut, 'driver-1', startedAt + DRIVER_OFFER_RESPONSE_MS)).toBe(false);
   });
 
   it('advances immediately after an explicit decline but does not re-offer the same request', () => {

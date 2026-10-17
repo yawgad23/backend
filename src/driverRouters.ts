@@ -27,7 +27,7 @@ import {
 import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
 import { authorizeDriverRiderRating, riderRatingSummary } from './driverRiderRatings';
 import { driverOfferView } from './driverDeliveryOffer';
-import { driverCanReviewOffer } from './rideOfferLifecycle';
+import { driverCanReviewOffer, driverOfferExpiresAt } from './rideOfferLifecycle';
 import { canPersistDriverTripMeter } from './driverTripLifecycle';
 import {
   currentDriverPlatformFeeAccess,
@@ -594,6 +594,17 @@ export const driverTrips = router({
       'desc',
       5,
     );
+    // A visible Driver app polls every two seconds. Once its persisted offer
+    // deadline is past, retire only that matching lease in a transaction. The
+    // update trigger then dispatches the next Driver immediately; the schedule
+    // handles the same condition when this phone is closed.
+    const currentTime = Date.now();
+    await Promise.all(recentRides
+      .filter((ride) => {
+        const expiresAt = driverOfferExpiresAt(ride);
+        return expiresAt !== null && currentTime >= expiresAt;
+      })
+      .map((ride) => adminFirestore.expireTargetedSearchingRideOffer(String(ride.id), input.driverId)));
     const nearbyOffers = recentRides
       .filter((ride) => ride.status === 'searching' && !ride.driver_id)
       .filter((ride) => !isRideSearchExpired(ride))

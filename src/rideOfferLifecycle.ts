@@ -138,6 +138,21 @@ export function declinedDriverOfferPatch(ride: RideRecord, driverId: string, cur
   };
 }
 
+/**
+ * Retires an unanswered targeted lease. The current Driver has already been
+ * recorded in offered_to_driver_ids, so the next dispatch cannot send the
+ * same request back to them. A still-open Driver app reaches this through its
+ * authenticated offer poll; the scheduled worker is the closed-phone fallback.
+ */
+export function timedOutDriverOfferPatch(ride: RideRecord, currentTime = new Date()): Record<string, unknown> {
+  return {
+    ...waitingForDriverOfferPatch(ride, currentTime),
+    driver_offer_status: 'timed_out',
+    driver_offer_retry_at: currentTime.toISOString(),
+    last_driver_offer_timed_out_at: currentTime.toISOString(),
+  };
+}
+
 /** Determines whether the scheduler or an expired Driver poll should advance an open search. */
 export function shouldDispatchDriverOffer(ride: RideRecord, currentTime = Date.now()): boolean {
   if (text(ride.status).toLowerCase() !== 'searching' || text(ride.driver_id)) return false;

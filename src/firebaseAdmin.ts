@@ -14,8 +14,10 @@ import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry'
 import {
   declinedDriverOfferPatch,
   driverCanReviewOffer,
+  driverOfferExpiresAt,
   nextDriverOfferPatch,
   shouldDispatchDriverOffer,
+  timedOutDriverOfferPatch,
   waitingForDriverOfferPatch,
 } from './rideOfferLifecycle';
 import { driverTripCountProfilePatch, nextCompletedTripCount } from './driverTripCounts';
@@ -501,6 +503,36 @@ export const adminFirestore = {
         const patch = declinedDriverOfferPatch(ride, driverId);
         transaction.update(ref, patch);
         return { ...ride, ...patch };
+      });
+    });
+  },
+
+  /**
+   * Retires only this Driver's elapsed offer lease. A late poll cannot clear a
+   * lease that has already been reassigned to another Driver.
+   */
+  async expireTargetedSearchingRideOffer(rideId: string, driverId: string) {
+    return withFirestoreErrorHandling(`expireTargetedSearchingRideOffer(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) return { changed: false, ride: null as Record<string, any> | null };
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (String(ride.status || '').toLowerCase() !== 'searching' || String(ride.driver_id || '')) {
+          return { changed: false, ride };
+        }
+        if (String(ride.offered_driver_id || '').trim() !== driverId) return { changed: false, ride };
+        if (isRideSearchExpired(ride)) {
+          const expired = expiredRideSearchPatch();
+          transaction.update(ref, expired);
+          return { changed: true, ride: { ...ride, ...expired } };
+        }
+        const offerExpiresAt = driverOfferExpiresAt(ride);
+        if (offerExpiresAt === null || Date.now() < offerExpiresAt) return { changed: false, ride };
+        const patch = timedOutDriverOfferPatch(ride);
+        transaction.update(ref, patch);
+        return { changed: true, ride: { ...ride, ...patch } };
       });
     });
   },
