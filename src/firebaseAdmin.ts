@@ -18,6 +18,7 @@ import {
   nextDriverOfferPatch,
   shouldDispatchDriverOffer,
   timedOutDriverOfferPatch,
+  timedOutOfferPatchForDriver,
   waitingForDriverOfferPatch,
 } from './rideOfferLifecycle';
 import { driverTripCountProfilePatch, nextCompletedTripCount } from './driverTripCounts';
@@ -497,10 +498,16 @@ export const adminFirestore = {
           transaction.update(ref, expired);
           return { ...ride, ...expired };
         }
-        if (!driverCanReviewOffer(ride, driverId)) {
+        const currentTime = new Date();
+        const timedOutPatch = timedOutOfferPatchForDriver(ride, driverId, currentTime);
+        if (timedOutPatch) {
+          transaction.update(ref, timedOutPatch);
+          return { ...ride, ...timedOutPatch };
+        }
+        if (!driverCanReviewOffer(ride, driverId, currentTime.getTime())) {
           throw new Error('This ride offer is no longer available to you.');
         }
-        const patch = declinedDriverOfferPatch(ride, driverId);
+        const patch = declinedDriverOfferPatch(ride, driverId, currentTime);
         transaction.update(ref, patch);
         return { ...ride, ...patch };
       });

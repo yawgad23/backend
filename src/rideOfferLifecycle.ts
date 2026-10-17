@@ -153,6 +153,24 @@ export function timedOutDriverOfferPatch(ride: RideRecord, currentTime = new Dat
   };
 }
 
+/**
+ * At the exact server deadline, a late Decline is not an application error.
+ * Retire only the current Driver's elapsed lease so the normal server trigger
+ * can advance the same Rider search without returning the expired offer.
+ */
+export function timedOutOfferPatchForDriver(
+  ride: RideRecord,
+  driverId: string,
+  currentTime = new Date(),
+): Record<string, unknown> | null {
+  const nowMs = currentTime.getTime();
+  if (text(ride.status).toLowerCase() !== 'searching' || text(ride.driver_id)) return null;
+  if (text(ride.offered_driver_id) !== text(driverId) || isRideSearchExpired(ride, nowMs)) return null;
+  const expiresAt = driverOfferExpiresAt(ride);
+  if (expiresAt === null || nowMs < expiresAt) return null;
+  return timedOutDriverOfferPatch(ride, currentTime);
+}
+
 /** Determines whether the scheduler or an expired Driver poll should advance an open search. */
 export function shouldDispatchDriverOffer(ride: RideRecord, currentTime = Date.now()): boolean {
   if (text(ride.status).toLowerCase() !== 'searching' || text(ride.driver_id)) return false;

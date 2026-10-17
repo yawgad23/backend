@@ -651,7 +651,10 @@ export const driverTrips = router({
     if (input.decision === 'decline') {
       const updated = await adminFirestore.declineTargetedSearchingRide(input.rideId, input.driverId);
       if ((updated as Record<string, any>).status === 'cancelled') {
-        throw new Error('This ride request has expired.');
+        // The overall Rider search elapsed before this Driver's tap reached the
+        // server. The transaction has already closed it safely, so this is a
+        // normal terminal result rather than a false “failed to decline” UI.
+        return { success: true, decision: 'expired' as const };
       }
       await recordRideEvent({ rideId: input.rideId, type: 'offer_declined', actorId: input.driverId, actorRole: 'driver', status: updated.status });
       return { success: true, decision: input.decision };
