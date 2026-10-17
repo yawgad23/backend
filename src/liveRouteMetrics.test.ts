@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   bookingRouteCacheKey,
+  canonicalLiveRouteTarget,
   decodeGooglePolyline,
   firestoreSafeLiveRoutePoints,
   isCurrentRouteRefresh,
@@ -178,7 +179,27 @@ describe('server road route metrics', () => {
     expect(liveRouteTarget({
       status: 'in_progress',
       destination: { lat: 5.605, lng: -0.167 },
-      route_target: { kind: 'stop', location: { lat: 5.625, lng: -0.173 } },
+      route_target: { kind: 'stop', stop_id: 'stop-1', location: { lat: 5.625, lng: -0.173 } },
+      in_trip_stops: [{ id: 'stop-1', status: 'pending', lat: 5.625, lng: -0.173 }],
     })).toEqual({ latitude: 5.625, longitude: -0.173 });
+  });
+
+  it('ignores a legacy or malformed route target so it cannot override the real destination', () => {
+    expect(liveRouteTarget({
+      status: 'in_progress',
+      destination: { lat: 5.605, lng: -0.167 },
+      route_target: { location: { lat: 5.625, lng: -0.173 } },
+    })).toEqual({ latitude: 5.605, longitude: -0.167 });
+  });
+
+  it('canonicalizes a malformed active target to the persisted destination without changing the trip', () => {
+    expect(canonicalLiveRouteTarget({
+      status: 'in_progress',
+      destination: { name: 'Actual destination', address: 'Actual destination address', lat: 5.605, lng: -0.167 },
+      route_target: { location: { lat: 5.625, lng: -0.173 } },
+    })).toEqual({
+      kind: 'destination',
+      location: { name: 'Actual destination', address: 'Actual destination address', lat: 5.605, lng: -0.167 },
+    });
   });
 });

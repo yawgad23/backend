@@ -150,12 +150,75 @@ function pointFrom(value: any): Point | null {
   return validPoint(point) ? point : null;
 }
 
+/**
+ * A route target may override the final destination only when it is the exact
+ * server-recorded, still-pending in-trip stop. Older documents can contain a
+ * loose `route_target.location` left by a retired flow; that must never become
+ * navigation authority for a live Driver trip.
+ */
+type VerifiedPendingStop = { id: string; point: Point; location: Record<string, any> };
+
+function verifiedPendingStop(ride: Record<string, any>): VerifiedPendingStop | null {
+  const target = ride.route_target;
+  if (!target || typeof target !== 'object' || target.kind !== 'stop') return null;
+  const stopId = String(target.stop_id || '').trim();
+  if (!stopId || !Array.isArray(ride.in_trip_stops)) return null;
+
+  const matchingStop = ride.in_trip_stops.find((stop: any) => stop
+    && typeof stop === 'object'
+    && String(stop.id || '').trim() === stopId
+    && String(stop.status || '').trim().toLowerCase() === 'pending');
+  const stopPoint = pointFrom(matchingStop);
+  const targetPoint = pointFrom(target.location);
+  if (!stopPoint || !targetPoint) return null;
+
+  // The target object is only a reference to the server-owned stop. Require
+  // exact normalized coordinates before allowing it to replace destination.
+  return stopPoint.latitude === targetPoint.latitude && stopPoint.longitude === targetPoint.longitude
+    ? { id: stopId, point: stopPoint, location: matchingStop }
+    : null;
+}
+
+function verifiedPendingStopTarget(ride: Record<string, any>): Point | null {
+  return verifiedPendingStop(ride)?.point || null;
+}
+
+function canonicalLocation(value: any, point: Point) {
+  const name = typeof value?.name === 'string' ? value.name : typeof value?.address === 'string' ? value.address : '';
+  const address = typeof value?.address === 'string' ? value.address : name;
+  return { ...(name ? { name } : {}), ...(address ? { address } : {}), lat: point.latitude, lng: point.longitude };
+}
+
+/**
+ * Canonical target representation for the currently active in-progress trip.
+ * This deliberately treats a destination-shaped or malformed legacy target as
+ * destination: only a verified pending stop can be authoritative.
+ */
+export function canonicalLiveRouteTarget(ride: Record<string, any>): Record<string, any> | null {
+  if (String(ride.status || '').trim().toLowerCase() !== 'in_progress') return null;
+  const stop = verifiedPendingStop(ride);
+  if (stop) return { kind: 'stop', stop_id: stop.id, location: canonicalLocation(stop.location, stop.point) };
+  const destination = pointFrom(ride.destination);
+  return destination ? { kind: 'destination', location: canonicalLocation(ride.destination, destination) } : null;
+}
+
+function targetNeedsCanonicalization(current: any, canonical: Record<string, any> | null) {
+  if (!canonical) return false;
+  const currentPoint = pointFrom(current?.location);
+  const canonicalPoint = pointFrom(canonical.location);
+  return !currentPoint
+    || !canonicalPoint
+    || String(current?.kind || '') !== String(canonical.kind || '')
+    || String(current?.stop_id || '') !== String(canonical.stop_id || '')
+    || currentPoint.latitude !== canonicalPoint.latitude
+    || currentPoint.longitude !== canonicalPoint.longitude;
+}
+
 export function liveRouteTarget(ride: Record<string, any>): Point | null {
   if (String(ride.status) !== 'in_progress') return pointFrom(ride.pickup);
-  // A Driver-approved in-trip stop is the current navigation target. The
-  // fallback remains the immutable/current destination, so malformed or old
-  // records cannot strand a live route without a target.
-  return pointFrom(ride.route_target?.location) || pointFrom(ride.destination);
+  // Only a verified pending stop may replace the real destination. This keeps
+  // legacy or malformed target metadata from sending a Driver to a wrong pin.
+  return verifiedPendingStopTarget(ride) || pointFrom(ride.destination);
 }
 
 export function routeTargetKey(to: Point) {
@@ -513,7 +576,7 @@ function activeRoutePhase(ride: Record<string, any>): LiveRoutePhase | null {
 }
 
 function liveRouteTargetKind(ride: Record<string, any>, phase: LiveRoutePhase): 'pickup' | 'destination' | 'stop' {
-  return phase === 'destination' && ride.route_target?.kind === 'stop' ? 'stop' : phase;
+  return phase === 'destination' && verifiedPendingStopTarget(ride) ? 'stop' : phase;
 }
 
 /**
@@ -597,7 +660,9 @@ export const firestoreLiveRouteRefreshStorage: LiveRouteRefreshStorage = {
         && !existing?.completed_at
         && leaseExpiresAtMs(existing?.expires_at) > nowMs) return null;
 
+      const canonicalTarget = canonicalLiveRouteTarget(ride);
       transaction.update(ref, {
+        ...(targetNeedsCanonicalization(ride.route_target, canonicalTarget) ? { route_target: canonicalTarget } : {}),
         live_route_refresh_lease: liveRouteLease(request, token, nowMs + LIVE_ROUTE_LEASE_MS, {
           claimed_at: new Date(nowMs).toISOString(),
           server_claimed_at: FieldValue.serverTimestamp(),
