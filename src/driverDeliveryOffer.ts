@@ -1,9 +1,9 @@
 import { isDeliveryCategory } from './deliveryBooking';
 
 /**
- * A Driver can assess pickup, destination, category and payment method before
- * accepting. Monetary quote/rate fields are intentionally absent: the server
- * does not disclose a booked fare until an authenticated Driver accepts.
+ * A Driver can assess pickup, destination, category, payment method and the
+ * server-locked booked fare before accepting. The response intentionally does
+ * not include rate rules, a mutable breakdown, settlement or final-fare data.
  */
 const PRE_ACCEPT_OFFER_FIELDS = [
   'id',
@@ -27,6 +27,12 @@ const PRE_ACCEPT_OFFER_FIELDS = [
   'estimated_distance_km',
   'estimated_duration_minutes',
   'pickup_distance_km',
+  // These are server-created booking-quote fallbacks for the one displayed
+  // offer total. They never make a client-provided price authoritative.
+  'quoted_fare',
+  'fare_estimate',
+  'base_fare',
+  'fare',
   'driver_offer_attempt',
   'driver_offer_issued_at',
   'driver_offer_expires_at',
