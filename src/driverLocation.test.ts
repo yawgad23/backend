@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { availabilityHeartbeatLocation, driverLocationInput, driverLocationTimestamps } from './driverLocation';
+import {
+  activeLegacyLocationPresencePatch,
+  availabilityHeartbeatLocation,
+  canPublishActiveLegacyRideLocation,
+  driverLocationInput,
+  driverLocationTimestamps,
+} from './driverLocation';
+import { isOnlineWithFreshLocation } from './driverPresence';
 
 describe('Driver location ingress', () => {
   const coordinateSample = {
@@ -39,5 +46,39 @@ describe('Driver location ingress', () => {
       source_recorded_at: '2026-10-03T07:49:45.174Z',
       recorded_at: '2026-10-03T07:54:00.000Z',
     });
+  });
+
+  it('allows location compatibility only for the authenticated Driver already assigned to an active legacy ride', () => {
+    const ride = { driver_id: 'firebase-driver-uid', status: 'in_progress' };
+
+    expect(canPublishActiveLegacyRideLocation(ride, 'firebase-driver-uid')).toBe(true);
+    expect(canPublishActiveLegacyRideLocation(ride, 'another-driver-uid')).toBe(false);
+  });
+
+  it.each(['searching', 'completed', 'cancelled', 'expired'])('does not turn a %s ride into location authorization', (status) => {
+    expect(canPublishActiveLegacyRideLocation({ driver_id: 'firebase-driver-uid', status }, 'firebase-driver-uid')).toBe(false);
+  });
+
+  it('does not treat a client-supplied owner field as an assigned active Driver', () => {
+    expect(canPublishActiveLegacyRideLocation({ driverId: 'firebase-driver-uid', status: 'in_progress' }, 'firebase-driver-uid')).toBe(false);
+  });
+
+  it('keeps compatibility presence non-dispatchable even while its location is fresh', () => {
+    const receivedAt = '2026-10-17T20:26:00.000Z';
+    const presence = activeLegacyLocationPresencePatch('firebase-driver-uid', {
+      latitude: 5.6037,
+      longitude: -0.187,
+      recorded_at: receivedAt,
+      source_recorded_at: receivedAt,
+    }, receivedAt);
+
+    expect(presence).toMatchObject({
+      availability_status: 'busy',
+      is_online: false,
+      is_available: false,
+      approved: false,
+      is_approved: false,
+    });
+    expect(isOnlineWithFreshLocation(presence, new Date(receivedAt).getTime())).toBe(false);
   });
 });

@@ -52,6 +52,57 @@ export const driverLocationInput = z.object({
   recordedAt: z.string().datetime().optional(),
 });
 
+const ACTIVE_LEGACY_LOCATION_STATUSES = new Set([
+  'matched',
+  'driver_arriving',
+  'driver_arrived',
+  'in_progress',
+]);
+
+/**
+ * Narrow compatibility for a legacy trip that is already server-assigned to
+ * the authenticated Firebase account. It deliberately grants neither Driver
+ * approval nor online/offer eligibility; it only keeps that one active trip's
+ * live GPS and route refresh working while its missing profile is repaired.
+ */
+export function canPublishActiveLegacyRideLocation(ride: Record<string, unknown> | null | undefined, driverId: string): boolean {
+  if (!ride || !driverId) return false;
+  return ACTIVE_LEGACY_LOCATION_STATUSES.has(String(ride.status || '').trim().toLowerCase())
+    && String(ride.driver_id || '').trim() === driverId;
+}
+
+async function hasActiveLegacyRideForDriver(driverId: string): Promise<boolean> {
+  const rides = (await Promise.all(
+    [...ACTIVE_LEGACY_LOCATION_STATUSES].map((status) => (
+      adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: driverId, status }, null, 'desc', 1)
+    )),
+  )).flat();
+  return rides.some((ride) => canPublishActiveLegacyRideLocation(ride, driverId));
+}
+
+export function activeLegacyLocationPresencePatch(
+  driverId: string,
+  location: Record<string, unknown>,
+  receivedAt: string,
+) {
+  return {
+    user_id: driverId,
+    current_location: location,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    last_location_update: receivedAt,
+    last_seen_at: receivedAt,
+    // This document exists only to stream the already-assigned ride. It must
+    // not make a missing-profile account selectable for a new request.
+    legacy_active_trip_location_only: true,
+    availability_status: 'busy',
+    is_online: false,
+    is_available: false,
+    approved: false,
+    is_approved: false,
+  };
+}
+
 async function authenticatedDriverId(req: Request, res: Response): Promise<string | null> {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   if (!match) {
@@ -77,8 +128,13 @@ export function registerDriverLocationRoutes(app: Express) {
     const driverId = await authenticatedDriverId(req, res);
     if (!driverId) return;
 
-    const approvedProfile = await driverProfileForUserId(driverId);
-    if (!isApprovedDriverProfile(approvedProfile)) {
+    const driverProfile = await driverProfileForUserId(driverId);
+    const approvedProfile = isApprovedDriverProfile(driverProfile) ? driverProfile : null;
+    // Only a completely missing profile can use the compatibility path. A
+    // pending, rejected, suspended, or inactive Driver application continues
+    // to be blocked exactly as before.
+    const activeLegacyRideOnly = !driverProfile && await hasActiveLegacyRideForDriver(driverId);
+    if (!approvedProfile && !activeLegacyRideOnly) {
       res.status(403).json({
         success: false,
         message: 'Your Driver application must be approved by HY3N before location sharing can be enabled.',
@@ -107,18 +163,24 @@ export function registerDriverLocationRoutes(app: Express) {
     const previousPresence = await adminFirestore.get('driver_presence', driverId);
     if (!shouldPersistDriverLocation(previousPresence, sourceRecordedAt)) {
       const heartbeatLocation = availabilityHeartbeatLocation(previousPresence, receivedAt);
-      const heartbeatPatch = {
+      const heartbeatPatch = activeLegacyRideOnly
+        ? activeLegacyLocationPresencePatch(driverId, heartbeatLocation, receivedAt)
+        : {
         user_id: driverId,
         current_location: heartbeatLocation,
         last_location_update: receivedAt,
         last_seen_at: receivedAt,
       };
-      const canonical = approvedProfile;
-      const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
-      await Promise.all([
-        ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, heartbeatPatch)),
-        adminFirestore.set('driver_presence', driverId, heartbeatPatch),
-      ]);
+      if (activeLegacyRideOnly) {
+        await adminFirestore.set('driver_presence', driverId, heartbeatPatch);
+      } else {
+        const canonical = approvedProfile;
+        const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
+        await Promise.all([
+          ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, heartbeatPatch)),
+          adminFirestore.set('driver_presence', driverId, heartbeatPatch),
+        ]);
+      }
       res.json({
         success: true,
         ignoredStaleLocation: true,
@@ -138,14 +200,20 @@ export function registerDriverLocationRoutes(app: Express) {
     // Keep the canonical approved profile and UID-keyed compatibility profile
     // in sync. `driverProfileForUserId` already queried legacy records, so do
     // not make a second sequential collection scan on every GPS sample.
-    const canonical = approvedProfile;
-    const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
+    if (activeLegacyRideOnly) {
+      // Do not create a blank Driver profile as a side effect. The existing
+      // active Rider may receive this presence stream, but dispatch still sees
+      // a busy/non-approved account and cannot send another offer.
+      await adminFirestore.set('driver_presence', driverId, activeLegacyLocationPresencePatch(driverId, location, receivedAt));
+    } else {
+      const canonical = approvedProfile;
+      const profileIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
 
-    // Rider maps use a deliberately minimal record. Full Driver profile and
-    // application data remain private to the Driver and the admin dashboard.
-    await Promise.all([
-      ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, patch)),
-      adminFirestore.set('driver_presence', driverId, {
+      // Rider maps use a deliberately minimal record. Full Driver profile and
+      // application data remain private to the Driver and the admin dashboard.
+      await Promise.all([
+        ...[...profileIds].map((profileId) => adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, profileId, patch)),
+        adminFirestore.set('driver_presence', driverId, {
         service_type: approvedProfile?.service_type || approvedProfile?.serviceType || 'car',
         vehicle_type: approvedProfile?.vehicle_type || approvedProfile?.vehicleType || 'car',
         vehicle_make: approvedProfile?.vehicle_make || approvedProfile?.vehicleMake || '',
@@ -158,8 +226,9 @@ export function registerDriverLocationRoutes(app: Express) {
         rating: Number(approvedProfile?.rating || 0),
         ...mapSafeDriverPresenceMetadata({ ...approvedProfile, ...patch }),
         ...patch,
-      }),
-    ]);
+        }),
+      ]);
+    }
 
     // Lock Screen refreshes are supplementary. They must not make the Driver
     // wait to go online, start a trip, or update a Rider-visible GPS marker.
@@ -176,6 +245,6 @@ export function registerDriverLocationRoutes(app: Express) {
       console.error('[RoadRoute] Driver route refresh failed:', error);
     });
 
-    res.json({ success: true, location });
+    res.json({ success: true, location, activeLegacyRideOnly });
   });
 }
