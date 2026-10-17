@@ -1,4 +1,12 @@
-import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
+import { FieldValue } from 'firebase-admin/firestore';
+import { ADMIN_COLLECTIONS, adminFirestore, getAdminDb } from './firebaseAdmin';
+import {
+  createLiveRouteLeaseToken,
+  createLiveRouteRefreshCoordinator,
+  type LiveRoutePhase,
+  type LiveRouteRefreshRequest,
+  type LiveRouteRefreshStorage,
+} from './liveRouteRefreshCoordinator';
 
 export type Point = { latitude: number; longitude: number };
 type RoutePoint = [number, number];
@@ -36,23 +44,15 @@ const COORDINATE_FALLBACK_SPEED_KMH = 22;
 const FAST_GOOGLE_ROUTE_WAIT_MS = 1_500;
 const BOOKING_ROUTE_CACHE_TTL_MS = 20_000;
 const MAX_BOOKING_ROUTE_CACHE_ENTRIES = 120;
-// When a route call is already running, retain it only for a nearby GPS sample.
-// A materially newer point must replace the pending request so an old road line
-// cannot win a Driver's genuine off-route movement.
+// Retained as a public tuning constant. It now governs whether a completed
+// provider request needs one latest trailing refresh, not whether we spawn a
+// competing request while another one is in flight.
 export const PENDING_ROUTE_REUSE_METERS = 20;
-type CachedRoute = {
-  requestedAt: number;
-  targetKey: string;
-  metrics: RoadRouteMetrics | null;
-  requestedFrom: Point;
-  requestId: number;
-  inFlight: boolean;
-};
 type CachedBookingRoute = { expiresAt: number; metrics: RoadRouteMetrics };
-const routeCache = new Map<string, CachedRoute>();
 const bookingRouteCache = new Map<string, CachedBookingRoute>();
 const bookingRouteInFlight = new Map<string, Promise<RoadRouteMetrics | null>>();
-let nextRouteRequestId = 0;
+/** A short per-ride Firestore lease bounds duplicate work across backend instances. */
+export const LIVE_ROUTE_LEASE_MS = 12_000;
 
 function validPoint(point: Point | null | undefined): point is Point {
   return Boolean(
@@ -166,7 +166,7 @@ export function routeTargetKey(to: Point) {
 
 /** Reuse only same-destination guidance; a pickup-to-trip phase change must route immediately. */
 export function shouldReuseCachedRoute(
-  previous: (Pick<CachedRoute, 'requestedAt' | 'targetKey'> & {
+  previous: ({ requestedAt: number; targetKey: string } & {
     metrics?: RoadRouteMetrics | null;
     requestedFrom?: Point;
     inFlight?: boolean;
@@ -177,12 +177,12 @@ export function shouldReuseCachedRoute(
 ): boolean {
   if (!previous || previous.targetKey !== targetKey || now - previous.requestedAt >= ROUTE_REFRESH_MS) return false;
 
-  // A pending response cannot be treated as a route line. Keep it only while
-  // the Driver has moved a negligible distance; otherwise request from the
-  // newest GPS sample and discard the stale response when it eventually ends.
+  // This helper now describes only completed-route cache eligibility. In-flight
+  // work is coalesced by the per-ride coordinator below, which keeps one
+  // running provider call and one latest trailing sample instead of creating a
+  // new request for every GPS update.
   if (previous.inFlight) {
-    if (!from || !previous.requestedFrom) return true;
-    return greatCircleDistanceKm(from, previous.requestedFrom) * 1_000 <= PENDING_ROUTE_REUSE_METERS;
+    return false;
   }
 
   // Do not hold an eight-second cache window after the Driver has passed the
@@ -506,41 +506,174 @@ export async function fetchBookingRoadRouteWithStops(from: Point, destinations: 
   }
 }
 
-async function cachedRoadRoute(rideId: string, from: Point, to: Point): Promise<RoadRouteMetrics | null> {
-  const now = Date.now();
-  const targetKey = routeTargetKey(to);
-  const previous = routeCache.get(rideId);
-  if (shouldReuseCachedRoute(previous, targetKey, now, from)) return previous!.metrics;
-
-  // A new destination target (for example, Start Trip) must never render an
-  // old pickup route if a provider is temporarily unavailable.
-  const sameTargetFallback = previous?.targetKey === targetKey ? previous.metrics : null;
-
-  // Mark the request before awaiting it. A later GPS request receives a new
-  // request ID; this older response is then ignored rather than writing a
-  // route from the Driver's previous position over the current one.
-  const requestId = ++nextRouteRequestId;
-  routeCache.set(rideId, {
-    requestedAt: now,
-    targetKey,
-    metrics: sameTargetFallback,
-    requestedFrom: from,
-    requestId,
-    inFlight: true,
-  });
-  const metrics = await fetchRoadRoute(from, to);
-  const current = routeCache.get(rideId);
-  if (!isCurrentRouteRefresh(current?.requestId, requestId)) return null;
-  routeCache.set(rideId, {
-    requestedAt: now,
-    targetKey,
-    metrics: metrics || sameTargetFallback,
-    requestedFrom: from,
-    requestId,
-    inFlight: false,
-  });
-  return metrics || sameTargetFallback;
+function activeRoutePhase(ride: Record<string, any>): LiveRoutePhase | null {
+  const status = String(ride.status || '').trim().toLowerCase();
+  if (status === 'in_progress') return 'destination';
+  return ACTIVE_STATUSES.includes(status) ? 'pickup' : null;
 }
+
+function liveRouteTargetKind(ride: Record<string, any>, phase: LiveRoutePhase): 'pickup' | 'destination' | 'stop' {
+  return phase === 'destination' && ride.route_target?.kind === 'stop' ? 'stop' : phase;
+}
+
+/**
+ * Coordinate equality is intentional here. The request target originated from
+ * the stored ride and this comparison happens inside the write transaction,
+ * so even a small stop/destination edit invalidates an old route response.
+ * `target_key` remains the five-decimal mobile-compatible display identity.
+ */
+function sameLiveRouteTarget(left: Point | null, right: Point) {
+  return Boolean(left && left.latitude === right.latitude && left.longitude === right.longitude);
+}
+
+function leaseExpiresAtMs(value: unknown) {
+  const result = new Date(String(value || '')).getTime();
+  return Number.isFinite(result) ? result : 0;
+}
+
+function leaseMatchesRequest(lease: any, request: LiveRouteRefreshRequest) {
+  return lease
+    && String(lease.driver_id || '') === request.driverId
+    && String(lease.phase || '') === request.phase
+    && String(lease.target_kind || '') === request.targetKind
+    && String(lease.target_key || '') === request.targetKey
+    && Number(lease.target_latitude) === request.target.latitude
+    && Number(lease.target_longitude) === request.target.longitude;
+}
+
+function currentRideMatchesRequest(ride: Record<string, any>, request: LiveRouteRefreshRequest) {
+  return String(ride.driver_id || '') === request.driverId
+    && activeRoutePhase(ride) === request.phase
+    && liveRouteTargetKind(ride, request.phase) === request.targetKind
+    && sameLiveRouteTarget(liveRouteTarget(ride), request.target)
+    && routeTargetKey(liveRouteTarget(ride) as Point) === request.targetKey;
+}
+
+function liveRouteSource(source: RoadRouteMetrics['source']) {
+  return source === 'google_routes_traffic'
+    ? 'server_google_routes_traffic'
+    : source === 'osrm'
+      ? 'server_osrm_road_route_fallback'
+      : 'server_coordinate_route_estimate';
+}
+
+function liveRouteLease(request: LiveRouteRefreshRequest, token: string, expiresAtMs: number, extra: Record<string, unknown> = {}) {
+  return {
+    token,
+    driver_id: request.driverId,
+    phase: request.phase,
+    target_kind: request.targetKind,
+    target_key: request.targetKey,
+    target_latitude: request.target.latitude,
+    target_longitude: request.target.longitude,
+    expires_at: new Date(expiresAtMs).toISOString(),
+    ...extra,
+  };
+}
+
+/**
+ * This is the cross-instance authority for a display-route refresh. A local
+ * coordinator saves provider work, but only this transaction decides whether a
+ * response belongs to the currently assigned Driver, phase, exact target, and
+ * current lease token. It intentionally does not change lifecycle or fare
+ * fields.
+ */
+export const firestoreLiveRouteRefreshStorage: LiveRouteRefreshStorage = {
+  async claim(request, nowMs) {
+    const db = getAdminDb();
+    const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(request.rideId);
+    const token = createLiveRouteLeaseToken();
+    return await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists) return null;
+      const ride = { id: snap.id, ...(snap.data() || {}) } as Record<string, any>;
+      if (!currentRideMatchesRequest(ride, request)) return null;
+
+      const existing = ride.live_route_refresh_lease;
+      // A different owner/phase/target takes over immediately and invalidates
+      // the old token. Matching work is coalesced across Cloud Run instances
+      // for the short lease period.
+      if (leaseMatchesRequest(existing, request)
+        && !existing?.completed_at
+        && leaseExpiresAtMs(existing?.expires_at) > nowMs) return null;
+
+      transaction.update(ref, {
+        live_route_refresh_lease: liveRouteLease(request, token, nowMs + LIVE_ROUTE_LEASE_MS, {
+          claimed_at: new Date(nowMs).toISOString(),
+          server_claimed_at: FieldValue.serverTimestamp(),
+        }),
+      });
+      return { token };
+    });
+  },
+
+  async publish(request, lease, metrics, calculatedAt, nowMs) {
+    const db = getAdminDb();
+    const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(request.rideId);
+    return await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists) return false;
+      const ride = { id: snap.id, ...(snap.data() || {}) } as Record<string, any>;
+      const activeLease = ride.live_route_refresh_lease;
+      if (!currentRideMatchesRequest(ride, request)
+        || !leaseMatchesRequest(activeLease, request)
+        || leaseExpiresAtMs(activeLease?.expires_at) <= nowMs
+        || String(activeLease?.token || '') !== lease.token) return false;
+
+      // `calculated_at` is the completion time of this actual provider result,
+      // not the time a later GPS update noticed a cached/fallback value. There
+      // is deliberately no cached metrics fallback in the coordinator.
+      transaction.update(ref, {
+        live_route_metrics: {
+          distance_km: metrics.distanceKm,
+          duration_minutes: metrics.durationMinutes,
+          phase: request.phase,
+          points: firestoreSafeLiveRoutePoints(metrics.points),
+          source: metrics.source,
+          target_kind: request.targetKind,
+          target_key: request.targetKey,
+          calculated_at: calculatedAt,
+          // Existing clients read this legacy field; keep it equal to the real
+          // calculation time rather than republishing stale data as fresh.
+          updated_at: calculatedAt,
+          server_published_at: FieldValue.serverTimestamp(),
+          traffic: metrics.traffic || null,
+        },
+        route_distance_source: liveRouteSource(metrics.source),
+        // The in-flight lease is consumed by this same atomic publication. A
+        // local coordinator provides the normal 8-second cache; releasing here
+        // lets the latest coalesced sample acquire a new token when it really
+        // needs an immediate trailing route after a material movement.
+        live_route_refresh_lease: FieldValue.delete(),
+      });
+      return true;
+    });
+  },
+
+  async release(request, lease) {
+    const db = getAdminDb();
+    const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(request.rideId);
+    await db.runTransaction(async (transaction) => {
+      const snap = await transaction.get(ref);
+      if (!snap.exists) return;
+      const activeLease = (snap.data() || {}).live_route_refresh_lease;
+      if (leaseMatchesRequest(activeLease, request) && String(activeLease?.token || '') === lease.token) {
+        transaction.update(ref, { live_route_refresh_lease: FieldValue.delete() });
+      }
+    });
+  },
+};
+
+const liveRouteRefreshCoordinator = createLiveRouteRefreshCoordinator({
+  fetchRoute: fetchRoadRoute,
+  storage: firestoreLiveRouteRefreshStorage,
+  refreshMs: ROUTE_REFRESH_MS,
+  trailingMovementMeters: PENDING_ROUTE_REUSE_METERS,
+  isRouteOffPath: (from, metrics) => {
+    const offPathMeters = liveRouteOffPathMeters(from, metrics.points);
+    return offPathMeters !== null && offPathMeters > LIVE_ROUTE_OFF_PATH_METERS;
+  },
+});
 
 /**
  * Refreshes route metrics for every active ride assigned to a Driver. The
@@ -553,34 +686,21 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
     ACTIVE_STATUSES.map((status) => adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: driverId, status }, null, 'desc', 3)),
   )).flat();
 
-  let updated = 0;
-  await Promise.all(rides.map(async (ride) => {
+  const refreshes = await Promise.all(rides.map(async (ride) => {
     const rideId = String(ride.id || '');
     const target = liveRouteTarget(ride);
-    if (!rideId || !target) return;
-    const metrics = await cachedRoadRoute(rideId, driverLocation, target);
-    if (!metrics) return;
-
-    const phase = String(ride.status) === 'in_progress' ? 'destination' : 'pickup';
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, rideId, {
-      live_route_metrics: {
-        distance_km: metrics.distanceKm,
-        duration_minutes: metrics.durationMinutes,
-        phase,
-        points: firestoreSafeLiveRoutePoints(metrics.points),
-        source: metrics.source,
-        target_kind: phase === 'destination' && ride.route_target?.kind === 'stop' ? 'stop' : phase,
-        traffic: metrics.traffic || null,
-        updated_at: new Date().toISOString(),
-      },
-      route_distance_source: metrics.source === 'google_routes_traffic'
-        ? 'server_google_routes_traffic'
-        : metrics.source === 'osrm'
-          ? 'server_osrm_road_route_fallback'
-          : 'server_coordinate_route_estimate',
+    const phase = activeRoutePhase(ride);
+    if (!rideId || !target || !phase) return { fetched: 0, published: 0 };
+    return await liveRouteRefreshCoordinator.request({
+      rideId,
+      driverId,
+      from: driverLocation,
+      target,
+      targetKey: routeTargetKey(target),
+      phase,
+      targetKind: liveRouteTargetKind(ride, phase),
     });
-    updated += 1;
   }));
 
-  return { attempted: rides.length, updated };
+  return { attempted: rides.length, updated: refreshes.reduce((sum, refresh) => sum + refresh.published, 0) };
 }
