@@ -753,8 +753,12 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
 
   const refreshes = await Promise.all(rides.map(async (ride) => {
     const rideId = String(ride.id || '');
-    const target = liveRouteTarget(ride);
-    const phase = activeRoutePhase(ride);
+    const hydrated = rideId && String(ride.status || '').toLowerCase() === 'in_progress'
+      ? await adminFirestore.hydrateLegacyBookedStopsForActiveRide(rideId, driverId)
+      : { changed: false, ride };
+    const currentRide = hydrated.ride || ride;
+    const target = liveRouteTarget(currentRide);
+    const phase = activeRoutePhase(currentRide);
     if (!rideId || !target || !phase) return { fetched: 0, published: 0 };
     return await liveRouteRefreshCoordinator.request({
       rideId,
@@ -763,7 +767,7 @@ export async function refreshDriverActiveRideRoutes(driverId: string, driverLoca
       target,
       targetKey: routeTargetKey(target),
       phase,
-      targetKind: liveRouteTargetKind(ride, phase),
+      targetKind: liveRouteTargetKind(currentRide, phase),
     });
   }));
 

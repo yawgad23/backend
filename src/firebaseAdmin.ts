@@ -26,6 +26,7 @@ import {
   buildDriverPlatformFeeConfirmation,
   driverPlatformFeePaymentDecision,
 } from './commissionLedger';
+import { legacyBookedStopsPatch } from './legacyTripStops';
 
 // ─── App singleton ────────────────────────────────────────────────────────────
 
@@ -605,6 +606,31 @@ export const adminFirestore = {
         const payload = { ...data, updated_date: new Date().toISOString() };
         transaction.update(ref, payload);
         return { ...ride, ...payload };
+      });
+    });
+  },
+
+  /**
+   * Promotes valid booking-time `stops` only for an already active legacy trip.
+   * The status and assigned Driver are checked inside the transaction, and a
+   * modern active-stop model is never overwritten.
+   */
+  async hydrateLegacyBookedStopsForActiveRide(rideId: string, driverId: string): Promise<{ changed: boolean; ride: Record<string, any> | null }> {
+    return withFirestoreErrorHandling(`hydrateLegacyBookedStopsForActiveRide(${rideId})`, async () => {
+      const db = getDb();
+      const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+      return db.runTransaction(async (transaction) => {
+        const snap = await transaction.get(ref);
+        if (!snap.exists) return { changed: false, ride: null };
+        const ride = { id: snap.id, ...snap.data() } as Record<string, any>;
+        if (String(ride.status || '').trim().toLowerCase() !== 'in_progress' || String(ride.driver_id || '').trim() !== driverId) {
+          return { changed: false, ride };
+        }
+        const patch = legacyBookedStopsPatch(ride, new Date().toISOString());
+        if (!patch) return { changed: false, ride };
+        const payload = { ...patch, updated_date: new Date().toISOString() };
+        transaction.update(ref, payload);
+        return { changed: true, ride: { ...ride, ...payload } };
       });
     });
   },

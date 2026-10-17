@@ -19,6 +19,7 @@ import {
 } from './driverFeeGlobalBypass';
 import { sendDriverRideOfferPush } from './driverOfferPush';
 import { assignmentReleaseRedispatchPatch } from './rideRedispatch';
+import { legacyBookedStopsPatch } from './legacyTripStops';
 import {
   approvalRequiredError,
   driverProfileForUserId,
@@ -798,6 +799,7 @@ export const driverTrips = router({
       arrivedAt: ride.driver_arrived_at,
       tripStartedAt,
     });
+    const legacyStopsPatch = legacyBookedStopsPatch(ride, tripStartedAt);
     const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], {
       driver_id: input.driverId,
       status: 'in_progress',
@@ -810,6 +812,7 @@ export const driverTrips = router({
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
       waiting_fee_per_minute: waitingCharge.ratePerMinute,
       waiting_fee: waitingCharge.waitingFee,
+      ...(legacyStopsPatch || {}),
     });
     recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
@@ -851,6 +854,7 @@ export const driverTrips = router({
       arrivedAt: ride.driver_arrived_at,
       tripStartedAt,
     });
+    const legacyStopsPatch = legacyBookedStopsPatch(ride, tripStartedAt);
     const startPatch = {
       driver_id: input.driverId,
       status: 'in_progress',
@@ -862,6 +866,7 @@ export const driverTrips = router({
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
       waiting_fee_per_minute: waitingCharge.ratePerMinute,
       waiting_fee: waitingCharge.waitingFee,
+      ...(legacyStopsPatch || {}),
     };
     const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], startPatch);
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
