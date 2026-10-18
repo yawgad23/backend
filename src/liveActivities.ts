@@ -24,6 +24,21 @@ const activityTokenInput = z.object({
 type Point = { latitude: number; longitude: number };
 type ActivityEvent = 'update' | 'end';
 
+/** Live Activity presentation is terminal only after a persisted ride transition. */
+export function isTerminalLiveActivityStatus(status: unknown) {
+  return ['completed', 'cancelled'].includes(String(status || '').trim().toLowerCase());
+}
+
+/** Ignore location/fare writes and react only to a true nonterminal-to-terminal transition. */
+export function isTerminalLiveActivityTransition(beforeStatus: unknown, afterStatus: unknown) {
+  return !isTerminalLiveActivityStatus(beforeStatus) && isTerminalLiveActivityStatus(afterStatus);
+}
+
+/** A pending terminal delivery stays retryable until APNs accepts the end event. */
+export function terminalEndPending(activity: Record<string, unknown>) {
+  return Boolean(activity.active) && Boolean(activity.terminal_end_pending);
+}
+
 function cleanText(value: unknown, fallback = '', maximum = 120) {
   const text = String(value ?? fallback).replace(/[\u0000-\u001f<>]/g, ' ').replace(/\s+/g, ' ').trim();
   return text.slice(0, maximum) || fallback;
@@ -178,7 +193,7 @@ export async function liveActivityPresentation(
 ) {
   const status = cleanText(ride.status, 'driver_arriving', 40);
   const onTrip = status === 'in_progress';
-  const completed = status === 'completed' || status === 'cancelled';
+  const completed = isTerminalLiveActivityStatus(status);
   const destinationName = cleanText(ride.destination?.name || ride.destination?.address || ride.destination_name, 'your destination', 80);
   const pickupName = cleanText(ride.pickup?.name || ride.pickup?.address || ride.pickup_name, 'your pickup point', 80);
   const driverName = cleanText(ride.driver?.name || ride.driver_name, 'Your HY3N driver', 60);
@@ -269,6 +284,7 @@ export function registerLiveActivityRoutes(app: Express) {
     }
 
     const id = activityDocumentId(input.rideId, input.activityId);
+    const terminalStatus = isTerminalLiveActivityStatus(ride.status) ? String(ride.status) : null;
     await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, id, {
       ride_id: input.rideId,
       rider_id: uid,
@@ -279,6 +295,11 @@ export function registerLiveActivityRoutes(app: Express) {
       token_updated_at: new Date().toISOString(),
       last_push_at: null,
       last_progress: 0,
+      // A token can arrive just after the Driver completes the trip. The
+      // creation trigger re-reads the authoritative ride and ends it instead
+      // of allowing a newly registered Lock Screen card to survive forever.
+      terminal_end_pending: Boolean(terminalStatus),
+      terminal_status: terminalStatus,
     });
     res.status(201).json({ success: true });
   });
@@ -305,9 +326,9 @@ export function registerLiveActivityRoutes(app: Express) {
 export async function sendRideLiveActivityUpdate(ride: Record<string, any>, options: { driverLocation?: Point; force?: boolean } = {}) {
   const rideId = cleanText(ride.id, '', 160);
   const riderId = riderIdForRide(ride);
-  if (!rideId || !riderId) return { attempted: 0, sent: 0 };
+  if (!rideId || !riderId) return { attempted: 0, sent: 0, failures: 0 };
   const activities = await adminFirestore.list(LIVE_ACTIVITY_COLLECTION, { ride_id: rideId, rider_id: riderId, active: true }, null, 'desc', 10);
-  if (!activities.length) return { attempted: 0, sent: 0 };
+  if (!activities.length) return { attempted: 0, sent: 0, failures: 0 };
 
   const now = Date.now();
   const candidateActivities = activities.filter((activity) => {
@@ -318,9 +339,10 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
       || !Number.isFinite(lastPushAt)
       || now - lastPushAt >= MOVEMENT_UPDATE_INTERVAL_MS;
   });
-  if (!candidateActivities.length) return { attempted: activities.length, sent: 0 };
+  if (!candidateActivities.length) return { attempted: activities.length, sent: 0, failures: 0 };
 
   let sent = 0;
+  let failures = 0;
   await Promise.all(candidateActivities.map(async (activity) => {
     const presentation = await liveActivityPresentation(
       ride,
@@ -387,17 +409,70 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
         content_version: HY3N_LIVE_ACTIVITY_CONTENT_VERSION,
       });
       if (presentation.event === 'end') {
-        await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, { active: false, ended_at: new Date(now).toISOString() });
+        await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, {
+          active: false,
+          ended_at: new Date(now).toISOString(),
+          terminal_end_pending: false,
+          terminal_end_delivered_at: new Date(now).toISOString(),
+        });
       }
     } catch (error: any) {
       const code = String(error?.code || 'unknown');
       console.warn('[LiveActivity] Push update failed', { rideId, activityId: activity.id, code });
       if (code.includes('registration-token-not-registered') || code.includes('invalid-argument')) {
         await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, { active: false, invalidated_at: new Date(now).toISOString(), invalid_reason: code });
+      } else {
+        failures += 1;
+        if (presentation.event === 'end') {
+          await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, {
+            terminal_end_pending: true,
+            terminal_end_failed_at: new Date(now).toISOString(),
+            terminal_end_failure_code: code,
+          });
+        }
       }
     }
   }));
-  return { attempted: activities.length, sent };
+  return { attempted: activities.length, sent, failures };
+}
+
+/**
+ * Bounded recovery for an already-visible card whose original terminal APNs
+ * end push was missed. This is presentation-only: it reads the stored ride,
+ * then emits an end event only when that authoritative record is terminal.
+ */
+export async function recoverTerminalRideLiveActivities(limit = 100) {
+  const activities = await adminFirestore.list(LIVE_ACTIVITY_COLLECTION, { active: true }, null, 'desc', limit);
+  const rides = new Map<string, Record<string, any>>();
+  let checked = 0;
+  let terminalRides = 0;
+  let sent = 0;
+  let failures = 0;
+
+  for (const activity of activities) {
+    const rideId = cleanText(activity.ride_id, '', 160);
+    if (!rideId || rides.has(rideId)) continue;
+    checked += 1;
+    const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+    if (!ride || riderIdForRide(ride) !== cleanText(activity.rider_id, '', 160)) {
+      await adminFirestore.set(LIVE_ACTIVITY_COLLECTION, activity.id, {
+        active: false,
+        invalidated_at: new Date().toISOString(),
+        invalid_reason: 'ride_or_rider_mismatch',
+      });
+      continue;
+    }
+    rides.set(rideId, ride);
+  }
+
+  for (const ride of rides.values()) {
+    if (!isTerminalLiveActivityStatus(ride.status)) continue;
+    terminalRides += 1;
+    const result = await sendRideLiveActivityUpdate(ride, { force: true });
+    sent += result.sent;
+    failures += result.failures;
+  }
+  return { checked, terminalRides, sent, failures };
 }
 
 /** Emits a Driver GPS update to every active ride owned by that Driver. */

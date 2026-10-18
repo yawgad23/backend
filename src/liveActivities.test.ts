@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   HY3N_LIVE_ACTIVITY_CONTENT_VERSION,
   HY3N_LIVE_ACTIVITY_IMAGE_NAME,
+  isTerminalLiveActivityStatus,
+  isTerminalLiveActivityTransition,
   liveActivityContentNeedsRefresh,
   liveActivityPushPriority,
   liveActivityPresentation,
@@ -10,6 +12,16 @@ import {
 } from './liveActivities';
 
 describe('Rider Live Activity trip progress', () => {
+  it('only treats persisted completed or cancelled statuses as terminal', () => {
+    expect(isTerminalLiveActivityStatus('completed')).toBe(true);
+    expect(isTerminalLiveActivityStatus('cancelled')).toBe(true);
+    expect(isTerminalLiveActivityStatus('in_progress')).toBe(false);
+    expect(isTerminalLiveActivityTransition('in_progress', 'completed')).toBe(true);
+    expect(isTerminalLiveActivityTransition('driver_arriving', 'cancelled')).toBe(true);
+    expect(isTerminalLiveActivityTransition('completed', 'completed')).toBe(false);
+    expect(isTerminalLiveActivityTransition('in_progress', 'in_progress')).toBe(false);
+  });
+
   it('uses the owned HY3N vehicle asset for native Island updates', () => {
     expect(HY3N_LIVE_ACTIVITY_IMAGE_NAME).toBe('hy3n_trip_car');
   });

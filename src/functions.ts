@@ -3,6 +3,14 @@ import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/fire
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
 import { sendRideChatPush, sendRideStatusPush } from "./pushNotifications";
+import {
+  isTerminalLiveActivityStatus,
+  isTerminalLiveActivityTransition,
+  recoverTerminalRideLiveActivities,
+  sendRideLiveActivityUpdate,
+  terminalEndPending,
+} from './liveActivities';
+import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
 import { endActiveTripSharesForRide } from './tripShare';
 import { dispatchDueDriverRideOffers, dispatchNextDriverRideOffer } from './driverOfferDispatch';
 import { runDailyFinancialReconciliation } from './financialReconciliation';
@@ -140,6 +148,87 @@ export const rideStatusPush = onDocumentUpdated(
       await endActiveTripSharesForRide(event.params.rideId, 'ride_ended');
     } else if (wasDriverId && isDriverId !== wasDriverId) {
       await endActiveTripSharesForRide(event.params.rideId, 'assignment_changed');
+    }
+  },
+);
+
+/**
+ * The Driver's completion write is authoritative. This retried trigger backs
+ * up its best-effort immediate ActivityKit send, so a transient APNs/network
+ * failure cannot leave a stale pickup or trip card on the Rider's iPhone.
+ */
+export const riderLiveActivityTerminalEnd = onDocumentUpdated(
+  {
+    document: 'rides/{rideId}',
+    region: 'europe-west1',
+    retry: true,
+  },
+  async (event) => {
+    if (!event.data) return;
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    if (!isTerminalLiveActivityTransition(before.status, after.status)) return;
+    const result = await sendRideLiveActivityUpdate({ ...after, id: event.params.rideId }, { force: true });
+    if (result.failures) {
+      console.error('[LiveActivity] terminal Live Activity end delivery failed', { attempted: result.attempted, failures: result.failures });
+      throw new Error('terminal Live Activity end delivery failed');
+    }
+  },
+);
+
+/**
+ * Handles the race where iOS gives HY3N an Activity token just after the
+ * server records completion/cancellation. Re-read the server ride before
+ * sending; never trust client-provided terminal status.
+ */
+export const riderLiveActivityRegistrationRecovery = onDocumentCreated(
+  {
+    document: 'rider_live_activities/{activityId}',
+    region: 'europe-west1',
+    retry: true,
+  },
+  async (event) => {
+    if (!event.data) return;
+    const activity = event.data.data();
+    const rideId = String(activity.ride_id || '').trim();
+    if (!rideId) return;
+    const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
+    if (!ride || !isTerminalLiveActivityStatus(ride.status)) return;
+    // The registration snapshot can predate completion. The fresh server read
+    // is decisive, while terminalEndPending documents the explicit late-token
+    // path for bounded operational diagnostics.
+    if (!terminalEndPending(activity)) console.info('[LiveActivity] Recovering terminal card registered after status transition');
+    const result = await sendRideLiveActivityUpdate({ ...ride, id: rideId }, { force: true });
+    if (result.failures) {
+      console.error('[LiveActivity] terminal Live Activity end delivery failed', { attempted: result.attempted, failures: result.failures });
+      throw new Error('terminal Live Activity end delivery failed');
+    }
+  },
+);
+
+/**
+ * Bounded cleanup for a card that was already stuck before the retrying
+ * transition trigger was deployed. It does not mutate a ride or business
+ * state; it sends end events only for rides already terminal in Firestore.
+ */
+export const riderLiveActivityTerminalRecovery = onSchedule(
+  {
+    schedule: 'every 5 minutes',
+    timeZone: 'Africa/Accra',
+    region: 'europe-west1',
+    timeoutSeconds: 120,
+    memory: '256MiB',
+    maxInstances: 1,
+    retryCount: 3,
+    maxRetrySeconds: 300,
+    minBackoffSeconds: 15,
+    maxBackoffSeconds: 60,
+  },
+  async () => {
+    const result = await recoverTerminalRideLiveActivities();
+    if (result.failures) {
+      console.error('[LiveActivity] terminal recovery has pending delivery failures', result);
+      throw new Error('terminal Live Activity recovery failed');
     }
   },
 );
