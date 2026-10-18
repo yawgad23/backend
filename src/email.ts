@@ -101,7 +101,10 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
   const date = new Date(data.completedAt);
   const dateStr = Number.isNaN(date.getTime())
     ? 'Trip completed'
-    : date.toLocaleString('en-GH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    : date.toLocaleString('en-GH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Africa/Accra' });
+  const receiptDate = Number.isNaN(date.getTime())
+    ? 'Ride completed'
+    : date.toLocaleString('en-GH', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Africa/Accra' });
   const distance = validMetric(data.distance);
   const duration = validMetric(data.duration);
   const lostItemLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Lost item report — trip ${tripId}`)}&body=${encodeURIComponent(`Hello HY3N Support,\n\nI need help with a lost item from trip ${tripId}.\n\nItem description:\n\nThank you.`)}`;
@@ -111,22 +114,25 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
     : '<div style="font-size:24px;line-height:28px;font-weight:900;letter-spacing:1px;color:#17191D">HY<span style="color:#D4AF37">3</span>N</div>';
 
   const html = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:20px !important;padding-right:20px !important}.hero-title{font-size:24px !important;line-height:30px !important;letter-spacing:0 !important}.receipt-logo{width:96px !important;max-width:96px !important}.email-outer{padding:16px 0 !important}}</style></head>
-<body style="margin:0;padding:0;background:#F2F3F5;font-family:Arial,Helvetica,sans-serif;color:#17191D">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:24px !important;padding-right:24px !important}.hero-title{font-size:32px !important;line-height:38px !important;letter-spacing:-0.5px !important}.receipt-logo{width:94px !important;max-width:94px !important}.email-outer{padding:16px 0 !important}}</style></head>
+<body style="margin:0;padding:0;background:#1B1C20;font-family:Arial,Helvetica,sans-serif;color:#FFFFFF">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0">Your HY3N trip with ${escapeHtml(driverName)} is complete. Total: ${fareStr}.</div>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-outer" style="background:#F2F3F5;padding:24px 12px"><tr><td align="center">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-outer" style="background:#1B1C20;padding:24px 12px"><tr><td align="center">
     <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" class="receipt-shell" style="width:100%;max-width:620px;background:#FFFFFF">
-      <tr><td class="mobile-pad" style="background:#FFFFFF;padding:20px 30px 14px">
-        <span class="receipt-logo" style="display:inline-block;width:112px;max-width:112px">${logo}</span>
+      <tr><td class="receipt-hero mobile-pad" style="background:#353638;padding:30px 44px 34px;color:#FFFFFF">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="background:#FFFFFF;padding:10px 12px"><span class="receipt-logo" style="display:inline-block;width:112px;max-width:112px">${logo}</span></td></tr></table>
+        <div style="font-size:15px;line-height:22px;color:#D0D1D4;padding-top:42px">${escapeHtml(receiptDate)}</div>
+        <div class="hero-title" style="font-size:42px;line-height:48px;font-weight:800;letter-spacing:-1px;color:#FFFFFF;padding-top:24px">Thanks for riding, ${escapeHtml(riderName)}.</div>
+        <div style="font-size:18px;line-height:28px;color:#F0F0F1;padding-top:24px">We hope you enjoyed your ride.</div>
       </td></tr>
-      <tr><td style="background:#D4AF37;height:3px;line-height:3px;font-size:3px">&nbsp;</td></tr>
-      <tr><td class="mobile-pad" style="background:#FFFFFF;padding:28px 30px 30px;color:#17191D">
-        <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#77611A;text-transform:uppercase">Ride completed</div>
-        <div class="hero-title" style="font-size:28px;line-height:35px;font-weight:800;letter-spacing:-0.3px;color:#17191D;padding-top:10px">Thanks for riding with HY3N, ${escapeHtml(riderName)}.</div>
-        <div style="font-size:15px;line-height:22px;color:#5F6672;padding-top:10px">Your trip is complete. Here is your receipt.</div>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="receipt-total" style="width:100%;margin-top:22px;background:#17191D;border-radius:12px"><tr>
-          <td style="padding:17px 18px"><div style="font-size:11px;font-weight:700;letter-spacing:1px;color:#C8CDD4;text-transform:uppercase">Total paid</div><div style="font-size:12px;line-height:18px;color:#9EA5AF;padding-top:3px">${escapeHtml(paymentMethod)}</div></td>
-          <td align="right" style="padding:17px 18px;white-space:nowrap"><div style="font-size:28px;line-height:32px;color:#F4C542;font-weight:800">${fareStr}</div></td>
+      <tr><td class="fare-breakdown mobile-pad" style="background:#202124;padding:30px 44px 34px;color:#FFFFFF">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+          <td style="padding:0 0 28px;font-size:34px;line-height:40px;font-weight:800;color:#FFFFFF">Total</td>
+          <td align="right" style="padding:0 0 28px;font-size:34px;line-height:40px;font-weight:800;color:#FFFFFF;white-space:nowrap">${fareStr}</td>
+        </tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #3C3E43;border-bottom:1px solid #3C3E43"><tr>
+          <td style="padding:22px 0;font-size:18px;line-height:26px;color:#F1F1F2">Trip fare</td>
+          <td align="right" style="padding:22px 0;font-size:18px;line-height:26px;color:#F1F1F2;white-space:nowrap">${fareStr}</td>
         </tr></table>
       </td></tr>
       <tr><td class="mobile-pad" style="padding:26px 30px 8px">
@@ -160,8 +166,9 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
 
   const text = [
     'HY3N — Ride receipt',
-    `Thanks for riding with HY3N, ${riderName}.`,
-    `Total: ${fareStr}`,
+    `Thanks for riding, ${riderName}.`,
+    `Total fare: ${fareStr}`,
+    `Trip fare: ${fareStr}`,
     `Completed by: ${driverName}`,
     `Vehicle: ${driverVehicle}${driverPlate ? ` · ${driverPlate}` : ''}`,
     `Pickup: ${pickup}`,

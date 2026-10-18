@@ -23,7 +23,7 @@ describe('renderTripReceiptEmail', () => {
     const receipt = renderTripReceiptEmail(completedTrip);
 
     expect(receipt.subject).toBe('Your HY3N receipt — GH₵39.00');
-    expect(receipt.html).toContain('Thanks for riding with HY3N, Yaw Gad.');
+    expect(receipt.html).toContain('Thanks for riding, Yaw Gad.');
     expect(receipt.html).toContain('Completed by');
     expect(receipt.html).toContain('Ama Mensah');
     expect(receipt.html).toContain('Okpelen We Street 1, Ashaley Botwe');
@@ -59,15 +59,17 @@ describe('renderTripReceiptEmail', () => {
     expect(fallback).not.toContain('cid:hy3n-receipt-logo@ridehy3n.com');
   });
 
-  it('keeps a long Rider greeting full width and places the total in its own mobile-safe row', () => {
+  it('uses a dark single-column receipt hero and a separate truthful fare breakdown on mobile', () => {
     const longName = 'Akwasi Mensah Osei Tutu Prempeh';
     const receipt = renderTripReceiptEmail({ ...completedTrip, riderName: longName }, true);
 
-    expect(receipt.html).toContain(`Thanks for riding with HY3N, ${longName}.`);
-    expect(receipt.html).toContain('class="hero-title"');
-    expect(receipt.html).toContain('class="receipt-total"');
-    expect(receipt.html.indexOf('class="hero-title"')).toBeLessThan(receipt.html.indexOf('class="receipt-total"'));
-    expect(receipt.html).toContain('width="112"');
-    expect(receipt.html).not.toContain('padding:12px 0 0 18px;white-space:nowrap');
+    expect(receipt.html).toContain(`Thanks for riding, ${longName}.`);
+    expect(receipt.html).toContain('receipt-hero');
+    expect(receipt.html).toContain('fare-breakdown');
+    expect(receipt.html.indexOf('receipt-hero')).toBeLessThan(receipt.html.indexOf('fare-breakdown'));
+    expect(receipt.html).toContain('>Total</td>');
+    expect(receipt.html).toContain('Trip fare');
+    expect(receipt.html).toContain('GH₵39.00');
+    expect(receipt.html).not.toContain('Total paid');
   });
 });
