@@ -82,7 +82,7 @@ async function retirePushDevice(device: PushDevice, reason: string) {
   });
 }
 
-async function pushDevicesForRecipient(uid: string, role: PushRole): Promise<PushDevice[]> {
+export async function pushDevicesForRecipient(uid: string, role: PushRole): Promise<PushDevice[]> {
   const devices = await adminFirestore.list(
     ADMIN_COLLECTIONS.PUSH_DEVICES,
     { uid },
@@ -100,7 +100,7 @@ async function pushDevicesForRecipient(uid: string, role: PushRole): Promise<Pus
 }
 
 async function recordDelivery(input: {
-  type?: 'chat_message' | 'ride_status' | 'trip_route_change';
+  type?: 'chat_message' | 'ride_status' | 'trip_route_change' | 'trip_share';
   messageId: string;
   rideId: string;
   recipientUid: string;
@@ -331,6 +331,59 @@ export async function sendRideStatusPush(
     return { attempted: devices.length, sent };
   } catch (error) {
     console.error('[Push] Ride status notification dispatch failed', { rideId, status: nextStatus, error });
+    return { attempted: devices.length, sent: 0 };
+  }
+}
+
+/**
+ * Notifies only the server-authorized Rider recipient of a private trip share.
+ * The push intentionally carries no location, address, Driver, or bearer-link
+ * data. The recipient app must authenticate again before it can read a live
+ * snapshot, and an invalid registered device is retired as in other senders.
+ */
+export async function sendTripSharePush(input: { shareId: string; rideId: string; recipientUid: string }) {
+  if (!input.shareId || !input.rideId || !input.recipientUid) return { attempted: 0, sent: 0 };
+  const devices = await pushDevicesForRecipient(input.recipientUid, 'rider');
+  if (devices.length === 0) return { attempted: 0, sent: 0 };
+  const payload = devices.map((device) => ({
+    to: device.token,
+    title: 'HY3N trip shared with you',
+    body: 'Open HY3N to follow this trip privately.',
+    sound: 'default',
+    priority: 'high',
+    channelId: 'rides',
+    data: { type: 'trip_share', shareId: input.shareId },
+  }));
+  try {
+    const response = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Accept-Encoding': 'gzip, deflate', 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({})) as { data?: ExpoTicket[]; errors?: unknown[] };
+    if (!response.ok || !Array.isArray(result.data)) {
+      console.error('[Push] Expo rejected trip-share notifications', { shareId: input.shareId, responseStatus: response.status, errors: result.errors || null });
+      return { attempted: devices.length, sent: 0 };
+    }
+    let sent = 0;
+    await Promise.all(result.data.map(async (ticket, index) => {
+      const device = devices[index];
+      if (!device) return;
+      await recordDelivery({
+        type: 'trip_share',
+        messageId: `trip-share:${input.shareId}`,
+        rideId: input.rideId,
+        recipientUid: input.recipientUid,
+        recipientRole: 'rider',
+        device,
+        ticket,
+      });
+      if (ticket.status === 'ok') sent += 1;
+      else if (ticket.details?.error === 'DeviceNotRegistered') await retirePushDevice(device, 'DeviceNotRegistered');
+    }));
+    return { attempted: devices.length, sent };
+  } catch (error) {
+    console.error('[Push] Trip-share notification dispatch failed', { shareId: input.shareId, error });
     return { attempted: devices.length, sent: 0 };
   }
 }

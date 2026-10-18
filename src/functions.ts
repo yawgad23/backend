@@ -3,6 +3,7 @@ import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/fire
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { createApp } from "./app";
 import { sendRideChatPush, sendRideStatusPush } from "./pushNotifications";
+import { endActiveTripSharesForRide } from './tripShare';
 import { dispatchDueDriverRideOffers, dispatchNextDriverRideOffer } from './driverOfferDispatch';
 import { runDailyFinancialReconciliation } from './financialReconciliation';
 
@@ -129,7 +130,17 @@ export const rideStatusPush = onDocumentUpdated(
   },
   async (event) => {
     if (!event.data) return;
-    await sendRideStatusPush(event.params.rideId, event.data.before.data(), event.data.after.data());
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    await sendRideStatusPush(event.params.rideId, before, after);
+    const wasDriverId = String(before.driver_id || before.driverId || '');
+    const isDriverId = String(after.driver_id || after.driverId || '');
+    const active = new Set(['matched', 'driver_arriving', 'driver_arrived', 'in_progress']);
+    if (!active.has(String(after.status || ''))) {
+      await endActiveTripSharesForRide(event.params.rideId, 'ride_ended');
+    } else if (wasDriverId && isDriverId !== wasDriverId) {
+      await endActiveTripSharesForRide(event.params.rideId, 'assignment_changed');
+    }
   },
 );
 
