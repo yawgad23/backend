@@ -67,6 +67,7 @@ describe('renderTripReceiptEmail', () => {
     const branded = renderTripReceiptEmail(completedTrip, true).html;
     expect(branded).toContain('class="receipt-logo"');
     expect(branded).not.toContain('background:#FFFFFF;padding:10px 12px');
+    expect(branded).toContain('<td align="center" style="padding:0;text-align:center"><span class="receipt-logo"');
   });
 
   it('uses a dark single-column receipt hero and a separate truthful fare breakdown on mobile', () => {

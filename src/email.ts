@@ -120,7 +120,7 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-outer" style="background:#1B1C20;padding:24px 12px"><tr><td align="center">
     <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" class="receipt-shell" style="width:100%;max-width:620px;background:#FFFFFF">
       <tr><td class="receipt-hero mobile-pad" style="background:#353638;padding:30px 44px 34px;color:#FFFFFF">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0"><span class="receipt-logo" style="display:inline-block;width:154px;max-width:154px">${logo}</span></td></tr></table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="padding:0;text-align:center"><span class="receipt-logo" style="display:inline-block;width:154px;max-width:154px">${logo}</span></td></tr></table>
         <div style="font-size:15px;line-height:22px;color:#D0D1D4;padding-top:42px">${escapeHtml(receiptDate)}</div>
         <div class="hero-title" style="font-size:42px;line-height:48px;font-weight:800;letter-spacing:-1px;color:#FFFFFF;padding-top:24px">Medaase for riding, ${escapeHtml(riderName)}.</div>
         <div style="font-size:18px;line-height:28px;color:#F0F0F1;padding-top:24px">We hope you enjoyed your ride.</div>
