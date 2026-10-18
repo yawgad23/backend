@@ -54,6 +54,20 @@ describe('renderTripReceiptEmail', () => {
 
   it('uses the embedded HY3N logo only when the delivery has an attachment', () => {
     expect(renderTripReceiptEmail(completedTrip, true).html).toContain('cid:hy3n-receipt-logo@ridehy3n.com');
-    expect(renderTripReceiptEmail(completedTrip, false).html).toContain('>HY3N</div>');
+    const fallback = renderTripReceiptEmail(completedTrip, false).html;
+    expect(fallback).toContain('HY<span style="color:#D4AF37">3</span>N');
+    expect(fallback).not.toContain('cid:hy3n-receipt-logo@ridehy3n.com');
+  });
+
+  it('keeps a long Rider greeting full width and places the total in its own mobile-safe row', () => {
+    const longName = 'Akwasi Mensah Osei Tutu Prempeh';
+    const receipt = renderTripReceiptEmail({ ...completedTrip, riderName: longName }, true);
+
+    expect(receipt.html).toContain(`Thanks for riding with HY3N, ${longName}.`);
+    expect(receipt.html).toContain('class="hero-title"');
+    expect(receipt.html).toContain('class="receipt-total"');
+    expect(receipt.html.indexOf('class="hero-title"')).toBeLessThan(receipt.html.indexOf('class="receipt-total"'));
+    expect(receipt.html).toContain('width="112"');
+    expect(receipt.html).not.toContain('padding:12px 0 0 18px;white-space:nowrap');
   });
 });
