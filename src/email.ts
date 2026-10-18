@@ -15,9 +15,9 @@ import path from 'node:path';
 
 const RECEIPT_LOGO_CID = 'hy3n-receipt-logo@ridehy3n.com';
 
-function getReceiptLogoAttachment() {
+export function getReceiptLogoAttachment() {
   const assetDirectory = path.join(process.cwd(), 'assets');
-  const logoFile = ['hy3n-receipt-wordmark.png', 'hy3n-receipt-logo.png']
+  const logoFile = ['hy3n-receipt-logo-supplied.png', 'hy3n-receipt-wordmark.png', 'hy3n-receipt-logo.png']
     .find((filename) => existsSync(path.join(assetDirectory, filename)));
   if (!logoFile) {
     console.warn('[HY3N Email] Receipt logo asset not found:', assetDirectory);
@@ -110,17 +110,17 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
   const lostItemLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Lost item report — trip ${tripId}`)}&body=${encodeURIComponent(`Hello HY3N Support,\n\nI need help with a lost item from trip ${tripId}.\n\nItem description:\n\nThank you.`)}`;
   const supportLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Trip support — ${tripId}`)}`;
   const logo = hasEmbeddedLogo
-    ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N" width="112" style="display:block;width:112px;max-width:112px;height:auto;border:0" />`
+    ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="154" style="display:block;width:154px;max-width:154px;height:auto;border:0;outline:none;text-decoration:none" />`
     : '<div style="font-size:24px;line-height:28px;font-weight:900;letter-spacing:1px;color:#17191D">HY<span style="color:#D4AF37">3</span>N</div>';
 
   const html = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:24px !important;padding-right:24px !important}.hero-title{font-size:32px !important;line-height:38px !important;letter-spacing:-0.5px !important}.receipt-logo{width:94px !important;max-width:94px !important}.email-outer{padding:16px 0 !important}}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:24px !important;padding-right:24px !important}.hero-title{font-size:32px !important;line-height:38px !important;letter-spacing:-0.5px !important}.receipt-logo{width:132px !important;max-width:132px !important}.email-outer{padding:16px 0 !important}}</style></head>
 <body style="margin:0;padding:0;background:#1B1C20;font-family:Arial,Helvetica,sans-serif;color:#FFFFFF">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0">Your HY3N trip with ${escapeHtml(driverName)} is complete. Total: ${fareStr}.</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-outer" style="background:#1B1C20;padding:24px 12px"><tr><td align="center">
     <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" class="receipt-shell" style="width:100%;max-width:620px;background:#FFFFFF">
       <tr><td class="receipt-hero mobile-pad" style="background:#353638;padding:30px 44px 34px;color:#FFFFFF">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="background:#FFFFFF;padding:10px 12px"><span class="receipt-logo" style="display:inline-block;width:112px;max-width:112px">${logo}</span></td></tr></table>
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:0"><span class="receipt-logo" style="display:inline-block;width:154px;max-width:154px">${logo}</span></td></tr></table>
         <div style="font-size:15px;line-height:22px;color:#D0D1D4;padding-top:42px">${escapeHtml(receiptDate)}</div>
         <div class="hero-title" style="font-size:42px;line-height:48px;font-weight:800;letter-spacing:-1px;color:#FFFFFF;padding-top:24px">Medaase for riding, ${escapeHtml(riderName)}.</div>
         <div style="font-size:18px;line-height:28px;color:#F0F0F1;padding-top:24px">We hope you enjoyed your ride.</div>

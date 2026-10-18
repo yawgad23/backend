@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderTripReceiptEmail } from './email';
+import { getReceiptLogoAttachment, renderTripReceiptEmail } from './email';
 
 const completedTrip = {
   riderEmail: 'rider@example.com',
@@ -57,6 +57,16 @@ describe('renderTripReceiptEmail', () => {
     const fallback = renderTripReceiptEmail(completedTrip, false).html;
     expect(fallback).toContain('HY<span style="color:#D4AF37">3</span>N');
     expect(fallback).not.toContain('cid:hy3n-receipt-logo@ridehy3n.com');
+  });
+
+  it('uses the supplied HY3N logo without a pasted white frame', () => {
+    const attachment = getReceiptLogoAttachment();
+    expect(attachment?.filename).toBe('hy3n-receipt-logo-supplied.png');
+    expect(attachment?.cid).toBe('hy3n-receipt-logo@ridehy3n.com');
+
+    const branded = renderTripReceiptEmail(completedTrip, true).html;
+    expect(branded).toContain('class="receipt-logo"');
+    expect(branded).not.toContain('background:#FFFFFF;padding:10px 12px');
   });
 
   it('uses a dark single-column receipt hero and a separate truthful fare breakdown on mobile', () => {
