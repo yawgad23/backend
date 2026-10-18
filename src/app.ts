@@ -8,6 +8,7 @@ import { registerPublicPaymentsApi } from "./publicPaymentsApi";
 import { registerDriverOtpRoutes } from "./driverOtp";
 import { registerDriverPhoneLoginRoutes } from "./driverPhoneLogin";
 import { registerDriverLocationRoutes } from "./driverLocation";
+import { registerDriverOfferPreferenceRoutes } from './driverOfferPreferenceRoutes';
 import { registerLiveActivityRoutes, sendRideLiveActivityUpdate } from "./liveActivities";
 import { appRouter } from "./routers";
 import { createContext } from "./context";
@@ -275,6 +276,7 @@ export function createApp(): Express {
   registerDriverOtpRoutes(app);
   registerDriverPhoneLoginRoutes(app);
   registerDriverLocationRoutes(app);
+  registerDriverOfferPreferenceRoutes(app);
   registerLiveActivityRoutes(app);
   app.use("/newroute", newRouteRouter);
   registerCronRoutes(app);

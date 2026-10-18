@@ -452,7 +452,7 @@ function directMomoNumber(value: unknown): string | null {
 export const driverOperations = router({
   getPreferences: driverProcedure(driverIdInput).query(async ({ input }) => {
     const p = await profile(input.driverId);
-    const preferences = p?.driver_preferences || {};
+    const preferences = p?.preferences || p?.driver_preferences || {};
     const destination = preferences.destination || p?.destination_filter || null;
     return { preferences: {
       rideCategories: preferences.rideCategories || p?.ride_categories || ['standard'],
@@ -466,7 +466,7 @@ export const driverOperations = router({
   }),
   savePreferences: driverProcedure(z.object({ driverId: z.string().min(1), rideCategories: z.array(z.string()).min(1), pickupRadiusKm: z.number().min(1).max(100), autoAccept: z.boolean(), destination: z.object({ label: z.string().min(1), latitude: z.number(), longitude: z.number() }).optional() })).mutation(async ({ input }) => {
     const p = await profile(input.driverId);
-    const previous = p?.driver_preferences || {};
+    const previous = p?.preferences || p?.driver_preferences || {};
     let uses = Number(previous.destinationUsesRemaining ?? 2);
     const old = previous.destination;
     if (input.destination && (!old || old.label !== input.destination.label || old.latitude !== input.destination.latitude || old.longitude !== input.destination.longitude)) uses = Math.max(0, uses - 1);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { driverOfferRecipients } from './driverOfferPush';
+import { driverOfferPushNotificationsEnabled, driverOfferRecipients } from './driverOfferPush';
 
 const now = Date.parse('2026-10-03T21:00:00.000Z');
 const ride = {
@@ -83,5 +83,33 @@ describe('Driver ride-offer push recipients', () => {
       presence({ id: 'standard-only', user_id: 'standard-only', ride_categories: ['standard'] }),
       presence({ id: 'parcel-driver', user_id: 'parcel-driver', service_type: 'delivery', ride_categories: ['express_delivery'] }),
     ], now)).toEqual(['legacy-executive']);
+  });
+
+  it('does not reserve a 10 km-or-shorter trip for a Driver who chose Long Trips Only', () => {
+    expect(driverOfferRecipients({ ...ride, distance_km: 10 }, [
+      presence({ driver_preferences: { longTripsOnly: true } }),
+      presence({ id: 'normal-driver', user_id: 'normal-driver' }),
+    ], now)).toEqual(['normal-driver']);
+    expect(driverOfferRecipients({ ...ride, distance_km: 10.01 }, [
+      presence({ driver_preferences: { longTripsOnly: true } }),
+    ], now)).toEqual(['driver-1']);
+  });
+
+  it('prioritises a verified 4.5+ Rider preference without treating an unrated Rider as 5.0', () => {
+    const highRatedRide = { ...ride, rider_rating: 4.7, rider_rating_count: 8 };
+    expect(driverOfferRecipients(highRatedRide, [
+      presence({ id: 'close-standard', user_id: 'close-standard', driver_preferences: { preferHighRated: false }, current_location: { latitude: 5.6038, longitude: -0.187, recorded_at: new Date(now - 20_000).toISOString() } }),
+      presence({ id: 'prefers-high', user_id: 'prefers-high', driver_preferences: { preferHighRated: true }, current_location: { latitude: 5.6045, longitude: -0.187, recorded_at: new Date(now - 20_000).toISOString() } }),
+    ], now)).toEqual(['prefers-high']);
+    expect(driverOfferRecipients({ ...ride, rider_rating: null, rider_rating_count: 0 }, [
+      presence({ id: 'close-standard', user_id: 'close-standard', driver_preferences: { preferHighRated: false }, current_location: { latitude: 5.6038, longitude: -0.187, recorded_at: new Date(now - 20_000).toISOString() } }),
+      presence({ id: 'prefers-high', user_id: 'prefers-high', driver_preferences: { preferHighRated: true }, current_location: { latitude: 5.6045, longitude: -0.187, recorded_at: new Date(now - 20_000).toISOString() } }),
+    ], now)).toEqual(['close-standard']);
+  });
+
+  it('suppresses only device push delivery when the Driver turns Push Notifications off', () => {
+    expect(driverOfferPushNotificationsEnabled({ preferences: { notifications: false } })).toBe(false);
+    expect(driverOfferPushNotificationsEnabled({ preferences: { notifications: true } })).toBe(true);
+    expect(driverOfferRecipients(ride, [presence({ preferences: { notifications: false } })], now)).toEqual(['driver-1']);
   });
 });

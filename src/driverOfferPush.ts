@@ -3,6 +3,12 @@ import { driverCanServeRideCategory } from './driverRouters';
 import { isOnlineWithFreshLocation } from './driverPresence';
 import { isExpoPushToken } from './pushNotifications';
 import { excludedDriverIdsForOffer } from './rideOfferLifecycle';
+import {
+  driverAllowsRideByDistance,
+  driverOfferPreferencePriority,
+  preferencesForDriverRecord,
+} from './driverOfferPreferences';
+import { driverProfileForUserId } from './driverApproval';
 
 const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
 const MAX_DRIVER_OFFER_CANDIDATES = 24;
@@ -78,11 +84,19 @@ export function driverOfferRecipients(
       uid: cleanText(presence.user_id ?? presence.id),
       distanceKm: pickupDistanceKm(ride, presence),
       radiusKm: configuredPickupRadiusKm(presence),
+      preferences: preferencesForDriverRecord(presence),
     }))
     .filter((candidate) => candidate.uid && candidate.distanceKm !== null && candidate.distanceKm <= candidate.radiusKm)
-    .sort((left, right) => Number(left.distanceKm) - Number(right.distanceKm))
+    .filter((candidate) => driverAllowsRideByDistance(ride, candidate.preferences))
+    .map((candidate) => ({ ...candidate, preferencePriority: driverOfferPreferencePriority(ride, candidate.preferences) }))
+    .sort((left, right) => left.preferencePriority - right.preferencePriority || Number(left.distanceKm) - Number(right.distanceKm))
     .slice(0, Math.max(1, Math.min(MAX_DRIVER_OFFER_CANDIDATES, Math.floor(maximum) || 1)))
     .map((candidate) => candidate.uid);
+}
+
+/** A disabled push switch suppresses only device wake-ups, never offer eligibility. */
+export function driverOfferPushNotificationsEnabled(profile: Record<string, unknown> | null | undefined) {
+  return preferencesForDriverRecord(profile).notifications;
 }
 
 /**
@@ -99,6 +113,8 @@ export async function sendDriverRideOfferPush(rideId: string, rawRide: Record<st
   if (!offeredDriverId) return { attempted: 0, sent: 0 };
 
   try {
+    const profile = await driverProfileForUserId(offeredDriverId);
+    if (!driverOfferPushNotificationsEnabled(profile)) return { attempted: 0, sent: 0 };
     const devices = (await adminFirestore.list(ADMIN_COLLECTIONS.PUSH_DEVICES, { uid: offeredDriverId }, null, 'desc', 20))
       .filter((device): device is PushDevice => (
         cleanText(device.role).toLowerCase() === 'driver'
