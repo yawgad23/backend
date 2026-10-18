@@ -23,7 +23,7 @@ describe('renderTripReceiptEmail', () => {
     const receipt = renderTripReceiptEmail(completedTrip);
 
     expect(receipt.subject).toBe('Your HY3N receipt — GH₵39.00');
-    expect(receipt.html).toContain('Thanks for riding, Yaw Gad.');
+    expect(receipt.html).toContain('Medaase for riding, Yaw Gad.');
     expect(receipt.html).toContain('Completed by');
     expect(receipt.html).toContain('Ama Mensah');
     expect(receipt.html).toContain('Okpelen We Street 1, Ashaley Botwe');
@@ -63,7 +63,7 @@ describe('renderTripReceiptEmail', () => {
     const longName = 'Akwasi Mensah Osei Tutu Prempeh';
     const receipt = renderTripReceiptEmail({ ...completedTrip, riderName: longName }, true);
 
-    expect(receipt.html).toContain(`Thanks for riding, ${longName}.`);
+    expect(receipt.html).toContain(`Medaase for riding, ${longName}.`);
     expect(receipt.html).toContain('receipt-hero');
     expect(receipt.html).toContain('fare-breakdown');
     expect(receipt.html.indexOf('receipt-hero')).toBeLessThan(receipt.html.indexOf('fare-breakdown'));

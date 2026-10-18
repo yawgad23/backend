@@ -122,7 +122,7 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
       <tr><td class="receipt-hero mobile-pad" style="background:#353638;padding:30px 44px 34px;color:#FFFFFF">
         <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="background:#FFFFFF;padding:10px 12px"><span class="receipt-logo" style="display:inline-block;width:112px;max-width:112px">${logo}</span></td></tr></table>
         <div style="font-size:15px;line-height:22px;color:#D0D1D4;padding-top:42px">${escapeHtml(receiptDate)}</div>
-        <div class="hero-title" style="font-size:42px;line-height:48px;font-weight:800;letter-spacing:-1px;color:#FFFFFF;padding-top:24px">Thanks for riding, ${escapeHtml(riderName)}.</div>
+        <div class="hero-title" style="font-size:42px;line-height:48px;font-weight:800;letter-spacing:-1px;color:#FFFFFF;padding-top:24px">Medaase for riding, ${escapeHtml(riderName)}.</div>
         <div style="font-size:18px;line-height:28px;color:#F0F0F1;padding-top:24px">We hope you enjoyed your ride.</div>
       </td></tr>
       <tr><td class="fare-breakdown mobile-pad" style="background:#202124;padding:30px 44px 34px;color:#FFFFFF">
@@ -166,7 +166,7 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
 
   const text = [
     'HY3N — Ride receipt',
-    `Thanks for riding, ${riderName}.`,
+    `Medaase for riding, ${riderName}.`,
     `Total fare: ${fareStr}`,
     `Trip fare: ${fareStr}`,
     `Completed by: ${driverName}`,
