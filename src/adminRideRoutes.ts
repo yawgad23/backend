@@ -17,7 +17,15 @@ export function normalizeAdminRideStatus(value: unknown): string {
 export function isAdminLiveRide(ride: Record<string, any>, currentTime = Date.now()): boolean {
   const status = normalizeAdminRideStatus(ride.status);
   if (!ACTIVE_STATUSES.has(status)) return false;
-  if (isRideSearchExpired(ride, currentTime)) return false;
+  const driverId = activeRideDriverId(ride);
+  if (status === 'searching') {
+    // A waiting card without a server search window is an incomplete/legacy
+    // record, not proof that a Driver is currently being sought.
+    if (!ride.search_expires_at && !ride.search_started_at && !ride.created_at && !ride.created_date && !ride.date) return false;
+    if (isRideSearchExpired(ride, currentTime)) return false;
+  }
+  if (status === 'in_progress' && (!driverId || !ride.trip_started_at)) return false;
+  if (status !== 'searching' && status !== 'in_progress' && !driverId) return false;
   // History and live operations must never show a record twice when a legacy
   // write left an active status alongside a terminal timestamp.
   if (ride.completed_at || ride.cancelled_at || ride.trip_ended_at || ride.ended_at) return false;

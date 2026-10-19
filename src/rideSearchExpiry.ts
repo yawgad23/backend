@@ -2,6 +2,12 @@
 export const RIDE_SEARCH_TTL_MS = 6 * 60 * 1000;
 
 function parseMillis(value: unknown): number | null {
+  if (value && typeof value === 'object' && typeof (value as { toDate?: unknown }).toDate === 'function') {
+    const date = (value as { toDate: () => Date }).toDate();
+    const milliseconds = date instanceof Date ? date.getTime() : NaN;
+    return Number.isFinite(milliseconds) ? milliseconds : null;
+  }
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.getTime() : null;
   const parsed = Date.parse(String(value || ''));
   return Number.isFinite(parsed) ? parsed : null;
 }

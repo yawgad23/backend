@@ -24,6 +24,20 @@ describe('Admin live ride status compatibility', () => {
   it('does not count a terminal history record that retained an active status', () => {
     expect(isAdminLiveRide({ status: 'in_progress', completed_at: '2026-10-19T19:20:00.000Z' })).toBe(false);
     expect(isAdminLiveRide({ status: 'driver_arriving', cancelled_at: '2026-10-19T19:20:00.000Z' })).toBe(false);
-    expect(isAdminLiveRide({ status: 'in_progress' })).toBe(true);
+    expect(isAdminLiveRide({ status: 'in_progress', driver_id: 'driver-1', trip_started_at: '2026-10-19T19:20:00.000Z' })).toBe(true);
+  });
+
+  it('rejects incomplete active-looking legacy records without lifecycle evidence', () => {
+    expect(isAdminLiveRide({ status: 'searching' })).toBe(false);
+    expect(isAdminLiveRide({ status: 'in_progress', driver_id: 'driver-1' })).toBe(false);
+    expect(isAdminLiveRide({ status: 'driver_arriving' })).toBe(false);
+  });
+
+  it('accepts a genuinely active started ride with server timestamps and Driver assignment', () => {
+    expect(isAdminLiveRide({
+      status: 'in_progress',
+      driver_id: 'driver-1',
+      trip_started_at: '2026-10-19T19:30:00.000Z',
+    })).toBe(true);
   });
 });
