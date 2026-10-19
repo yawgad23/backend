@@ -2,6 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { requireAdministrator } from './adminAuthorization';
 import { buildAdminTripDetail, rideParticipantIds } from './adminTripDetails';
+import { freshAdminDriverLocations } from './adminLiveDriverLocation';
 
 const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'in_progress']);
 const RECENT_STATUSES = new Set(['completed', 'cancelled']);
@@ -65,6 +66,11 @@ function normalizedRide(ride: Record<string, any>) {
   };
 }
 
+function activeRideDriverId(ride: Record<string, any>): string | null {
+  const driverId = String(ride.driver_id ?? ride.driverId ?? '').trim();
+  return /^[A-Za-z0-9_-]{1,160}$/.test(driverId) ? driverId : null;
+}
+
 /** Read-only live operations feed for the protected HY3N administrator dashboard. */
 export function registerAdminRideRoutes(app: Express) {
   /**
@@ -107,10 +113,26 @@ export function registerAdminRideRoutes(app: Express) {
     if (!adminEmail) return;
     try {
       const records = await operationalRideRecords();
-      const rides = records.map(normalizedRide);
+      const rides = records.map((record) => ({
+        normalized: normalizedRide(record),
+        driverId: activeRideDriverId(record),
+      }));
+      const activeRecords = rides.filter(({ normalized }) => ACTIVE_STATUSES.has(normalized.status));
+      const freshLocations = await freshAdminDriverLocations(
+        activeRecords.map(({ driverId }) => driverId),
+        (driverId) => adminFirestore.get('driver_presence', driverId),
+      );
       response.json({
-        active: rides.filter((ride) => ACTIVE_STATUSES.has(ride.status)),
-        recent: rides.filter((ride) => RECENT_STATUSES.has(ride.status)).slice(0, 50),
+        active: activeRecords.map(({ normalized, driverId }) => ({
+          ...normalized,
+          // Null is deliberate: an unassigned, stale, malformed, or unknown
+          // presence record must never be portrayed as a current Driver pin.
+          driver_location: driverId ? freshLocations.get(driverId) || null : null,
+        })),
+        recent: rides
+          .map(({ normalized }) => normalized)
+          .filter((ride) => RECENT_STATUSES.has(ride.status))
+          .slice(0, 50),
       });
     } catch (error) {
       console.error('[Admin rides] Failed to load live rides:', error);
