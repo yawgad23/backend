@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activeLegacyLocationPresencePatch,
+  activeRideDriverLocationPatch,
   availabilityHeartbeatLocation,
   canPublishActiveLegacyRideLocation,
   driverLocationInput,
@@ -80,5 +81,31 @@ describe('Driver location ingress', () => {
       is_approved: false,
     });
     expect(isOnlineWithFreshLocation(presence, new Date(receivedAt).getTime())).toBe(false);
+  });
+
+  it('projects only the assigned Driver active-trip map point into the participant-owned ride', () => {
+    const patch = activeRideDriverLocationPatch(
+      { id: 'ride-1', driver_id: 'firebase-driver-uid', status: 'in_progress', fare: 30 },
+      'firebase-driver-uid',
+      {
+        latitude: 5.6037,
+        longitude: -0.187,
+        heading: 90,
+        source_recorded_at: '2026-10-19T19:00:00.000Z',
+      },
+      '2026-10-19T19:00:02.000Z',
+    );
+
+    expect(patch).toEqual({
+      driver_location: {
+        latitude: 5.6037,
+        longitude: -0.187,
+        heading: 90,
+        recorded_at: '2026-10-19T19:00:02.000Z',
+        source_recorded_at: '2026-10-19T19:00:00.000Z',
+      },
+      driver_location_updated_at: '2026-10-19T19:00:02.000Z',
+    });
+    expect(activeRideDriverLocationPatch({ driver_id: 'another-driver', status: 'in_progress' }, 'firebase-driver-uid', {}, '2026-10-19T19:00:02.000Z')).toBeNull();
   });
 });

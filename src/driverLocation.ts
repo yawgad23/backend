@@ -103,6 +103,53 @@ export function activeLegacyLocationPresencePatch(
   };
 }
 
+/**
+ * A Rider may already read their own active ride, so project only the assigned
+ * Driver's minimal live map point there. This replaces the need for any Rider
+ * client to read the general Driver presence collection.
+ */
+export function activeRideDriverLocationPatch(
+  ride: Record<string, unknown> | null | undefined,
+  driverId: string,
+  location: Record<string, unknown>,
+  receivedAt: string,
+): Record<string, unknown> | null {
+  if (!canPublishActiveLegacyRideLocation(ride, driverId)) return null;
+  const heading = location.heading === null || location.heading === undefined
+    ? null
+    : Number(location.heading);
+  return {
+    driver_location: {
+      latitude: Number(location.latitude),
+      longitude: Number(location.longitude),
+      heading: Number.isFinite(heading) ? heading : null,
+      recorded_at: receivedAt,
+      source_recorded_at: String(location.source_recorded_at || receivedAt),
+    },
+    driver_location_updated_at: receivedAt,
+  };
+}
+
+async function projectActiveRideDriverLocation(
+  driverId: string,
+  location: Record<string, unknown>,
+  receivedAt: string,
+) {
+  const rides = (await Promise.all(
+    [...ACTIVE_LEGACY_LOCATION_STATUSES].map((status) => (
+      adminFirestore.list(ADMIN_COLLECTIONS.RIDES, { driver_id: driverId, status }, null, 'desc', 3)
+    )),
+  )).flat();
+  const writes = rides.map(async (ride) => {
+    const patch = activeRideDriverLocationPatch(ride, driverId, location, receivedAt);
+    if (!patch || !ride.id) return false;
+    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, String(ride.id), patch);
+    return true;
+  });
+  const results = await Promise.all(writes);
+  return { updated: results.filter(Boolean).length };
+}
+
 async function authenticatedDriverId(req: Request, res: Response): Promise<string | null> {
   const match = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   if (!match) {
@@ -181,6 +228,11 @@ export function registerDriverLocationRoutes(app: Express) {
           adminFirestore.set('driver_presence', driverId, heartbeatPatch),
         ]);
       }
+      // A late coordinate must not move a Rider map backwards, but a verified
+      // application heartbeat may refresh the same assigned-trip marker.
+      void projectActiveRideDriverLocation(driverId, heartbeatLocation, receivedAt).catch((error) => {
+        console.error('[RideLocation] Active ride heartbeat projection failed:', error);
+      });
       res.json({
         success: true,
         ignoredStaleLocation: true,
@@ -232,6 +284,9 @@ export function registerDriverLocationRoutes(app: Express) {
 
     // Lock Screen refreshes are supplementary. They must not make the Driver
     // wait to go online, start a trip, or update a Rider-visible GPS marker.
+    void projectActiveRideDriverLocation(driverId, location, receivedAt).catch((error) => {
+      console.error('[RideLocation] Active ride projection failed:', error);
+    });
     void sendDriverLocationLiveActivityUpdates(driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
       console.error('[LiveActivity] Background Driver location push failed:', error);
     });

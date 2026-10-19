@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { driverOfferPushNotificationsEnabled, driverOfferRecipients } from './driverOfferPush';
+import { driverOfferCandidates, driverOfferPushNotificationsEnabled, driverOfferRecipients } from './driverOfferPush';
 
 const now = Date.parse('2026-10-03T21:00:00.000Z');
 const ride = {
@@ -64,6 +64,15 @@ describe('Driver ride-offer push recipients', () => {
       },
     }));
     expect(driverOfferRecipients(ride, drivers, now, 3)).toEqual(['driver-0', 'driver-1', 'driver-2']);
+  });
+
+  it('retains only display-safe vehicle type, colour, and heading with the server candidate', () => {
+    const [candidate] = driverOfferCandidates(ride, [presence({
+      vehicle_colour: 'red',
+      service_type: 'car',
+      current_location: { latitude: 5.604, longitude: -0.1872, heading: 135, recorded_at: new Date(now - 20_000).toISOString() },
+    })], now);
+    expect(candidate).toMatchObject({ serviceType: 'car', vehicleColourHex: '#CE1126', heading: 135 });
   });
 
   it('does not wake a Driver who cancelled the same request during re-dispatch', () => {

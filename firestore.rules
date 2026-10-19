@@ -30,8 +30,13 @@ service cloud.firestore {
       allow read: if isAdmin() || isSelf('user_id');
       allow create, update, delete: if isAdmin();
     }
-    // Server-owned, map-safe data: no documents, personal contacts, or payout data.
-    match /driver_presence/{driverId} { allow read: if signedIn(); allow write: if false; }
+    // General availability is server-only. A Rider reads their assigned
+    // Driver's minimal map point from their own ride document instead; this
+    // prevents booking screens from enumerating Driver locations or identities.
+    match /driver_presence/{driverId} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == driverId);
+      allow write: if false;
+    }
 
     match /rider_profiles/{riderId} {
       // The protected API atomically claims the email/phone and writes the

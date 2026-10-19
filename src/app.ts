@@ -29,6 +29,8 @@ import {
   type QuoteRoute,
 } from './rideQuotes';
 import { fetchBookingRoadRouteWithStops, fetchRoadRouteWithStops } from './liveRouteMetrics';
+import { pickupEtaPreviewForRide, type PickupEtaPreview } from './pickupEtaPreview';
+import { type DriverPresence } from './driverOfferPush';
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
@@ -681,6 +683,29 @@ export function createApp(): Express {
         res.status(503).json({ success: false, message: 'Route guidance is temporarily unavailable. Please try again.' });
         return;
       }
+      // Pickup ETA is informational only. It uses a server-held presence list
+      // and dispatch-equivalent eligibility; no Driver identifier or location
+      // leaves this route, and no Driver is reserved before Ride Request.
+      quoteStage = 'pickup_availability';
+      const presences = await adminFirestore.list('driver_presence', {}, null, 'desc', 500) as DriverPresence[];
+      const pickupPreviewByCategory = new Map(await Promise.all(categories.map(async (category) => {
+        try {
+          const preview = await pickupEtaPreviewForRide({
+            category,
+            pickup: parsed.data.pickup,
+            distance_km: quoteRoadRoute.distanceKm,
+          }, presences);
+          return [category, preview] as const;
+        } catch {
+          // A display-only availability calculation must never block a valid
+          // server-priced quote or invent a one-minute fallback.
+          return [category, {
+            eligibleDriverCount: 0,
+            pickupEtaMinutes: null,
+            nearbyVehicles: [] as PickupEtaPreview['nearbyVehicles'],
+          }] as const;
+        }
+      })));
       quoteStage = 'surge';
       const surgeMultiplier = await getActiveSurgeMultiplier();
       quoteStage = 'fare_configuration';
@@ -725,6 +750,11 @@ export function createApp(): Express {
         const storedQuote = persistedByCategory.get(quote.category);
         if (!storedQuote) throw new Error(`Quote persistence did not return ${quote.category}.`);
         const breakdown = storedQuote.quote_breakdown;
+        const pickupPreview = pickupPreviewByCategory.get(quote.category) ?? {
+          eligibleDriverCount: 0,
+          pickupEtaMinutes: null,
+          nearbyVehicles: [],
+        };
         return {
           category: quote.category,
           quoteId: storedQuote.id,
@@ -739,6 +769,9 @@ export function createApp(): Express {
           fareRate: quote.fareRate,
           routePoints: quoteRoadRoute.points,
           routeSource: quoteRoadRoute.source,
+          eligibleDriverCount: pickupPreview.eligibleDriverCount,
+          pickupEtaMinutes: pickupPreview.pickupEtaMinutes,
+          nearbyVehicles: pickupPreview.nearbyVehicles,
         };
       });
       res.json({
