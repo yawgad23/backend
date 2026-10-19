@@ -76,6 +76,11 @@ function receiptValue(value: unknown, fallback: string) {
   return normalized || fallback;
 }
 
+function receiptFirstName(value: unknown) {
+  const fullName = receiptValue(value, 'HY3N Rider');
+  return fullName.split(/\s+/u)[0] || 'HY3N';
+}
+
 function formattedPaymentMethod(value: unknown) {
   const method = receiptValue(value, 'Cash').replace(/[_-]+/g, ' ');
   return method.replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -87,7 +92,7 @@ function validMetric(value: unknown) {
 }
 
 export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = false) {
-  const riderName = receiptValue(data.riderName, 'HY3N Rider');
+  const riderName = receiptFirstName(data.riderName);
   const driverName = receiptValue(data.driverName, 'Your HY3N driver');
   const driverVehicle = receiptValue(data.driverVehicle, 'HY3N vehicle');
   const driverPlate = String(data.driverPlate || '').trim();

@@ -23,7 +23,9 @@ describe('renderTripReceiptEmail', () => {
     const receipt = renderTripReceiptEmail(completedTrip);
 
     expect(receipt.subject).toBe('Your HY3N receipt — GH₵39.00');
-    expect(receipt.html).toContain('Medaase for riding, Yaw Gad.');
+    expect(receipt.html).toContain('Medaase for riding, Yaw.');
+    expect(receipt.html).not.toContain('Medaase for riding, Yaw Gad.');
+    expect(receipt.text).toContain('Medaase for riding, Yaw.');
     expect(receipt.html).toContain('Completed by');
     expect(receipt.html).toContain('Ama Mensah');
     expect(receipt.html).toContain('Okpelen We Street 1, Ashaley Botwe');
@@ -70,11 +72,19 @@ describe('renderTripReceiptEmail', () => {
     expect(branded).toContain('<td align="center" style="padding:0;text-align:center"><span class="receipt-logo"');
   });
 
-  it('uses a dark single-column receipt hero and a separate truthful fare breakdown on mobile', () => {
-    const longName = 'Akwasi Mensah Osei Tutu Prempeh';
-    const receipt = renderTripReceiptEmail({ ...completedTrip, riderName: longName }, true);
+  it('uses only the Rider first name in every receipt greeting', () => {
+    const fullName = '  Akwasi Mensah Osei Tutu Prempeh  ';
+    const receipt = renderTripReceiptEmail({ ...completedTrip, riderName: fullName }, true);
 
-    expect(receipt.html).toContain(`Medaase for riding, ${longName}.`);
+    expect(receipt.html).toContain('Medaase for riding, Akwasi.');
+    expect(receipt.text).toContain('Medaase for riding, Akwasi.');
+    expect(receipt.html).not.toContain('Medaase for riding, Akwasi Mensah Osei Tutu Prempeh.');
+    expect(receipt.text).not.toContain('Medaase for riding, Akwasi Mensah Osei Tutu Prempeh.');
+  });
+
+  it('uses a dark single-column receipt hero and a separate truthful fare breakdown on mobile', () => {
+    const receipt = renderTripReceiptEmail(completedTrip, true);
+
     expect(receipt.html).toContain('receipt-hero');
     expect(receipt.html).toContain('fare-breakdown');
     expect(receipt.html.indexOf('receipt-hero')).toBeLessThan(receipt.html.indexOf('fare-breakdown'));
