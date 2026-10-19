@@ -3,6 +3,7 @@ import { adminFirestore, ADMIN_COLLECTIONS } from './firebaseAdmin';
 import { requireAdministrator } from './adminAuthorization';
 import { buildAdminTripDetail, rideParticipantIds } from './adminTripDetails';
 import { freshAdminDriverLocations } from './adminLiveDriverLocation';
+import { isRideSearchExpired } from './rideSearchExpiry';
 
 const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued', 'in_progress']);
 const RECENT_STATUSES = new Set(['completed', 'cancelled']);
@@ -11,6 +12,16 @@ export function normalizeAdminRideStatus(value: unknown): string {
   const status = String(value || '').trim().toLowerCase().replace(/-/g, '_');
   if (['accepted', 'assigned', 'driver_assigned'].includes(status)) return 'matched';
   return status;
+}
+
+export function isAdminLiveRide(ride: Record<string, any>, currentTime = Date.now()): boolean {
+  const status = normalizeAdminRideStatus(ride.status);
+  if (!ACTIVE_STATUSES.has(status)) return false;
+  if (isRideSearchExpired(ride, currentTime)) return false;
+  // History and live operations must never show a record twice when a legacy
+  // write left an active status alongside a terminal timestamp.
+  if (ride.completed_at || ride.cancelled_at || ride.trip_ended_at || ride.ended_at) return false;
+  return true;
 }
 
 function rideTimestamp(ride: Record<string, any>): number {
@@ -120,10 +131,11 @@ export function registerAdminRideRoutes(app: Express) {
     try {
       const records = await operationalRideRecords();
       const rides = records.map((record) => ({
+        record,
         normalized: normalizedRide(record),
         driverId: activeRideDriverId(record),
       }));
-      const activeRecords = rides.filter(({ normalized }) => ACTIVE_STATUSES.has(normalized.status));
+      const activeRecords = rides.filter(({ record }) => isAdminLiveRide(record));
       const freshLocations = await freshAdminDriverLocations(
         activeRecords.map(({ driverId }) => driverId),
         (driverId) => adminFirestore.get('driver_presence', driverId),

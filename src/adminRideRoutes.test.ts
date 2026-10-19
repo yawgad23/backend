@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeAdminRideStatus } from './adminRideRoutes';
+import { isAdminLiveRide, normalizeAdminRideStatus } from './adminRideRoutes';
 
 describe('Admin live ride status compatibility', () => {
   it('normalizes legacy assigned statuses to the assigned state', () => {
@@ -13,5 +13,17 @@ describe('Admin live ride status compatibility', () => {
     expect(normalizeAdminRideStatus('driver_arriving')).toBe('driver_arriving');
     expect(normalizeAdminRideStatus('driver_queued')).toBe('driver_queued');
     expect(normalizeAdminRideStatus('in-progress')).toBe('in_progress');
+  });
+
+  it('does not count an expired waiting request as live', () => {
+    const now = Date.parse('2026-10-19T19:30:00.000Z');
+    expect(isAdminLiveRide({ status: 'searching', search_expires_at: '2026-10-19T19:24:00.000Z' }, now)).toBe(false);
+    expect(isAdminLiveRide({ status: 'searching', search_expires_at: '2026-10-19T19:35:00.000Z' }, now)).toBe(true);
+  });
+
+  it('does not count a terminal history record that retained an active status', () => {
+    expect(isAdminLiveRide({ status: 'in_progress', completed_at: '2026-10-19T19:20:00.000Z' })).toBe(false);
+    expect(isAdminLiveRide({ status: 'driver_arriving', cancelled_at: '2026-10-19T19:20:00.000Z' })).toBe(false);
+    expect(isAdminLiveRide({ status: 'in_progress' })).toBe(true);
   });
 });
