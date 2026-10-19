@@ -4,8 +4,14 @@ import { requireAdministrator } from './adminAuthorization';
 import { buildAdminTripDetail, rideParticipantIds } from './adminTripDetails';
 import { freshAdminDriverLocations } from './adminLiveDriverLocation';
 
-const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'in_progress']);
+const ACTIVE_STATUSES = new Set(['searching', 'matched', 'driver_arriving', 'driver_arrived', 'driver_queued', 'in_progress']);
 const RECENT_STATUSES = new Set(['completed', 'cancelled']);
+
+export function normalizeAdminRideStatus(value: unknown): string {
+  const status = String(value || '').trim().toLowerCase().replace(/-/g, '_');
+  if (['accepted', 'assigned', 'driver_assigned'].includes(status)) return 'matched';
+  return status;
+}
 
 function rideTimestamp(ride: Record<string, any>): number {
   const value = ride.updated_date || ride.updated_at || ride.completed_at || ride.cancelled_at || ride.created_date || ride.created_at;
@@ -51,7 +57,7 @@ function normalizedRide(ride: Record<string, any>) {
 
   return {
     id: String(ride.id),
-    status: String(ride.status || '').toLowerCase().replace(/-/g, '_'),
+    status: normalizeAdminRideStatus(ride.status),
     rider_name: String(ride.rider_name || ride.rider?.name || 'Rider'),
     driver_name: ride.driver_name || ride.driver?.name || null,
     vehicle_type: ride.vehicle_type || ride.category || null,
