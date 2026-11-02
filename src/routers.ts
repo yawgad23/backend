@@ -3,6 +3,7 @@ import { administratorProcedure, driverProcedure, protectedProcedure, publicProc
 import { sendVerificationEmail } from "./email";
 import {
   chargeDriverCommission,
+  chargeRiderWalletTopUp,
   getMomoChannel,
   getCommissionReference,
   transactionStatusCheck,
@@ -678,13 +679,12 @@ export const appRouter = router({
           date: new Date().toISOString(),
         });
 
-        const result = await chargeDriverCommission({
-          // chargeDriverCommission normalizes Ghana's local, 233, and +233
-          // formats once. Passing the original entry prevents "233+233...".
+        const result = await chargeRiderWalletTopUp({
+          // The Rider-specific contract owns the description and rejects
+          // Driver/platform-fee identities at this boundary.
           customerMsisdn: input.momoNumber,
           amount: payment.amount,
           customerName: payment.customerName,
-          description: payment.description,
           clientReference: reference,
           channel,
           callbackUrl: walletCallbackUrl,

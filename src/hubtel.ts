@@ -42,6 +42,15 @@ export interface HubtelChargeResponse {
   raw?: unknown;
 }
 
+export interface RiderWalletChargeRequest {
+  customerMsisdn: string;
+  amount: number;
+  customerName: string;
+  clientReference: string;
+  channel: 'mtn-gh' | 'vodafone-gh' | 'tigo-gh';
+  callbackUrl: string;
+}
+
 const HUBTEL_POS_NUMBER = process.env.HUBTEL_POS_NUMBER || '';
 const HUBTEL_API_ID = process.env.HUBTEL_API_ID || '';
 const HUBTEL_API_KEY = process.env.HUBTEL_API_KEY || '';
@@ -172,6 +181,32 @@ export async function chargeDriverCommission(req: HubtelChargeRequest): Promise<
 
     return { success: false, status: 'failed', message: networkMessage };
   }
+}
+
+/**
+ * Initiate a Rider wallet top-up with a separate contract from Driver fees.
+ * The guard prevents a Driver label, platform-fee description, or the
+ * administrator-controlled Driver fee from entering the Rider payment path.
+ */
+export async function chargeRiderWalletTopUp(req: RiderWalletChargeRequest): Promise<HubtelChargeResponse> {
+  const amount = Math.round((Number(req.amount) + Number.EPSILON) * 100) / 100;
+  const customerName = String(req.customerName || '').trim();
+  if (!Number.isFinite(amount) || amount < 5 || amount > 5000) {
+    throw new Error('Rider wallet top-up amount must be between GH₵5.00 and GH₵5,000.00.');
+  }
+  if (!customerName || /driver|platform\s*fee|commission/i.test(customerName)) {
+    throw new Error('Rider wallet payment identity is invalid.');
+  }
+
+  return chargeDriverCommission({
+    customerMsisdn: req.customerMsisdn,
+    amount,
+    customerName,
+    description: `HY3N Rider Wallet top-up GH₵${amount.toFixed(2)}`,
+    clientReference: req.clientReference,
+    channel: req.channel,
+    callbackUrl: req.callbackUrl,
+  });
 }
 
 /** Query a Direct Receive payment using the merchant's client reference. */
