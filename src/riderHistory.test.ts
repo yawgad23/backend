@@ -33,6 +33,7 @@ describe('Rider history server view', () => {
         pickup: { name: 'Accra Mall', address: 'Tetteh Quarshie', lat: 5.6, lng: -0.1 },
         destination: { name: 'Airport', address: 'Kotoka Airport', lat: 5.61, lng: -0.17 },
         final_fare: '17.50',
+        scheduled_for: { seconds: 1_799_999_999 },
         driver: { name: 'Kofi', vehicle: 'Toyota', plate: 'GR 1-26', phone: '0240000000' },
         driver_momo_number: '0241111111',
       },
@@ -45,6 +46,7 @@ describe('Rider history server view', () => {
       pickup: { name: 'Accra Mall', address: 'Tetteh Quarshie' },
       destination: { name: 'Airport', address: 'Kotoka Airport' },
       final_fare: 17.5,
+      scheduled_for: new Date(1_799_999_999 * 1000).toISOString(),
       driver_name: 'Kofi',
     });
     expect(rows[0]).not.toHaveProperty('driver_momo_number');
