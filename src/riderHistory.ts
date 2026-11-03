@@ -82,7 +82,7 @@ function ownRideProjection(ride: RecordLike): RecordLike {
     tip: finiteNumber(ride.tip ?? ride.tip_amount),
     tip_amount: finiteNumber(ride.tip_amount),
     waiting_fee: finiteNumber(ride.waiting_fee),
-    scheduled_for: text(ride.scheduled_for),
+    scheduled_for: historyDate(ride.scheduled_for) ?? (text(ride.scheduled_for) || undefined),
     promo_code: text(ride.promo_code),
     discount: finiteNumber(ride.discount),
     ...(createdAt ? { created_at: createdAt, created_date: createdAt } : {}),
