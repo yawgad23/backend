@@ -42,6 +42,22 @@ const driverProfileInput = z.object({
     vehiclePhoto: z.string().trim().max(4_000).optional().default(''),
     insurance: z.string().trim().max(4_000).optional().default(''),
     roadworthy: z.string().trim().max(4_000).optional().default(''),
+  }).superRefine((documents, context) => {
+    const requiredDocuments: Array<[keyof typeof documents, string]> = [
+      ['ghanaCardFront', 'Ghana Card (Front)'],
+      ['ghanaCardBack', 'Ghana Card (Back)'],
+      ['licenseFront', "Driver's License (Front)"],
+      ['licenseBack', "Driver's License (Back)"],
+      ['profilePhoto', 'Your Photo (Selfie)'],
+      ['vehiclePhoto', 'Vehicle Photo'],
+    ];
+    const missing = requiredDocuments.filter(([key]) => !documents[key]).map(([, label]) => label);
+    if (missing.length > 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Upload all required verification documents before submitting: ${missing.join(', ')}.`,
+      });
+    }
   }),
 });
 
@@ -248,7 +264,11 @@ export function registerAccountProfileRoutes(app: Express) {
     if (!session) return;
     const parsed = driverProfileInput.safeParse(request.body);
     if (!parsed.success) {
-      response.status(400).json({ success: false, code: 'INVALID_PROFILE', message: 'Please complete the required Driver account and vehicle details.' });
+      response.status(400).json({
+        success: false,
+        code: 'INVALID_PROFILE',
+        message: parsed.error.issues[0]?.message || 'Please complete the required Driver account and vehicle details.',
+      });
       return;
     }
 
