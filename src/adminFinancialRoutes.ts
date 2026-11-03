@@ -12,6 +12,10 @@ function reportDate(record: { completedAt: string | null; cancelledAt: string | 
   return String(record.completedAt || record.cancelledAt || record.updatedAt || '').slice(0, 10);
 }
 
+function queryBoolean(value: unknown): boolean {
+  return String(value || '').trim().toLowerCase() === 'true';
+}
+
 /**
  * Provides a protected, accounting-oriented view of completed and cancelled
  * rides. It does not claim that a cash fare has been collected; it reports the
@@ -51,6 +55,7 @@ export function registerAdminFinancialRoutes(app: Express) {
 
     const dateFrom = queryDate(request.query.dateFrom);
     const dateTo = queryDate(request.query.dateTo);
+    const includeTestDrivers = queryBoolean(request.query.includeTestDrivers);
     if (dateFrom && dateTo && dateFrom > dateTo) {
       response.status(400).json({ error: 'The start date must be before the end date.' });
       return;
@@ -59,8 +64,15 @@ export function registerAdminFinancialRoutes(app: Express) {
     try {
       // Do not order by `updated_date`: legacy terminal rides without that
       // field are excluded by Firestore ordering and must remain auditable.
-      const rides = await adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 1_000);
+      const [rides, driverProfiles] = await Promise.all([
+        adminFirestore.list(ADMIN_COLLECTIONS.RIDES, {}, null, 'desc', 1_000),
+        includeTestDrivers ? Promise.resolve([]) : adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, {}, null, 'desc', 1_000),
+      ]);
+      const testDriverIds = new Set(driverProfiles
+        .filter((profile) => profile.is_test_driver === true)
+        .map((profile) => String(profile.user_id || profile.id || '').trim()));
       const records = rides
+        .filter((ride) => includeTestDrivers || !testDriverIds.has(String(ride.driver_id || ride.driverId || '').trim()))
         .map(financialRideRecord)
         .filter((record): record is NonNullable<typeof record> => record !== null)
         .filter((record) => {
@@ -70,7 +82,7 @@ export function registerAdminFinancialRoutes(app: Express) {
       response.json({
         generatedAt: new Date().toISOString(),
         requestedBy: adminEmail,
-        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null },
+        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, includeTestDrivers },
         accountingBasis: {
           fareAmount: 'Persisted completed final fare; current rides are server-authoritative, while legacy stored values are preserved for reconciliation. It includes waiting fee and excludes any separately stored tip.',
           legacyQuoteEstimate: 'A historical quote/estimate with no persisted final fare. It is shown separately and excluded from completed ride charges until a final amount is available.',

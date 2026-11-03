@@ -360,6 +360,7 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
       : 'active',
     approvalStatus: accountRole === 'driver' ? String(profile.approval_status || 'pending').toLowerCase() : null,
     isOnline: accountRole === 'driver' && (profile.is_online === true || profile.availability_status === 'online'),
+    isTestDriver: accountRole === 'driver' && profile.is_test_driver === true,
     serviceType: accountRole === 'driver' ? profile.service_type || profile.serviceType || 'car' : null,
     vehicle: accountRole === 'driver'
       ? [profile.vehicle_year, profile.vehicle_make, profile.vehicle_model].filter(Boolean).join(' ') || null
@@ -536,7 +537,7 @@ function accountCreateInput(input: Record<string, any>) {
   if (password.length < 10) throw new Error('Temporary password must contain at least 10 characters.');
   if (!fullName) throw new Error('Enter the account holder’s name.');
   if (!phone) throw new Error('Enter a contact number.');
-  return { accountRole, email, password, fullName, phone };
+  return { accountRole, email, password, fullName, phone, isTestDriver: accountRole === 'driver' && input.isTestDriver === true };
 }
 
 /**
@@ -655,6 +656,7 @@ export function registerAdminAccountRoutes(app: Express) {
       };
       if (input.accountRole === 'driver') {
         profile.approval_status = 'pending';
+        profile.is_test_driver = input.isTestDriver;
         profile.is_online = false;
         profile.is_available = false;
         profile.availability_status = 'offline';

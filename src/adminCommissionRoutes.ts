@@ -20,6 +20,10 @@ function queryStatus(value: unknown): 'paid' | 'processing' | 'failed' | undefin
     : undefined;
 }
 
+function queryBoolean(value: unknown): boolean {
+  return String(value || '').trim().toLowerCase() === 'true';
+}
+
 function cleanCommission(record: Record<string, any>) {
   return {
     id: record.id,
@@ -52,26 +56,30 @@ export function registerAdminCommissionRoutes(app: Express) {
 
     const dateFrom = queryDate(request.query.dateFrom);
     const dateTo = queryDate(request.query.dateTo);
+    const includeTestDrivers = queryBoolean(request.query.includeTestDrivers);
     if (dateFrom && dateTo && dateFrom > dateTo) {
       response.status(400).json({ error: 'The start date must be before the end date.' });
       return;
     }
 
     try {
-      const allRecords = await adminFirestore.list(
-        ADMIN_COLLECTIONS.DAILY_COMMISSION,
-        {},
-        'created_date',
-        'desc',
-        500,
-      );
+      const [allRecords, driverProfiles] = await Promise.all([
+        adminFirestore.list(ADMIN_COLLECTIONS.DAILY_COMMISSION, {}, 'created_date', 'desc', 500),
+        includeTestDrivers ? Promise.resolve([]) : adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, {}, null, 'desc', 1_000),
+      ]);
+      const testDriverIds = new Set(driverProfiles
+        .filter((profile) => profile.is_test_driver === true)
+        .map((profile) => String(profile.user_id || profile.id || '').trim()));
       const status = queryStatus(request.query.status);
-      const records = filterCommissionLedger(allRecords, { dateFrom, dateTo, status });
+      const records = filterCommissionLedger(
+        allRecords.filter((record) => includeTestDrivers || !testDriverIds.has(String(record.driver_id || '').trim())),
+        { dateFrom, dateTo, status },
+      );
       const today = new Date().toISOString().slice(0, 10);
       response.json({
         generatedAt: new Date().toISOString(),
         requestedBy: adminEmail,
-        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, status: status || null },
+        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, status: status || null, includeTestDrivers },
         summary: summarizeCommissionLedger(records, today),
         records: records.map(cleanCommission),
       });
