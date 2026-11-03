@@ -29,8 +29,8 @@ import {
   type QuoteRoute,
 } from './rideQuotes';
 import { fetchBookingRoadRouteWithStops, fetchRoadRouteWithStops } from './liveRouteMetrics';
-import { pickupEtaPreviewForRide, type PickupEtaPreview } from './pickupEtaPreview';
-import { type DriverPresence } from './driverOfferPush';
+import { pickupEtaPreviewForCandidates, pickupEtaPreviewForRide, type PickupEtaPreview } from './pickupEtaPreview';
+import { driverOfferCandidates, type DriverPresence } from './driverOfferPush';
 import { registerTripShareRoutes } from "./tripShare";
 import { isExpoPushToken, registerPushDevice } from "./pushNotifications";
 import { registerAdminCommissionRoutes } from "./adminCommissionRoutes";
@@ -49,7 +49,8 @@ import { requiredRiderIdentity, riderProfileCompletionMessage } from './riderIde
 import { riderOwnsRideStatus } from './riderRideStatus';
 import { RIDE_SEARCH_TTL_MS, expiredRideSearchPatch, isRideSearchExpired } from "./rideSearchExpiry";
 import { accountIsDisabled, accountStatusPatch } from './accountLifecycle';
-import { driverProfileForUserId } from './driverApproval';
+import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
+import { hasCurrentPlatformFee } from './driverRouters';
 import {
   authorizeRiderDriverRating,
   driverRatingSummary,
@@ -647,6 +648,48 @@ export function createApp(): Express {
     const reference = typeof req.query.reference === 'string' ? req.query.reference.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 80) : '';
     const appUrl = `manusrider://hubtel-card-payment?reference=${encodeURIComponent(reference)}`;
     res.status(200).type('html').send(`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Return to HY3N</title></head><body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#111;color:#fff;display:flex;min-height:100vh;margin:0;align-items:center;justify-content:center;text-align:center"><main><h1 style="color:#d4af37">Payment submitted</h1><p>Return to HY3N to confirm your card payment.</p><p><a href="${appUrl}" style="display:inline-block;background:#006b3f;color:#fff;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:700">Return to HY3N</a></p></main><script>setTimeout(function(){ window.location.href=${JSON.stringify(appUrl)}; },500);</script></body></html>`);
+  });
+
+  /**
+   * Returns only anonymous, server-filtered nearby vehicle points. Riders must
+   * not read driver_presence directly: Firestore rules intentionally keep that
+   * collection server-owned. This endpoint preserves the same approval,
+   * freshness, category, radius, and fee gates used by dispatch.
+   */
+  app.get('/api/rider/nearby-vehicles', async (req, res) => {
+    const authHeader = String(req.headers.authorization || '');
+    const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!idToken) {
+      res.status(401).json({ success: false, message: 'Please sign in to view nearby vehicles.' });
+      return;
+    }
+    try {
+      await getAdminAuth().verifyIdToken(idToken);
+    } catch {
+      res.status(401).json({ success: false, message: 'Your session has expired. Please sign in again.' });
+      return;
+    }
+    const latitude = Number(req.query.lat);
+    const longitude = Number(req.query.lng);
+    const category = String(req.query.category || 'standard').trim().slice(0, 50);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || !category) {
+      res.status(400).json({ success: false, message: 'A valid pickup location and ride category are required.' });
+      return;
+    }
+    try {
+      const presences = await adminFirestore.list('driver_presence', {}, null, 'desc', 500) as DriverPresence[];
+      const candidates = driverOfferCandidates({ category, pickup: { lat: latitude, lng: longitude } }, presences, Date.now(), 8);
+      const eligible = (await Promise.all(candidates.map(async (candidate) => {
+        const profile = await driverProfileForUserId(candidate.driverId);
+        if (!isApprovedDriverProfile(profile)) return null;
+        if (!await hasCurrentPlatformFee(candidate.driverId, profile)) return null;
+        return candidate;
+      }))).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
+      res.json({ success: true, ...pickupEtaPreviewForCandidates(eligible, null), etaType: 'not_provided' });
+    } catch (error: any) {
+      console.error('[Rider Nearby Vehicles] Server feed failed:', error?.message || error);
+      res.status(503).json({ success: false, message: 'Nearby vehicle availability is temporarily unavailable.' });
+    }
   });
 
   /**
