@@ -83,3 +83,33 @@ export function assignmentReleaseRedispatchPatch(input: {
     updated_date: timestamp,
   };
 }
+
+/**
+ * Detects the two server transitions that must advance an open ride search:
+ * an explicit decline of a targeted offer, or release of an accepted/pre-trip
+ * driver assignment. The release timestamp prevents later offer bookkeeping
+ * updates from recursively dispatching the same ride.
+ */
+export function shouldDispatchNextDriverAfterRideUpdate(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): boolean {
+  const stillSearching = String(after.status || '').trim().toLowerCase() === 'searching'
+    && !String(after.driver_id || '').trim();
+  if (!stillSearching) return false;
+
+  const wasTargeted = Boolean(String(before.offered_driver_id || '').trim());
+  const isTargeted = Boolean(String(after.offered_driver_id || '').trim());
+  const explicitDeclineOrTimeout = wasTargeted && !isTargeted;
+
+  const releaseAt = String(after.last_assignment_release_at || '').trim();
+  const previousReleaseAt = String(before.last_assignment_release_at || '').trim();
+  const assignmentReleased = after.reassigned_after_assignment_release === true
+    && Boolean(String(before.driver_id || '').trim())
+    && !String(after.driver_id || '').trim()
+    && Boolean(releaseAt)
+    && releaseAt !== previousReleaseAt
+    && ['driver', 'rider'].includes(String(after.assignment_release_actor || '').trim().toLowerCase());
+
+  return explicitDeclineOrTimeout || assignmentReleased;
+}
