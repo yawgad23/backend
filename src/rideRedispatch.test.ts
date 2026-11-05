@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignmentReleaseRedispatchPatch, shouldRedispatchAssignedRide } from './rideRedispatch';
+import { assignmentReleaseRedispatchPatch, shouldDispatchNextDriverAfterRideUpdate, shouldRedispatchAssignedRide } from './rideRedispatch';
 
 describe('Assignment-release ride re-dispatch', () => {
   it('returns the same pre-trip request to searching and excludes the former Driver', () => {
@@ -74,6 +74,59 @@ describe('Assignment-release ride re-dispatch', () => {
     expect(shouldRedispatchAssignedRide(
       { status: 'driver_arriving', driver_id: 'driver-1' },
       false,
+    )).toBe(false);
+  });
+});
+
+describe('automatic next-driver dispatch after ride updates', () => {
+  it('dispatches immediately when an accepted Driver cancels before starting the trip', () => {
+    const before = {
+      status: 'driver_arriving',
+      driver_id: 'driver-1',
+      offered_driver_id: null,
+    };
+    const after = {
+      status: 'searching',
+      driver_id: null,
+      offered_driver_id: null,
+      reassigned_after_assignment_release: true,
+      reassigned_after_driver_cancellation: true,
+      assignment_release_actor: 'driver',
+      last_assignment_release_at: '2026-11-05T14:00:00.000Z',
+    };
+    expect(shouldDispatchNextDriverAfterRideUpdate(before, after)).toBe(true);
+  });
+
+  it('continues to dispatch after an explicit decline of a targeted offer', () => {
+    expect(shouldDispatchNextDriverAfterRideUpdate(
+      { status: 'searching', driver_id: null, offered_driver_id: 'driver-1' },
+      { status: 'searching', driver_id: null, offered_driver_id: null },
+    )).toBe(true);
+  });
+
+  it('does not dispatch again for unrelated updates after a reassignment', () => {
+    const ride = {
+      status: 'searching',
+      driver_id: null,
+      offered_driver_id: 'driver-2',
+      reassigned_after_assignment_release: true,
+      assignment_release_actor: 'driver',
+      last_assignment_release_at: '2026-11-05T14:00:00.000Z',
+    };
+    expect(shouldDispatchNextDriverAfterRideUpdate(ride, {
+      ...ride,
+      updated_date: '2026-11-05T14:00:05.000Z',
+    })).toBe(false);
+  });
+
+  it('does not dispatch when a ride is already accepted or has started', () => {
+    expect(shouldDispatchNextDriverAfterRideUpdate(
+      { status: 'searching', driver_id: null },
+      { status: 'driver_arriving', driver_id: 'driver-2' },
+    )).toBe(false);
+    expect(shouldDispatchNextDriverAfterRideUpdate(
+      { status: 'in_progress', driver_id: 'driver-1' },
+      { status: 'searching', driver_id: null, reassigned_after_assignment_release: true },
     )).toBe(false);
   });
 });

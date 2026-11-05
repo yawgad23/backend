@@ -13,6 +13,7 @@ import {
 import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
 import { endActiveTripSharesForRide } from './tripShare';
 import { dispatchDueDriverRideOffers, dispatchNextDriverRideOffer } from './driverOfferDispatch';
+import { shouldDispatchNextDriverAfterRideUpdate } from './rideRedispatch';
 import { runDailyFinancialReconciliation } from './financialReconciliation';
 
 // Force deploy: 2026-07-18T17:10:00Z
@@ -113,10 +114,7 @@ export const driverRideOfferRedispatch = onDocumentUpdated(
     if (!event.data) return;
     const before = event.data.before.data();
     const after = event.data.after.data();
-    const wasTargeted = Boolean(String(before.offered_driver_id || '').trim());
-    const isTargeted = Boolean(String(after.offered_driver_id || '').trim());
-    const stillSearching = String(after.status || '').toLowerCase() === 'searching' && !after.driver_id;
-    if (stillSearching && wasTargeted && !isTargeted) {
+    if (shouldDispatchNextDriverAfterRideUpdate(before, after)) {
       await dispatchNextDriverRideOffer(event.params.rideId);
     }
   },
