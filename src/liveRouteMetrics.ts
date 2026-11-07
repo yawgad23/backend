@@ -436,6 +436,12 @@ async function fetchOsrmRoadRoute(from: Point, to: Point): Promise<RoadRouteMetr
  * a booking screen. Both providers remain server-only and the server remains
  * the authority for the returned distance and duration.
  */
+function hasRoadGeometry(metrics: RoadRouteMetrics | null | undefined): metrics is RoadRouteMetrics {
+  return Boolean(metrics && Array.isArray(metrics.points) && metrics.points.length >= 2
+    && metrics.points.every(([latitude, longitude]) => Number.isFinite(latitude)
+      && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180));
+}
+
 export async function preferGoogleRouteWithFastFallback(
   googleRoute: Promise<RoadRouteMetrics | null>,
   osrmRoute: Promise<RoadRouteMetrics | null>,
@@ -445,15 +451,24 @@ export async function preferGoogleRouteWithFastFallback(
     googleRoute,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), googleWaitMs)),
   ]);
-  if (fastGoogleResult) return fastGoogleResult;
+  // A successful Routes API response can contain distance/ETA but omit its
+  // encoded overview polyline. Such a response is not usable for map guidance:
+  // accept the road fallback instead of publishing an empty route to the Rider.
+  if (hasRoadGeometry(fastGoogleResult)) return fastGoogleResult;
 
   const fallbackResult = await osrmRoute;
-  return fallbackResult || await googleRoute;
+  if (hasRoadGeometry(fallbackResult)) return fallbackResult;
+  const eventualGoogleResult = await googleRoute;
+  return hasRoadGeometry(eventualGoogleResult) ? eventualGoogleResult : null;
 }
 
-/** Prefers commercial live-traffic routing, while preserving the normal road fallback. */
+/** Prefer live-traffic routing, but only publish a route that contains drawable road geometry. */
 export async function fetchRoadRoute(from: Point, to: Point): Promise<RoadRouteMetrics | null> {
-  return await fetchGoogleTrafficRoute(from, to) || await fetchOsrmRoadRoute(from, to);
+  const googleRoute = await fetchGoogleTrafficRoute(from, to);
+  if (hasRoadGeometry(googleRoute)) return googleRoute;
+  const osrmRoute = await fetchOsrmRoadRoute(from, to);
+  if (hasRoadGeometry(osrmRoute)) return osrmRoute;
+  return null;
 }
 
 /**

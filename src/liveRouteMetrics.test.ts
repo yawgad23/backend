@@ -101,6 +101,42 @@ describe('server road route metrics', () => {
     await expect(preferGoogleRouteWithFastFallback(Promise.resolve(google), Promise.resolve(osrm), 10)).resolves.toEqual(google);
   });
 
+  it('rejects a Google traffic result without drawable geometry and uses the road fallback', async () => {
+    const googleWithoutPolyline = {
+      distanceKm: 1,
+      durationMinutes: 4,
+      points: [],
+      source: 'google_routes_traffic' as const,
+    };
+    const osrm = {
+      distanceKm: 1.1,
+      durationMinutes: 5,
+      points: [[5.6, -0.18], [5.61, -0.17]] as [number, number][],
+      source: 'osrm' as const,
+    };
+
+    await expect(preferGoogleRouteWithFastFallback(
+      Promise.resolve(googleWithoutPolyline),
+      Promise.resolve(osrm),
+      10,
+    )).resolves.toEqual(osrm);
+  });
+
+  it('does not return a route for the map when neither provider supplies road geometry', async () => {
+    const noGeometry = {
+      distanceKm: 1,
+      durationMinutes: 4,
+      points: [],
+      source: 'google_routes_traffic' as const,
+    };
+
+    await expect(preferGoogleRouteWithFastFallback(
+      Promise.resolve(noGeometry),
+      Promise.resolve(null),
+      10,
+    )).resolves.toBeNull();
+  });
+
   it('uses a ready road fallback instead of holding a booking quote for a slow traffic response', async () => {
     const osrm = { distanceKm: 1.1, durationMinutes: 5, points: [[5.6, -0.18], [5.61, -0.17]] as [number, number][], source: 'osrm' as const };
     const slowGoogle = new Promise<null>(() => {});
