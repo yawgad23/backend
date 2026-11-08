@@ -36,11 +36,12 @@ export const api = onRequest(
     // token — 2nd gen functions require IAM invoker permission by default,
     // so without this every request gets a 403 before it ever reaches app.
     invoker: "public",
-    // Pre-launch cost control: allow the API to scale to zero while traffic
-    // is low. The former VPC connector and Cloud NAT path are intentionally
-    // not configured here, avoiding the old network cost while preserving
-    // Firestore access through the runtime service identity.
+    // Keep Hubtel production requests on the reserved fixed-egress path.
+    // Cloud NAT for this connector must retain the Hubtel-allowlisted IPv4
+    // address 34.76.77.110.
     minInstances: 0,
+    vpcConnector: "projects/hy3n26/locations/europe-west1/connectors/hy3n-serverless-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
     secrets: [
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
