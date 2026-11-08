@@ -37,12 +37,10 @@ export const api = onRequest(
     // so without this every request gets a 403 before it ever reaches app.
     invoker: "public",
     // Pre-launch cost control: allow the API to scale to zero while traffic
-    // is low. Hubtel production allowlists the reserved NAT address
-    // 34.76.77.110, so keep the approved VPC path in source as well as in
-    // Cloud Run settings; a Firebase redeploy must not silently change it.
+    // is low. The former VPC connector and Cloud NAT path are intentionally
+    // not configured here, avoiding the old network cost while preserving
+    // Firestore access through the runtime service identity.
     minInstances: 0,
-    vpcConnector: "projects/hy3n26/locations/europe-west1/connectors/hy3n-serverless-connector",
-    vpcConnectorEgressSettings: "ALL_TRAFFIC",
     secrets: [
       "HUBTEL_API_ID",
       "HUBTEL_API_KEY",
