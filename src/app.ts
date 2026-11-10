@@ -73,6 +73,32 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Firestore stores live route points as `{ lat, lng }` objects because nested
+ * arrays are not valid Firestore values. Rider map clients consume compact
+ * `[latitude, longitude]` tuples. Keep the live route geometry and its
+ * calculated timestamp together when serializing every ride-state response;
+ * otherwise a reroute can arrive with stale/mismatched geometry at the client.
+ */
+function riderLiveRouteMetrics(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const metrics = value as Record<string, unknown>;
+  return {
+    ...metrics,
+    points: storedRoutePointPairs(metrics.points),
+  };
+}
+
+function riderRideStatePayload(ride: Record<string, any>) {
+  return {
+    ...ride,
+    booking_route_points: storedRoutePointPairs(ride.booking_route_points),
+    ...(ride.live_route_metrics && typeof ride.live_route_metrics === 'object'
+      ? { live_route_metrics: riderLiveRouteMetrics(ride.live_route_metrics) }
+      : {}),
+  };
+}
+
 const rideLocationInput = z.object({
   lat: z.number().finite(),
   lng: z.number().finite(),
@@ -1069,10 +1095,7 @@ export function createApp(): Express {
         success: true,
         // Stored geometry uses Firestore-safe point objects. The established
         // Rider map response remains [latitude, longitude] tuples.
-        ride: {
-          ...ride,
-          booking_route_points: storedRoutePointPairs(ride.booking_route_points),
-        },
+        ride: riderRideStatePayload(ride),
         message: 'Your request is now waiting for a driver to accept it.',
       });
     } catch (error: any) {
@@ -1128,10 +1151,7 @@ export function createApp(): Express {
       }
       res.json({
         success: true,
-        ride: {
-          ...ride,
-          booking_route_points: storedRoutePointPairs(ride.booking_route_points),
-        },
+        ride: riderRideStatePayload(ride),
       });
     } catch (error) {
       console.error('[Ride status] Unable to refresh Rider status:', error);
