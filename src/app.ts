@@ -28,7 +28,7 @@ import {
   storedRoutePointPairs,
   type QuoteRoute,
 } from './rideQuotes';
-import { fetchBookingRoadRouteWithStops, fetchRoadRouteWithStops } from './liveRouteMetrics';
+import { fetchBookingRoadRouteWithStops, fetchRoadRoute, fetchRoadRouteWithStops } from './liveRouteMetrics';
 import { pickupEtaPreviewForCandidates, pickupEtaPreviewForRide, type PickupEtaPreview } from './pickupEtaPreview';
 import { driverOfferCandidates, type DriverPresence } from './driverOfferPush';
 import { registerTripShareRoutes } from "./tripShare";
@@ -685,7 +685,18 @@ export function createApp(): Express {
         if (!await hasCurrentPlatformFee(candidate.driverId, profile)) return null;
         return candidate;
       }))).filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate));
-      res.json({ success: true, ...pickupEtaPreviewForCandidates(eligible, null), etaType: 'not_provided' });
+      const nearest = eligible[0];
+      const roadRoute = nearest
+        ? await fetchRoadRoute(
+          { latitude: nearest.latitude, longitude: nearest.longitude },
+          { latitude, longitude },
+        )
+        : null;
+      res.json({
+        success: true,
+        ...pickupEtaPreviewForCandidates(eligible, roadRoute?.durationMinutes ?? null),
+        etaType: roadRoute ? 'road' : 'not_provided',
+      });
     } catch (error: any) {
       console.error('[Rider Nearby Vehicles] Server feed failed:', error?.message || error);
       res.status(503).json({ success: false, message: 'Nearby vehicle availability is temporarily unavailable.' });
