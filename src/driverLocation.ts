@@ -50,6 +50,10 @@ export const driverLocationInput = z.object({
   heading: z.preprocess(normalizeUnknownIosHeading, z.number().finite().min(0).max(360).nullable().optional()),
   speedKmh: z.number().finite().min(0).max(240).nullable().optional(),
   recordedAt: z.string().datetime().optional(),
+  trackingTelemetry: z.object({
+    sampleId: z.string().min(8).max(100),
+    clientSentAtMs: z.number().int().finite().positive(),
+  }).optional(),
 });
 
 const ACTIVE_LEGACY_LOCATION_STATUSES = new Set([
@@ -206,6 +210,13 @@ export function registerDriverLocationRoutes(app: Express) {
       // source timestamp remains stored below for monotonic coordinate order.
       recorded_at: receivedAt,
       source_recorded_at: sourceRecordedAt,
+      ...(input.trackingTelemetry ? {
+        tracking_telemetry: {
+          sample_id: input.trackingTelemetry.sampleId,
+          client_sent_at_ms: input.trackingTelemetry.clientSentAtMs,
+          server_received_at_ms: Date.parse(receivedAt),
+        },
+      } : {}),
     };
     const previousPresence = await adminFirestore.get('driver_presence', driverId);
     if (!shouldPersistDriverLocation(previousPresence, sourceRecordedAt)) {

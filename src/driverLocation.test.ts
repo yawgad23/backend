@@ -28,6 +28,26 @@ describe('Driver location ingress', () => {
     expect(driverLocationInput.safeParse({ ...coordinateSample, heading: -2 }).success).toBe(false);
   });
 
+  it('accepts bounded privacy-safe tracking telemetry metadata', () => {
+    const result = driverLocationInput.safeParse({
+      ...coordinateSample,
+      trackingTelemetry: { sampleId: 'sample-12345678', clientSentAtMs: 1_759_463_400_000 },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects malformed tracking telemetry rather than persisting misleading latency data', () => {
+    expect(driverLocationInput.safeParse({
+      ...coordinateSample,
+      trackingTelemetry: { sampleId: 'short', clientSentAtMs: 1_759_463_400_000 },
+    }).success).toBe(false);
+    expect(driverLocationInput.safeParse({
+      ...coordinateSample,
+      trackingTelemetry: { sampleId: 'sample-12345678', clientSentAtMs: -1 },
+    }).success).toBe(false);
+  });
+
   it('uses the authenticated server receipt time for live availability while retaining the GPS sample time for ordering', () => {
     expect(driverLocationTimestamps('2026-10-03T07:49:45.174Z', '2026-10-03T07:52:09.800Z')).toEqual({
       sourceRecordedAt: '2026-10-03T07:49:45.174Z',
