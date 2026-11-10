@@ -84,14 +84,17 @@ describe('Driver ride-offer push recipients', () => {
     ], now)).toEqual(['driver-2']);
   });
 
-  it('selects the nearest opted-in Car Delivery Driver, including legacy Executive cars', () => {
+  it('selects only a Driver who explicitly opted into Car Delivery', () => {
     const carDeliveryRide = { ...ride, category: 'car_delivery' };
     expect(driverOfferRecipients(carDeliveryRide, [
       presence({ id: 'legacy-executive', user_id: 'legacy-executive', ride_categories: ['executive'] }),
       presence({ id: 'car-delivery', user_id: 'car-delivery', ride_categories: ['car_delivery'] }),
       presence({ id: 'standard-only', user_id: 'standard-only', ride_categories: ['standard'] }),
       presence({ id: 'parcel-driver', user_id: 'parcel-driver', service_type: 'delivery', ride_categories: ['express_delivery'] }),
-    ], now)).toEqual(['legacy-executive']);
+    ], now)).toEqual(['car-delivery']);
+    expect(driverOfferRecipients(carDeliveryRide, [
+      presence({ id: 'legacy-executive', user_id: 'legacy-executive', ride_categories: ['executive'] }),
+    ], now)).toEqual([]);
   });
 
   it('does not reserve a 10 km-or-shorter trip for a Driver who chose Long Trips Only', () => {
