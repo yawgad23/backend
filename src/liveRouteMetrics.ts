@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminDb } from './firebaseAdmin';
 import {
@@ -650,6 +651,33 @@ function liveRouteLease(request: LiveRouteRefreshRequest, token: string, expires
 }
 
 /**
+ * Route diagnostics must be useful for correlating refreshes without turning
+ * Cloud logs into a location trail. Hash ride and target identifiers; never
+ * emit coordinates, auth tokens, provider responses, or payment data.
+ */
+function routeTelemetryHash(value: string) {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function logRoutePublicationTelemetry(input: {
+  request: LiveRouteRefreshRequest;
+  metrics?: RoadRouteMetrics;
+  calculatedAt: string;
+  status: 'published' | 'rejected';
+}) {
+  console.info('[RoadRouteTelemetry]', {
+    ride_id_hash: routeTelemetryHash(input.request.rideId),
+    target_key_hash: routeTelemetryHash(input.request.targetKey),
+    phase: input.request.phase,
+    target_kind: input.request.targetKind,
+    route_source: input.metrics?.source || null,
+    point_count: Array.isArray(input.metrics?.points) ? input.metrics.points.length : 0,
+    calculated_at: input.calculatedAt,
+    publication_status: input.status,
+  });
+}
+
+/**
  * This is the cross-instance authority for a display-route refresh. A local
  * coordinator saves provider work, but only this transaction decides whether a
  * response belongs to the currently assigned Driver, phase, exact target, and
@@ -690,7 +718,7 @@ export const firestoreLiveRouteRefreshStorage: LiveRouteRefreshStorage = {
   async publish(request, lease, metrics, calculatedAt, nowMs) {
     const db = getAdminDb();
     const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(request.rideId);
-    return await db.runTransaction(async (transaction) => {
+    const published = await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(ref);
       if (!snap.exists) return false;
       const ride = { id: snap.id, ...(snap.data() || {}) } as Record<string, any>;
@@ -728,6 +756,13 @@ export const firestoreLiveRouteRefreshStorage: LiveRouteRefreshStorage = {
       });
       return true;
     });
+    logRoutePublicationTelemetry({
+      request,
+      metrics,
+      calculatedAt,
+      status: published ? 'published' : 'rejected',
+    });
+    return published;
   },
 
   async release(request, lease) {
