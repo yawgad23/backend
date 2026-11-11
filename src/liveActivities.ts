@@ -391,9 +391,10 @@ export async function sendRideLiveActivityUpdate(ride: Record<string, any>, opti
                   dynamicIslandImageName: HY3N_LIVE_ACTIVITY_IMAGE_NAME,
                 }),
               },
-              // Briefly confirm the final state, then remove the Lock Screen
-              // card instead of leaving an old destination visible.
-              ...(presentation.event === 'end' ? { 'dismissal-date': Math.floor(now / 1000) + 30 } : {}),
+              // Remove the Lock Screen/Dynamic Island card immediately when
+              // the authoritative ride reaches a terminal state. A delayed
+              // dismissal leaves a stale "driver arrived" card visible.
+              ...(presentation.event === 'end' ? { 'dismissal-date': Math.floor(now / 1000) } : {}),
               // Let iOS mark the display stale if connection loss prevents the
               // next Driver movement update from arriving.
               ...(presentation.event === 'end' ? {} : { 'stale-date': Math.floor(now / 1000) + 120 }),
