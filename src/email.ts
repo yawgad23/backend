@@ -17,7 +17,7 @@ const RECEIPT_LOGO_CID = 'hy3n-receipt-logo@ridehy3n.com';
 
 export function getReceiptLogoAttachment() {
   const assetDirectory = path.join(process.cwd(), 'assets');
-  const logoFile = ['hy3n-receipt-logo-supplied.png', 'hy3n-receipt-wordmark.png', 'hy3n-receipt-logo.png']
+  const logoFile = ['hy3n-receipt-logo-cropped.png', 'hy3n-receipt-logo-supplied.png', 'hy3n-receipt-wordmark.png', 'hy3n-receipt-logo.png']
     .find((filename) => existsSync(path.join(assetDirectory, filename)));
   if (!logoFile) {
     console.warn('[HY3N Email] Receipt logo asset not found:', assetDirectory);
@@ -27,6 +27,8 @@ export function getReceiptLogoAttachment() {
     filename: logoFile,
     content: readFileSync(path.join(assetDirectory, logoFile)),
     cid: RECEIPT_LOGO_CID,
+    contentType: 'image/png',
+    contentDisposition: 'inline',
   };
 }
 
@@ -115,11 +117,11 @@ export function renderTripReceiptEmail(data: TripReceiptData, hasEmbeddedLogo = 
   const lostItemLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Lost item report — trip ${tripId}`)}&body=${encodeURIComponent(`Hello HY3N Support,\n\nI need help with a lost item from trip ${tripId}.\n\nItem description:\n\nThank you.`)}`;
   const supportLink = `mailto:hello@ridehy3n.com?subject=${encodeURIComponent(`Trip support — ${tripId}`)}`;
   const logo = hasEmbeddedLogo
-    ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="154" style="display:block;width:154px;max-width:154px;height:auto;border:0;outline:none;text-decoration:none" />`
+    ? `<img src="cid:${RECEIPT_LOGO_CID}" alt="HY3N — Ride With Pride" width="220" style="display:block;width:220px;max-width:220px;height:auto;border:0;outline:none;text-decoration:none" />`
     : '<div style="font-size:24px;line-height:28px;font-weight:900;letter-spacing:1px;color:#17191D">HY<span style="color:#D4AF37">3</span>N</div>';
 
   const html = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:24px !important;padding-right:24px !important}.hero-title{font-size:32px !important;line-height:38px !important;letter-spacing:-0.5px !important}.receipt-logo{width:132px !important;max-width:132px !important}.email-outer{padding:16px 0 !important}}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style type="text/css">@media screen and (max-width:480px){.receipt-shell{width:100% !important}.mobile-pad{padding-left:24px !important;padding-right:24px !important}.hero-title{font-size:32px !important;line-height:38px !important;letter-spacing:-0.5px !important}.receipt-logo{width:190px !important;max-width:190px !important}.email-outer{padding:16px 0 !important}}</style></head>
 <body style="margin:0;padding:0;background:#1B1C20;font-family:Arial,Helvetica,sans-serif;color:#FFFFFF">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0">Your HY3N trip with ${escapeHtml(driverName)} is complete. Total: ${fareStr}.</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-outer" style="background:#1B1C20;padding:24px 12px"><tr><td align="center">

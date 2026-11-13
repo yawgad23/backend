@@ -63,7 +63,7 @@ describe('renderTripReceiptEmail', () => {
 
   it('uses the supplied HY3N logo without a pasted white frame', () => {
     const attachment = getReceiptLogoAttachment();
-    expect(attachment?.filename).toBe('hy3n-receipt-logo-supplied.png');
+    expect(attachment?.filename).toBe('hy3n-receipt-logo-cropped.png');
     expect(attachment?.cid).toBe('hy3n-receipt-logo@ridehy3n.com');
 
     const branded = renderTripReceiptEmail(completedTrip, true).html;
