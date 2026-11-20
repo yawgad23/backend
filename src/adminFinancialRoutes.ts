@@ -16,6 +16,18 @@ function queryBoolean(value: unknown): boolean {
   return String(value || '').trim().toLowerCase() === 'true';
 }
 
+function walletTopUpDate(record: Record<string, any>): string {
+  return String(record.date || record.created_date || record.created_at || '').trim();
+}
+
+function isRiderWalletTopUp(record: Record<string, any>): boolean {
+  const purpose = String(record.payment_purpose || record.paymentPurpose || '').toLowerCase();
+  const description = String(record.description || '').toLowerCase();
+  return String(record.user_type || '').toLowerCase() === 'rider'
+    && String(record.type || '').toLowerCase() === 'credit'
+    && (purpose === 'wallet_top_up' || purpose === 'wallet_topup' || /wallet\s*top.?up/.test(description));
+}
+
 /**
  * Provides a protected, accounting-oriented view of completed and cancelled
  * rides. It does not claim that a cash fare has been collected; it reports the
@@ -97,6 +109,68 @@ export function registerAdminFinancialRoutes(app: Express) {
     } catch (error) {
       console.error('[Admin financials] Failed to read ride financial ledger:', error);
       response.status(503).json({ error: 'Ride financial records are temporarily unavailable. Please refresh.' });
+    }
+  });
+
+  app.get('/api/admin/financials/wallet-topups', async (request: Request, response: Response) => {
+    const adminEmail = await requireAdministrator(request, response);
+    if (!adminEmail) return;
+
+    const dateFrom = queryDate(request.query.dateFrom);
+    const dateTo = queryDate(request.query.dateTo);
+    const status = String(request.query.status || '').trim().toLowerCase();
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      response.status(400).json({ error: 'The start date must be before the end date.' });
+      return;
+    }
+
+    try {
+      // Read through Admin SDK because wallet_transactions is intentionally
+      // server-write-only and Rider-readable in Firestore rules.
+      const [transactions, riderProfiles] = await Promise.all([
+        adminFirestore.list(ADMIN_COLLECTIONS.WALLET_TRANSACTIONS, {}, null, 'desc', 1_000),
+        adminFirestore.list(ADMIN_COLLECTIONS.RIDER_PROFILES, {}, null, 'desc', 1_000),
+      ]);
+      const profiles = new Map<string, Record<string, any>>();
+      for (const profile of riderProfiles) {
+        for (const key of [profile.id, profile.user_id, profile.userId]) {
+          if (key) profiles.set(String(key), profile);
+        }
+      }
+
+      const records = transactions
+        .filter(isRiderWalletTopUp)
+        .filter((record) => {
+          const date = walletTopUpDate(record).slice(0, 10);
+          const recordStatus = String(record.status || 'processing').toLowerCase();
+          return (!dateFrom || date >= dateFrom)
+            && (!dateTo || date <= dateTo)
+            && (!status || recordStatus === status);
+        })
+        .map((record) => {
+          const riderId = String(record.user_id || record.userId || '').trim();
+          const profile = profiles.get(riderId);
+          return {
+            ...record,
+            rider_id: riderId,
+            rider_name: record.payer_display_name || profile?.full_name || profile?.name || `Rider (${riderId.slice(0, 8) || '—'})`,
+            rider_phone: record.momo_number || record.phone || profile?.phone || '',
+            date: walletTopUpDate(record),
+            status: String(record.status || 'processing').toLowerCase(),
+            amount: Number(record.amount || record.provider_requested_amount || 0),
+          };
+        })
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+      response.json({
+        generatedAt: new Date().toISOString(),
+        requestedBy: adminEmail,
+        filters: { dateFrom: dateFrom || null, dateTo: dateTo || null, status: status || null },
+        records,
+      });
+    } catch (error) {
+      console.error('[Admin financials] Failed to read wallet top-ups:', error);
+      response.status(503).json({ error: 'Wallet top-up records are temporarily unavailable. Please refresh.' });
     }
   });
 }
