@@ -32,6 +32,14 @@ service firebase.storage {
       allow delete: if signedIn() && (request.auth.uid == driverId || isAdministrator());
     }
 
+    // Rider profile photos are private, UID-scoped media. Keep the same size
+    // and MIME-type restrictions as other user-uploaded images.
+    match /rider_profiles/{riderId}/{fileName} {
+      allow read: if signedIn() && (request.auth.uid == riderId || isAdministrator());
+      allow create, update: if signedIn() && request.auth.uid == riderId && isImageUpload();
+      allow delete: if signedIn() && (request.auth.uid == riderId || isAdministrator());
+    }
+
     // No wildcard fallback: every unlisted object path is denied by default.
   }
 }
