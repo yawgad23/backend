@@ -25,7 +25,10 @@ function isRiderWalletTopUp(record: Record<string, any>): boolean {
   const description = String(record.description || '').toLowerCase();
   return String(record.user_type || '').toLowerCase() === 'rider'
     && String(record.type || '').toLowerCase() === 'credit'
-    && (purpose === 'wallet_top_up' || purpose === 'wallet_topup' || /wallet\s*top.?up/.test(description));
+    && (purpose === 'rider_wallet_top_up'
+      || purpose === 'wallet_top_up'
+      || purpose === 'wallet_topup'
+      || /wallet\s*top.?up/.test(description));
 }
 
 /**
