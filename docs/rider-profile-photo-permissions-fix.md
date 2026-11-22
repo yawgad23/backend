@@ -1,6 +1,6 @@
 # Rider build 133: server-only profile-photo save fix
 
-**Status: prepared and emulator-tested; NOT deployed. No new native app build was started.**
+**Status: deployed to Firebase project `hy3n26` after explicit user approval, and live source verified on November22,2026 at11:32UTC. No new native app build was started.**
 
 Prepared on 22 November 2026 in the isolated backend checkout `/home/ubuntu/hy3n-backend-rider-photo-permissions`, branch `task/rider-photo-permissions-20261122`, based on remote main **`5d4ab31deacf4de99309c8de6337ad33b5bd7d1b`**. The only intended source changes are `firestore.rules`, `firebase.rider-photo.emulator.json`, `tests/rider-profile-photo.rules.emulator.mjs`, and this report. Native Rider, Storage rules, backend APIs, dependency manifests, production Firebase configuration and CI workflows are unchanged.
 
@@ -8,13 +8,13 @@ Prepared on 22 November 2026 in the isolated backend checkout `/home/ubuntu/hy3n
 
 Build 133 uploads to `rider_profiles/<authenticated UID>/profile.jpg`, obtains a download URL, then directly updates `rider_profiles/<loaded profile.id>` with `{ profile_picture: url, updated_date: new Date().toISOString() }`. Existing Firestore rules allow Rider profile updates only to admins. A legacy owned profile document ID may differ from the authenticated UID; this patch deliberately supports that case.
 
-**GET-only live rule inspection at `2026-11-22T11:23:23.152Z`** confirmed the active policies. Recorded evidence is `/home/ubuntu/rider-photo-live-rules/inspection.json`. Firebase tracks each deployed policy as a release pointing to an immutable ruleset.[1]
+**GET-only live rule inspection at `2026-11-22T11:23:23.152Z`** confirmed the pre-change policies. The baseline was rechecked at `2026-11-22T11:31:28.671Z` and preserved in `/home/ubuntu/rider-photo-live-rules-before-deploy/inspection.json`. Firebase tracks each deployed policy as a release pointing to an immutable ruleset.[1]
 
-The default Firestore release `projects/hy3n26/releases/cloud.firestore` points to `projects/hy3n26/rulesets/29edf104-5a0e-42c0-b04d-f8cecf5db59c`, last updated `2026-10-19T19:21:40.709802Z`. Its source SHA-256 is `6d5f0f4d52afc26d82a3304f7f68cf8b174f0cff3f1a38955ecdd2255b4cee91`.
+Before deployment, the default Firestore release `projects/hy3n26/releases/cloud.firestore` pointed to `projects/hy3n26/rulesets/29edf104-5a0e-42c0-b04d-f8cecf5db59c`, last updated `2026-10-19T19:21:40.709802Z`. Its source SHA-256 was `6d5f0f4d52afc26d82a3304f7f68cf8b174f0cff3f1a38955ecdd2255b4cee91`.
 
 The Storage release `projects/hy3n26/releases/firebase.storage/hy3n26.firebasestorage.app` points to `projects/hy3n26/rulesets/e4b78ef5-0433-439f-9ca8-557a2a0805e6`, last updated `2026-11-20T16:07:19.674786Z`. Its source SHA-256 is `3c1c4739fd3a1ec04dca6accef76b1c6ab717989f8fc1d8a71b4124c7a8f7456`.
 
-Active Firestore source equals baseline commit `5d4ab31:firestore.rules`. Active Storage source equals this checkout's unchanged `storage.rules`: authenticated UID-owned Rider uploads are already allowed, with the existing 8 MiB JPEG/PNG/WebP policy. **No Storage change is needed for this Firestore save fix.** Live inspection is policy verification, not a live user upload/save trace. The plain permission alert and build133's awaited operation sequence identify the rejected Firestore save with high confidence; actual upload completion and this user's stored ownership have not been traced.
+Before deployment, active Firestore source equaled baseline commit `5d4ab31:firestore.rules`. Active Storage source equals this checkout's unchanged `storage.rules`: authenticated UID-owned Rider uploads are already allowed, with the existing 8 MiB JPEG/PNG/WebP policy. **No Storage change was needed or deployed for this Firestore save fix.** Live inspection is policy verification, not a live user upload/save trace. The plain permission alert and build133's awaited operation sequence identify the rejected Firestore save with high confidence; actual upload completion and this user's stored ownership have not been traced.
 
 ## Exact permission boundary
 
@@ -72,15 +72,23 @@ Full final test log: `/home/ubuntu/rider-photo-rules-emulator-test.log`. Emulato
 
 ## Release, rollback and remaining limits
 
-**No deployment authorization has been exercised.** Source preparation is separate from production release, which requires explicit user confirmation. If authorized later, the narrowly scoped deployment command is:
+The user explicitly approved **“Confirm—deploy the Firestore photo fix only”** at11:31UTC. The approved source commit `8e0f856ec193be64a9e6e663d30a396e39c0aa80` was already pushed to `yawgad23/backend`. Immediately before rollout, the clean checkout, exact rule hash and unchanged live baseline were rechecked; original rules and release metadata were preserved in `/home/ubuntu/rider-photo-live-rules-before-deploy/`.
+
+The fix remains on the isolated source branch, not merged into main. Future rules deployments must retain this approved photo exception rather than overwrite it with the older main rules. A later report-only commit does not change the deployed rule payload.
+
+The following Firestore-only deployment succeeded at `2026-11-22T11:32:00.648098Z`:
 
 ```sh
 firebase deploy --project hy3n26 --only firestore:rules
 ```
 
-This command is documented only, **not executed**. Do not deploy indexes, functions, Storage or stale mobile rules. Re-check the active Firestore release immediately before rollout to avoid overwriting unrelated intervening policy changes. The verified pre-change rollback ruleset is `projects/hy3n26/rulesets/29edf104-5a0e-42c0-b04d-f8cecf5db59c`; preserve the matching original source/hash above and restore only the Firestore release if an explicitly authorized rollback is needed.
+Firebase compiled the file successfully and released it to `cloud.firestore`. The compiler emitted warnings in existing unused helpers; it reported no compilation error. Although the CLI read the existing index configuration, it did not deploy indexes. Functions, Storage, mobile binaries, TestFlight and App Review were not changed.
 
-Emulator success does not establish live end-to-end resolution. After an approved rules-only rollout, an authorized build-133 test should confirm picker/crop, actual upload MIME, URL retrieval, persisted save after reload, and unchanged contact/name behavior. Other deployment systems and the native SDK migration are outside this patch.
+GET-only read-back at `2026-11-22T11:32:22.451Z` verified the default Firestore release now points to `projects/hy3n26/rulesets/afbd2a44-1247-42ba-8b09-be9f8ea60490`. Its source SHA-256 is `7db253810f8946f6adbb1279c8cb0f51fe85f63210392463d86e123c72766801`, exactly matching the approved file. Storage retained its previous ruleset, update timestamp and source hash. Deployment evidence is `/home/ubuntu/rider-photo-firestore-rules-deploy.log`; read-back evidence is `/home/ubuntu/rider-photo-firestore-deployment-verification.json`.
+
+The verified pre-change rollback ruleset remains `projects/hy3n26/rulesets/29edf104-5a0e-42c0-b04d-f8cecf5db59c`. Restore only the Firestore release if an explicitly authorized rollback becomes necessary. No rollback has been performed.
+
+Successful rollout and emulator tests do not establish live end-to-end resolution. Allow a few minutes for rule propagation, then retry profile-photo selection/crop/save in existing build133, reopen the app and confirm the photo persists. No new app build is needed for this compatibility fix. A physical-device test should still verify actual upload MIME, URL retrieval, persisted save and unchanged contact/name behavior. The native SDK migration and Apple App Review remain separate and unsubmitted.[1]
 
 **Privacy caveat:** the existing `getDownloadURL` value is a bearer-capability URL. Someone possessing a valid token URL may retrieve the image without the owner's Firebase session; authenticated Storage rules do not turn leaked download URLs into authenticated-only media. This patch adds no public read rule or bucket ACL, but cannot solve that existing capability-URL property. It also validates URL syntax/ownership path, not object existence, genuine token ownership, image contents or client-time authenticity. Stronger authenticated media delivery, server-owned audit timestamps, or backend object/token verification requires a separate API/client design, not this unchanged-build compatibility exception.
 
