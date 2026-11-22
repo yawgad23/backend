@@ -14,7 +14,7 @@ service firebase.storage {
 
     function isImageUpload() {
       return request.resource.size <= 8 * 1024 * 1024
-        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+        && request.resource.contentType.matches('image/(jpeg|png|webp|heic|heif)');
     }
 
     // Driver documents are private identity material. Paths are UID-scoped and
