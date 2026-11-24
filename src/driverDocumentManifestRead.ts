@@ -30,7 +30,7 @@ export function resolveDriverDocumentBucket(projectId: string | undefined, confi
   return bucket;
 }
 
-const productionDependencies: DriverManifestReadDependencies = {
+export const driverManifestReadDependencies: DriverManifestReadDependencies = {
   async getProfile(profileId) {
     const snapshot = await getAdminDb().collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(profileId).get();
     return snapshot.exists ? { id: snapshot.id, data: snapshot.data() || {}, version: snapshot.updateTime?.toDate().toISOString() + ':' + snapshot.updateTime?.nanoseconds } : null;
@@ -53,7 +53,7 @@ const productionDependencies: DriverManifestReadDependencies = {
   warn(message) { console.warn(message); },
 };
 
-function isOwnedProfile(record: DriverManifestProfileRecord, uid: string, canonical: boolean): boolean {
+export function isOwnedProfile(record: DriverManifestProfileRecord, uid: string, canonical: boolean): boolean {
   if (record.data.user_id === uid) return true;
   return canonical && record.id === uid && (record.data.user_id === undefined || record.data.user_id === null || record.data.user_id === '');
 }
@@ -79,7 +79,7 @@ function selectionFingerprint(record: DriverManifestProfileRecord | null): strin
 
 /** All dependencies are reads; tests inject offline records and Storage metadata. */
 export async function readDriverDocumentManifest(
-  uid: string, dependencies: DriverManifestReadDependencies = productionDependencies,
+  uid: string, dependencies: DriverManifestReadDependencies = driverManifestReadDependencies,
 ): Promise<DriverDocumentManifest> {
   try {
     if (!uid || /[\/\\\s\x00-\x1f\x7f]/.test(uid) || uid === '.' || uid === '..') {

@@ -14,6 +14,9 @@ import {
   releaseAccountContacts,
 } from './accountContactClaims';
 import { requiredAccountFullName } from './riderIdentity';
+import { driverApprovalState } from './driverApproval';
+import { DriverManifestError, type DriverDocumentManifest } from './driverDocumentManifest';
+import { AdminDriverVerificationError, decideAdminDriverApproval, readAdminDriverReview } from './adminDriverVerification';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -358,7 +361,8 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
     accountStatus: ['suspended', 'inactive'].includes(String(profile.account_status || 'active').toLowerCase())
       ? String(profile.account_status).toLowerCase()
       : 'active',
-    approvalStatus: accountRole === 'driver' ? String(profile.approval_status || 'pending').toLowerCase() : null,
+    approvalStatus: accountRole === 'driver' ? driverApprovalState(profile) : null,
+    rejectionReason: accountRole === 'driver' && typeof profile.rejection_reason === 'string' ? profile.rejection_reason : null,
     isOnline: accountRole === 'driver' && (profile.is_online === true || profile.availability_status === 'online'),
     isTestDriver: accountRole === 'driver' && profile.is_test_driver === true,
     serviceType: accountRole === 'driver' ? profile.service_type || profile.serviceType || 'car' : null,
@@ -396,6 +400,38 @@ function normalizedProfile(profile: Record<string, any>, accountRole: AccountRol
         }
       : null,
   };
+}
+
+/** Review display URLs must come from strict manifest validation, never aliases. */
+function normalizedDriverReview(profile: Record<string, any>, manifest: DriverDocumentManifest) {
+  return {
+    ...normalizedProfile(profile, 'driver'),
+    approvalStatus: driverApprovalState(profile),
+    rejectionReason: typeof profile.rejection_reason === 'string' ? profile.rejection_reason : null,
+    documentRevision: manifest.documentRevision,
+    documents: {
+      profilePhoto: manifest.documents.profilePhoto.reference,
+      ghanaCardFront: manifest.documents.ghanaCardFront.reference,
+      ghanaCardBack: manifest.documents.ghanaCardBack.reference,
+      driverLicenseFront: manifest.documents.licenseFront.reference,
+      driverLicenseBack: manifest.documents.licenseBack.reference,
+      vehiclePhoto: manifest.documents.vehiclePhoto.reference,
+      vehicleRegistration: null,
+      insurance: manifest.documents.insurance.reference,
+      roadworthy: manifest.documents.roadworthy.reference,
+    },
+  };
+}
+
+function driverReviewError(response: Response, error: unknown) {
+  if (error instanceof DriverManifestError || error instanceof AdminDriverVerificationError) {
+    response.status(error.status).json({ error: error.message, code: error.code,
+      ...(error instanceof AdminDriverVerificationError && error.missingDocuments ? { missingDocuments: error.missingDocuments } : {}) });
+    return;
+  }
+  // Do not log profile data, document URLs, download tokens or account identifiers.
+  console.error('[Admin Driver review] Operation unavailable.');
+  response.status(503).json({ error: 'Driver verification is temporarily unavailable. Please refresh.', code: 'DRIVER_VERIFICATION_UNAVAILABLE' });
 }
 
 async function profilesForUser(accountRole: AccountRole, userId: string) {
@@ -775,6 +811,11 @@ export function registerAdminAccountRoutes(app: Express) {
           correctedFields: Array.isArray(event.corrected_fields)
             ? event.corrected_fields.filter((field: unknown) => typeof field === 'string').slice(0, 3)
             : [],
+          previousApprovalStatus: event.previous_approval_status || null,
+          newApprovalStatus: event.new_approval_status || null,
+          decisionReason: event.decision_reason || null,
+          reviewedDocumentRevision: event.reviewed_document_revision || null,
+          exception: event.exception || null,
           createdAt: event.created_date || null,
         })),
       });
@@ -784,44 +825,36 @@ export function registerAdminAccountRoutes(app: Express) {
     }
   });
 
+  app.get('/api/admin/drivers/:userId/documents', async (request: Request, response: Response) => {
+    response.set('Cache-Control', 'no-store');
+    const administrator = await requireAdministrator(request, response);
+    if (!administrator) return;
+    const userId = validUserId(request.params.userId);
+    if (!userId) {
+      response.status(400).json({ error: 'A valid Driver account is required.' });
+      return;
+    }
+    try {
+      const review = await readAdminDriverReview(userId);
+      response.json({ account: normalizedDriverReview(review.profile, review.manifest), manifest: review.manifest });
+    } catch (error) { driverReviewError(response, error); }
+  });
+
   app.patch('/api/admin/drivers/:userId/approval', async (request: Request, response: Response) => {
+    response.set('Cache-Control', 'no-store');
     const adminEmail = await requireAdministrator(request, response);
     if (!adminEmail) return;
     const userId = validUserId(request.params.userId);
-    const approvalStatus = String(request.body?.approvalStatus || '').trim().toLowerCase();
-    if (!userId || !['approved', 'rejected', 'pending'].includes(approvalStatus)) {
-      response.status(400).json({ error: 'Choose approved, rejected, or pending.' });
+    if (!userId) {
+      response.status(400).json({ error: 'A valid Driver account is required.' });
       return;
     }
 
     try {
-      const profiles = await profilesForUser('driver', userId);
-      if (profiles.length === 0) {
-        response.status(404).json({ error: 'Driver profile was not found.' });
-        return;
-      }
-      const patch: Record<string, any> = {
-        approval_status: approvalStatus,
-        approved: approvalStatus === 'approved',
-        approval_updated_at: new Date().toISOString(),
-        approval_updated_by: adminEmail,
-        rejection_reason: approvalStatus === 'rejected' ? String(request.body?.reason || 'Application was not approved.').slice(0, 500) : null,
-      };
-      if (approvalStatus !== 'approved') {
-        patch.is_online = false;
-        patch.is_available = false;
-        patch.availability_status = 'offline';
-      }
-      await Promise.all(profiles.map((profile) => adminFirestore.set(
-        ADMIN_COLLECTIONS.DRIVER_PROFILES,
-        String(profile.id),
-        { user_id: userId, ...patch },
-      )));
-      response.json({ account: normalizedProfile({ ...newest(profiles[0], profiles[profiles.length - 1]), ...patch }, 'driver') });
-    } catch (error) {
-      console.error('[Admin accounts] Failed to update Driver approval:', error);
-      response.status(503).json({ error: 'Driver approval could not be updated.' });
-    }
+      const confirmed = await decideAdminDriverApproval(userId, adminEmail, request.body || {});
+      response.json({ account: normalizedDriverReview(confirmed.profile, confirmed.reviewedManifest),
+        documentRevision: confirmed.documentRevision });
+    } catch (error) { driverReviewError(response, error); }
   });
 
   /**
