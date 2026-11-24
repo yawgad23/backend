@@ -1,7 +1,9 @@
 import type { Express, Request, Response } from 'express';
-import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
+import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth, getAdminDb } from './firebaseAdmin';
 import { AccountContactConflictError, claimAccountContacts } from './accountContactClaims';
 import { driverProfileForAuthenticatedUser } from './driverProfileRead';
+import { DRIVER_PROFILE_AUTHORITY_CAP, driverApplicationAuthorityFingerprint, driverApprovalState, hasDriverApplicationAuthority,
+  isApprovedDriverProfile, readDriverProfileAuthority, DriverProfileAuthorityError, type DriverProfileAuthority } from './driverApproval';
 
 /** Normalize Ghana mobile input to the Firebase/Firestore E.164 representation. */
 export function normalizeGhanaPhone(value: unknown): string | null {
@@ -34,16 +36,9 @@ export function profileMatchesVerifiedPhone(profile: Record<string, unknown>, ve
   ));
 }
 
-function approved(profile: Record<string, any>): boolean {
-  const status = String(profile.approval_status ?? profile.application_status ?? profile.status ?? '').trim().toLowerCase();
-  return status === 'approved' || profile.approved === true || profile.is_approved === true;
-}
-
-function latestFirst(left: Record<string, any>, right: Record<string, any>): number {
-  if (approved(left) !== approved(right)) return approved(left) ? -1 : 1;
-  return String(right.updated_date || right.created_date || '').localeCompare(
-    String(left.updated_date || left.created_date || ''),
-  );
+function fingerprint(authority: DriverProfileAuthority): string {
+  return JSON.stringify(authority.profiles.map((profile) => [profile.id, driverApplicationAuthorityFingerprint(profile)])
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0]))));
 }
 
 async function authenticatedPhoneSession(request: Request, response: Response) {
@@ -55,7 +50,7 @@ async function authenticatedPhoneSession(request: Request, response: Response) {
   }
 
   try {
-    const decoded = await getAdminAuth().verifyIdToken(idToken);
+    const decoded = await getAdminAuth().verifyIdToken(idToken, true);
     const phone = normalizeGhanaPhone(decoded.phone_number);
     if (!phone) {
       response.status(403).json({ success: false, message: 'This login is not verified by phone. Please request a new verification code.' });
@@ -112,14 +107,15 @@ export function registerDriverPhoneLoginRoutes(app: Express) {
       const candidates = new Map<string, Record<string, any>>();
       for (const field of ['phone', 'phone_number', 'mobile_number']) {
         for (const value of phoneLookupValues(session.phone)) {
-          const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { [field]: value }, null, 'desc', 20);
+          const matches = await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { [field]: value }, null, 'desc', DRIVER_PROFILE_AUTHORITY_CAP + 1);
+          if (matches.length > DRIVER_PROFILE_AUTHORITY_CAP) throw new DriverProfileAuthorityError('Too many matching Driver profiles to safely link.');
           for (const profile of matches) {
             if (profileMatchesVerifiedPhone(profile, session.phone)) candidates.set(String(profile.id), profile);
           }
         }
       }
 
-      const matchingProfiles = [...candidates.values()].sort(latestFirst);
+      const matchingProfiles = [...candidates.values()];
       if (matchingProfiles.length === 0) {
         response.status(403).json({
           success: false,
@@ -128,8 +124,7 @@ export function registerDriverPhoneLoginRoutes(app: Express) {
         return;
       }
 
-      const selected = matchingProfiles[0];
-      const previousUserId = String(selected.user_id || selected.id || '').trim();
+      const previousUserId = String(matchingProfiles[0].user_id || matchingProfiles[0].id || '').trim();
       const identityOwners = new Set(matchingProfiles.map((profile) => String(profile.user_id || profile.id || '').trim()).filter(Boolean));
       if (identityOwners.size > 1) {
         response.status(409).json({
@@ -138,11 +133,11 @@ export function registerDriverPhoneLoginRoutes(app: Express) {
         });
         return;
       }
-      const relatedProfiles = previousUserId
-        ? await adminFirestore.list(ADMIN_COLLECTIONS.DRIVER_PROFILES, { user_id: previousUserId }, null, 'desc', 20)
-        : [];
-      const profilesToLink = [...matchingProfiles, ...relatedProfiles]
-        .filter((profile, index, list) => list.findIndex((item) => item.id === profile.id) === index);
+      const db = getAdminDb();
+      const source = await readDriverProfileAuthority(previousUserId, undefined, db);
+      const target = previousUserId === session.uid ? source : await readDriverProfileAuthority(session.uid, undefined, db);
+      const selected = hasDriverApplicationAuthority(target.canonical) ? target.profile : source.profile;
+      if (!selected || !profileMatchesVerifiedPhone(selected, session.phone)) throw new DriverProfileAuthorityError();
       try {
         await claimAccountContacts({
           ownerUid: session.uid,
@@ -160,29 +155,58 @@ export function registerDriverPhoneLoginRoutes(app: Express) {
         }
         throw error;
       }
-      const timestamp = new Date().toISOString();
-      const patch = {
-        user_id: session.uid,
-        phone: session.phone,
-        phone_verified: true,
-        phone_verified_at: timestamp,
-        phone_login_linked_at: timestamp,
-      };
-
-      // Preserve legacy application records for the administrator while making
-      // the UID-keyed profile used by dispatch and mobile recovery canonical.
-      await Promise.all(profilesToLink.map((profile) => adminFirestore.set(
-        ADMIN_COLLECTIONS.DRIVER_PROFILES,
-        String(profile.id),
-        patch,
-      )));
-      const { id: _id, ...profileData } = selected;
-      await adminFirestore.set(ADMIN_COLLECTIONS.DRIVER_PROFILES, session.uid, {
-        ...profileData,
-        ...patch,
+      const approvalStatus = await db.runTransaction(async (transaction) => {
+        const currentSource = await readDriverProfileAuthority(previousUserId, transaction, db);
+        const currentTarget = previousUserId === session.uid ? currentSource : await readDriverProfileAuthority(session.uid, transaction, db);
+        if (fingerprint(currentSource) !== fingerprint(source) || fingerprint(currentTarget) !== fingerprint(target)) {
+          throw new DriverProfileAuthorityError('Your Driver application changed. Please sign in again.');
+        }
+        // Lock every initially discovered phone record, including ownerless legacy records.
+        for (const profile of matchingProfiles) {
+          const snapshot = await transaction.get(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(String(profile.id)));
+          const current = snapshot.exists ? { ...snapshot.data(), id: snapshot.id } : null;
+          if (!current || driverApplicationAuthorityFingerprint(current) !== driverApplicationAuthorityFingerprint(profile)) throw new DriverProfileAuthorityError();
+        }
+        const current = hasDriverApplicationAuthority(currentTarget.canonical) ? currentTarget.profile : currentSource.profile;
+        if (!current || !profileMatchesVerifiedPhone(current, session.phone)) throw new DriverProfileAuthorityError();
+        const profiles = new Map([...currentSource.profiles, ...currentTarget.profiles, ...matchingProfiles].map((profile) => [String(profile.id), profile]));
+        const disabled = (profile: Record<string, any> | null) => ['suspended', 'inactive', 'removed', 'disabled']
+          .includes(String(profile?.account_status || profile?.status || '').trim().toLowerCase());
+        const lifecycle = disabled(currentTarget.canonical) ? currentTarget.canonical! : current;
+        const lifecyclePatch = Object.fromEntries(Object.entries(lifecycle).filter(([field]) => field.startsWith('account_')));
+        if (disabled(lifecycle) && !lifecyclePatch.account_status) lifecyclePatch.account_status = lifecycle.status;
+        const dispatchable = isApprovedDriverProfile(current) && !disabled(lifecycle);
+        const presenceIds = [...new Set([session.uid, previousUserId])];
+        if (!dispatchable || previousUserId !== session.uid) {
+          for (const id of presenceIds) {
+            const presence = await transaction.get(db.collection('driver_presence').doc(id));
+            if (presence.exists && presence.data()?.user_id && presence.data()?.user_id !== id) throw new DriverProfileAuthorityError();
+          }
+        }
+        const timestamp = new Date().toISOString();
+        const approval = driverApprovalState(current);
+        const patch = { user_id: session.uid, phone: session.phone, phone_verified: true, phone_verified_at: timestamp,
+          phone_login_linked_at: timestamp, updated_date: timestamp, approval_status: approval, application_status: approval,
+          approved: approval === 'approved', is_approved: approval === 'approved',
+          rejection_reason: approval === 'rejected' ? current.rejection_reason || null : null,
+          ...(!dispatchable || previousUserId !== session.uid ? { is_online: false, is_available: false, availability_status: 'offline' } : {}) };
+        const { id: _id, ...profileData } = current;
+        for (const [id, profile] of profiles) {
+          transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(id), { ...patch,
+            ...(['approved', 'pending', 'rejected'].includes(String(profile.status || '').trim().toLowerCase()) ? { status: approval } : {}) }, { merge: true });
+        }
+        transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(session.uid), { ...profileData, ...patch,
+          ...lifecyclePatch,
+          ...(['approved', 'pending', 'rejected'].includes(String(current.status || '').trim().toLowerCase()) ? { status: approval } : {}) }, { merge: true });
+        if (!dispatchable || previousUserId !== session.uid) {
+          for (const id of presenceIds) transaction.set(db.collection('driver_presence').doc(id), { user_id: id,
+            approval_status: id === session.uid ? approval : 'pending', approved: id === session.uid && approval === 'approved',
+            is_approved: id === session.uid && approval === 'approved', account_status: lifecyclePatch.account_status || 'active',
+            is_online: false, is_available: false, availability_status: 'offline', offline_reason: 'phone_login_linked', updated_date: timestamp }, { merge: true });
+        }
+        return approval;
       });
-
-      response.json({ success: true, profileId: session.uid, approvalStatus: selected.approval_status || 'pending' });
+      response.json({ success: true, profileId: session.uid, approvalStatus });
     } catch (error: any) {
       console.error('[Driver phone login] Profile link failed:', { message: String(error?.message || 'unknown error') });
       response.status(503).json({ success: false, message: 'We could not open your Driver account right now. Please try again.' });

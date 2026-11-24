@@ -8,7 +8,7 @@ import {
   driverOfferPreferencePriority,
   preferencesForDriverRecord,
 } from './driverOfferPreferences';
-import { driverProfileForUserId } from './driverApproval';
+import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
 
 const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
 const MAX_DRIVER_OFFER_CANDIDATES = 24;
@@ -177,6 +177,9 @@ export async function sendDriverRideOfferPush(rideId: string, rawRide: Record<st
 
   try {
     const profile = await driverProfileForUserId(offeredDriverId);
+    if (!isApprovedDriverProfile(profile) || !driverCanServeRideCategory(profile, rawRide.category)) {
+      return { attempted: 0, sent: 0 };
+    }
     if (!driverOfferPushNotificationsEnabled(profile)) return { attempted: 0, sent: 0 };
     const devices = (await adminFirestore.list(ADMIN_COLLECTIONS.PUSH_DEVICES, { uid: offeredDriverId }, null, 'desc', 20))
       .filter((device): device is PushDevice => (

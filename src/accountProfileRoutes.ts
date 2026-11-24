@@ -7,11 +7,13 @@ import {
   normalizeAccountEmail,
   normalizeAccountPhone,
 } from './accountContactClaims';
-import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
+import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth, getAdminDb } from './firebaseAdmin';
 import { requiredAccountFullName, requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
 import { selectVerifiedRiderAccountRecovery } from './riderAccountRecovery';
-import { DriverManifestError } from './driverDocumentManifest';
+import { DRIVER_DOCUMENT_DEFINITIONS, driverDocumentKeys, driverManifestDetails, DriverManifestError } from './driverDocumentManifest';
 import { readDriverDocumentManifest } from './driverDocumentManifestRead';
+import { driverApplicationAuthorityFingerprint, driverApprovalState, isApprovedDriverProfile, readDriverProfileAuthority,
+  DriverProfileAuthorityError, type DriverProfileAuthority } from './driverApproval';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -153,6 +155,7 @@ function assertedContacts(
 }
 
 async function existingProfile(role: AccountRole, uid: string) {
+  if (role === 'driver') return (await readDriverProfileAuthority(uid)).profile;
   const collection = collectionFor(role);
   const canonical = await adminFirestore.get(collection, uid);
   if (canonical) return canonical;
@@ -161,6 +164,7 @@ async function existingProfile(role: AccountRole, uid: string) {
 }
 
 async function writeCanonicalProfile(role: AccountRole, uid: string, patch: Record<string, any>) {
+  if (role === 'driver') return saveDriverApplication(uid, patch, false);
   const collection = collectionFor(role);
   const existing = await existingProfile(role, uid);
   const existingData = existing ? profileWithoutIdentityFields(existing) : {};
@@ -174,6 +178,85 @@ async function writeCanonicalProfile(role: AccountRole, uid: string, patch: Reco
     await adminFirestore.set(collection, String(existing.id), patch);
   }
   return { id: uid, ...profile };
+}
+
+function normalizedMaterial(profile: Record<string, any>): string {
+  const details = driverManifestDetails(profile);
+  const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+  const { momoNumber: _momo, phone: _phone, acceptedCategories, ...identityVehicle } = details;
+  const phone = normalizeAccountPhone(details.phone) || normalize(details.phone);
+  const documents = driverDocumentKeys.map((key) => {
+    let reference = profile[DRIVER_DOCUMENT_DEFINITIONS[key].field];
+    if (key === 'vehiclePhoto' && !reference && typeof profile.vehicle_registration_url === 'string') {
+      try {
+        const path = decodeURIComponent(new URL(profile.vehicle_registration_url).pathname);
+        if (/\/(vehicle-photo|vehicle_photo)\.jpg$/.test(path)) reference = profile.vehicle_registration_url;
+      } catch { /* Unknown registration scans are not vehicle photos. */ }
+    }
+    return [key, typeof reference === 'string' ? reference.trim() : ''];
+  });
+  return JSON.stringify({ details: Object.fromEntries(Object.entries(identityVehicle).map(([key, value]) => [key, normalize(value)])),
+    phone, categories: [...new Set(acceptedCategories.map(normalize))].sort(), documents });
+}
+
+function authorityFingerprint(authority: DriverProfileAuthority): string {
+  return JSON.stringify({ selected: authority.profile?.id || null,
+    records: authority.profiles.map((profile) => [profile.id, driverApplicationAuthorityFingerprint(profile)])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))) });
+}
+
+/** Prospective application writes cannot restore an administrator decision read before the transaction. */
+export async function saveDriverApplication(uid: string, materialPatch: Record<string, any>, resubmission = true) {
+  const allowedFields = new Set(['full_name', 'email', 'phone', 'momo_number', 'city', 'service_type', 'ride_categories', 'accepted_categories',
+    'vehicle_make', 'vehicle_model', 'vehicle_plate', 'license_plate', 'vehicle_color', 'vehicle_colour', 'vehicle_year',
+    'registration_source', 'contact_claimed_at', ...driverDocumentKeys.map((key) => DRIVER_DOCUMENT_DEFINITIONS[key].field)]);
+  materialPatch = Object.fromEntries(Object.entries(materialPatch).filter(([field]) => allowedFields.has(field)));
+  const db = getAdminDb();
+  const expected = await readDriverProfileAuthority(uid, undefined, db);
+  const expectedFingerprint = authorityFingerprint(expected);
+  const eventRef = db.collection('account_lifecycle_events').doc();
+  return db.runTransaction(async (transaction) => {
+    const authority = await readDriverProfileAuthority(uid, transaction, db);
+    if (authorityFingerprint(authority) !== expectedFingerprint) {
+      throw new DriverProfileAuthorityError('Your Driver application or administrator decision changed. Refresh and submit again.');
+    }
+    const existing = authority.profile || {};
+    const changed = normalizedMaterial(existing) !== normalizedMaterial({ ...existing, ...materialPatch });
+    const previous = driverApprovalState(existing);
+    const approval = previous === 'approved' && !changed ? 'approved'
+      : changed || resubmission ? 'pending' : previous;
+    const dispatchable = approval === 'approved' && isApprovedDriverProfile(existing);
+    const presenceRef = db.collection('driver_presence').doc(uid);
+    const presence = !dispatchable ? await transaction.get(presenceRef) : null;
+    if (presence?.exists && presence.data()?.user_id && presence.data()?.user_id !== uid) throw new DriverProfileAuthorityError();
+    const now = new Date().toISOString();
+    const approvalPatch = {
+      approval_status: approval, application_status: approval, approved: approval === 'approved', is_approved: approval === 'approved',
+      ...(approval !== 'rejected' ? { rejection_reason: null } : {}),
+      ...(!dispatchable ? { is_online: false, is_available: false, availability_status: 'offline' } : {}),
+    };
+    const patch = { ...materialPatch, ...approvalPatch, user_id: uid, updated_date: now,
+      ...(resubmission || changed ? { application_submitted_at: now } : {}) };
+    const canonical = { ...profileWithoutIdentityFields(existing), ...patch,
+      // Preserve account lifecycle, trusted test classification, financial/trip counters and decisions.
+      ...(!existing.account_status && !existing.status ? { account_status: 'active' } : {}),
+      rating: existing.rating ?? 5, total_rides: existing.total_rides ?? 0,
+      ...(!existing.created_date ? { created_date: now } : {}) };
+    const legacyApproval = (profile: Record<string, any>) => ['approved', 'pending', 'rejected'].includes(String(profile.status || '').trim().toLowerCase())
+      ? { status: approval } : {};
+    transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(uid), { ...canonical, ...legacyApproval(existing) }, { merge: true });
+    for (const profile of authority.profiles) {
+      if (profile.id !== uid) transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(String(profile.id)),
+        { ...patch, ...legacyApproval(profile) }, { merge: true });
+    }
+    if (!dispatchable) transaction.set(presenceRef, { user_id: uid, ...approvalPatch,
+      account_status: existing.account_status || (['suspended', 'inactive', 'removed', 'disabled'].includes(String(existing.status || '').trim().toLowerCase()) ? existing.status : 'active'),
+      offline_reason: `application_${approval}`, updated_date: now }, { merge: true });
+    if (resubmission || changed) transaction.create(eventRef, { user_id: uid, account_role: 'driver', action: 'driver_application_submitted',
+      actor_type: 'account_owner', actor_id: uid, created_date: now, previous_approval_status: previous, new_approval_status: approval,
+      material_changed: changed, linked_profile_ids: authority.profiles.map((profile) => profile.id) });
+    return { ...canonical, id: uid };
+  });
 }
 
 async function legacyRiderRecovery(
@@ -299,9 +382,7 @@ export function registerAccountProfileRoutes(app: Express) {
       }
       await claimAccountContacts({ ownerUid: session.uid, role: 'driver', contacts });
       const documents = parsed.data.documents;
-      const existing = await existingProfile('driver', session.uid);
-      const priorApproval = String(existing?.approval_status || 'pending').toLowerCase();
-      const profile = await writeCanonicalProfile('driver', session.uid, {
+      const profile = await saveDriverApplication(session.uid, {
         full_name: fullName,
         email: contacts.email,
         phone: contacts.phone,
@@ -317,20 +398,7 @@ export function registerAccountProfileRoutes(app: Express) {
         vehicle_color: parsed.data.vehicleColor,
         vehicle_colour: parsed.data.vehicleColor,
         vehicle_year: parsed.data.vehicleYear,
-        ghana_card_front_url: documents.ghanaCardFront,
-        ghana_card_back_url: documents.ghanaCardBack,
-        drivers_license_front_url: documents.licenseFront,
-        drivers_license_back_url: documents.licenseBack,
-        profile_photo_url: documents.profilePhoto,
-        vehicle_registration_url: documents.vehiclePhoto,
-        insurance_url: documents.insurance,
-        roadworthy_url: documents.roadworthy,
-        approval_status: priorApproval === 'approved' ? 'approved' : 'pending',
-        is_online: false,
-        is_available: false,
-        availability_status: 'offline',
-        rating: Number(existing?.rating || 5),
-        total_rides: Number(existing?.total_rides || 0),
+        ...Object.fromEntries(driverDocumentKeys.map((key) => [DRIVER_DOCUMENT_DEFINITIONS[key].field, documents[key]])),
         registration_source: 'driver_app',
         contact_claimed_at: new Date().toISOString(),
       });

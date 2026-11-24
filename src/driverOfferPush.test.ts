@@ -29,6 +29,17 @@ function presence(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Driver ride-offer push recipients', () => {
+  it.each([
+    { approval_status: 'pending' },
+    { approval_status: 'rejected' },
+    { approval_status: undefined, approved: undefined },
+    { account_status: 'suspended' },
+    { account_status: 'inactive' },
+    { account_status: 'removed' },
+  ])('does not select unapproved or disabled fresh presence: %j', (approval) => {
+    expect(driverOfferRecipients(ride, [presence(approval)], now)).toEqual([]);
+  });
+
   it('wakes only fresh nearby Drivers who serve the requested category', () => {
     expect(driverOfferRecipients(ride, [
       presence(),

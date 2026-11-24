@@ -17,4 +17,18 @@ describe('selectAuthenticatedDriverProfile', () => {
       { id: 'legacy', user_id: 'driver-uid', approval_status: 'pending' },
     ])).toMatchObject({ id: 'legacy', user_id: 'driver-uid' });
   });
+
+  it.each(['pending', 'rejected'])('returns canonical %s even with newer approved legacy data', (status) => {
+    expect(selectAuthenticatedDriverProfile('driver-uid', [
+      { id: 'legacy', user_id: 'driver-uid', approval_status: 'approved', updated_date: '2030' },
+      { id: 'driver-uid', user_id: 'driver-uid', approval_status: status, updated_date: '2020' },
+    ])?.approval_status).toBe(status);
+  });
+
+  it('refuses a UID document owned by a foreign account', () => {
+    expect(() => selectAuthenticatedDriverProfile('driver-uid', [
+      { id: 'driver-uid', user_id: 'foreign', approval_status: 'approved' },
+      { id: 'legacy', user_id: 'driver-uid', approval_status: 'approved' },
+    ])).toThrow();
+  });
 });

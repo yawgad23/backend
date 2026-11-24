@@ -1,4 +1,5 @@
-import { driverApprovalState, isApprovedDriverProfile } from './driverApproval';
+import type { Transaction } from 'firebase-admin/firestore';
+import { driverApprovalState, isApprovedDriverProfile, readDriverProfileAuthority } from './driverApproval';
 
 export const DRIVER_LOCATION_FRESHNESS_MS = 3 * 60 * 1000;
 
@@ -33,8 +34,12 @@ function presenceRideCategories(profile: Record<string, any> | null | undefined)
  */
 export function mapSafeDriverPresenceMetadata(profile: Record<string, any> | null | undefined) {
   const approved = isApprovedDriverProfile(profile);
+  const legacyLifecycle = String(profile?.status || '').trim().toLowerCase();
+  const accountStatus = profile?.account_status
+    || (['suspended', 'inactive', 'removed', 'disabled'].includes(legacyLifecycle) ? legacyLifecycle : 'active');
   return {
     approval_status: approved ? 'approved' : driverApprovalState(profile),
+    account_status: String(accountStatus).trim().toLowerCase(),
     approved,
     is_approved: approved,
     ride_categories: presenceRideCategories(profile),
@@ -96,11 +101,23 @@ export function isOnlineWithFreshLocation(
   profile: Record<string, any> | null | undefined,
   referenceMs = Date.now(),
 ): boolean {
-  if (!profile) return false;
+  if (!isApprovedDriverProfile(profile)) return false;
   const availability = String(profile.availability_status || '').toLowerCase();
   const markedOnline = profile.is_online === true || availability === 'online';
   return markedOnline && availability !== 'offline' && availability !== 'busy'
     && hasFreshDriverLocation(profile, referenceMs);
+}
+
+/**
+ * Recheck application authority in the same transaction as a new online/offer/
+ * assignment write. The shared selector owns canonical-versus-legacy policy;
+ * a profile read before an administrator's decision is never commit authority.
+ */
+export async function driverProfileInTransaction(
+  transaction: Transaction,
+  driverId: string,
+): Promise<Record<string, any> | null> {
+  return (await readDriverProfileAuthority(driverId, transaction)).profile;
 }
 
 export function profilePresencePatch(status: 'online' | 'offline' | 'busy') {

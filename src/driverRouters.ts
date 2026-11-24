@@ -10,7 +10,7 @@ import { refreshDriverActiveRideRoutes } from './liveRouteMetrics';
 import { completeActiveTripStop, reviewTripRouteChange } from './tripRouteChange';
 import { completedRidesForPeriod, earningsPeriodComparison, earningsTrend, numericRideFare, numericTip, paidFeesForPeriod, rollingEarningsTrend } from './driverEarnings';
 import { disabledDriverPayoutSummary, directDriverCollectionTotal, rejectDriverPayoutRequest } from './driverCashCollectionPolicy';
-import { isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
+import { driverProfileInTransaction, isOnlineWithFreshLocation, mapSafeDriverPresenceMetadata, profilePresencePatch } from './driverPresence';
 import { isDriverFeeBypassActive } from './driverFeeBypass';
 import {
   GLOBAL_DRIVER_FEE_BYPASS_DOCUMENT,
@@ -50,8 +50,76 @@ async function profile(driverId: string) {
 async function rideFor(driverId: string, rideId: string) {
   const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
   if (!ride) throw new Error('Ride not found.');
-  if (ride.driver_id && ride.driver_id !== driverId) throw new Error('This ride is assigned to another driver.');
+  if (ride.driver_id !== driverId) throw new Error('This ride is not assigned to this driver.');
   return ride;
+}
+
+/** A lifecycle tap may advance an existing assignment, never create one. */
+async function updateAssignedDriverRide(
+  driverId: string,
+  rideId: string,
+  allowedStatuses: string[],
+  buildPatch: (ride: Record<string, any>) => Record<string, any>,
+  requireApproval = false,
+): Promise<Record<string, any>> {
+  const db = getAdminDb();
+  const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw new Error('Ride not found.');
+    const ride = { id: snapshot.id, ...snapshot.data() } as Record<string, any>;
+    if (ride.driver_id !== driverId
+      || !allowedStatuses.includes(String(ride.status || '').trim().toLowerCase())) {
+      throw new Error('This ride is no longer eligible for that Driver action.');
+    }
+    if (requireApproval) {
+      const currentProfile = await driverProfileInTransaction(transaction, driverId);
+      if (!isApprovedDriverProfile(currentProfile)) throw approvalRequiredError();
+    }
+    const patch = { ...buildPatch(ride), updated_date: now() };
+    transaction.update(ref, patch);
+    return { ...ride, ...patch };
+  });
+}
+
+/** Application reads and targeted ride assignment share one commit boundary. */
+async function claimApprovedDriverOffer(rideId: string, driverId: string, data: Record<string, any>) {
+  const db = getAdminDb();
+  const ref = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) throw new Error('Ride not found.');
+    const ride = { id: snapshot.id, ...snapshot.data() } as Record<string, any>;
+    if (ride.status !== 'searching' || ride.driver_id) throw new Error('This ride has already been accepted by another driver.');
+    if (isRideSearchExpired(ride)) {
+      const patch = expiredRideSearchPatch();
+      transaction.update(ref, patch);
+      return { ...ride, ...patch };
+    }
+    const currentProfile = await driverProfileInTransaction(transaction, driverId);
+    if (!isApprovedDriverProfile(currentProfile)) throw approvalRequiredError();
+    if (!isOnline(currentProfile)) throw new Error('Go online in the Driver app before accepting a ride.');
+    if (!driverCanServeRideCategory(currentProfile, ride.category)) throw new Error('This ride category is not available to this Driver.');
+    if (!driverCanReviewOffer(ride, driverId)) throw new Error('This ride offer is no longer available to you.');
+    if (data.queued_after_ride_id) {
+      const currentSnapshot = await transaction.get(db.collection(ADMIN_COLLECTIONS.RIDES).doc(data.queued_after_ride_id));
+      const currentRide = currentSnapshot.exists ? currentSnapshot.data()! : null;
+      if (currentRide?.driver_id !== driverId || currentRide.status !== 'in_progress') {
+        throw new Error('A next ride can only be queued while the assigned current trip is in progress.');
+      }
+    }
+    const patch = {
+      ...data,
+      driver_id: driverId,
+      offered_driver_id: null,
+      driver_offer_status: 'accepted',
+      driver_offer_expires_at: null,
+      driver_offer_retry_at: null,
+      updated_date: now(),
+    };
+    transaction.update(ref, patch);
+    return { ...ride, ...patch };
+  });
 }
 
 /** Return only the Rider reputation fields that are relevant to a Driver offer. */
@@ -279,38 +347,40 @@ function isOnline(profileData: Record<string, any> | null) {
 }
 
 /** Keep the legacy approved profile and UID presence document in agreement. */
-async function setDriverProfilePresence(driverId: string, patch: Record<string, any>, knownCanonical?: Record<string, any> | null) {
-  const canonical = knownCanonical === undefined ? await profile(driverId) : knownCanonical;
-  const documentIds = new Set<string>([
-    driverId,
-    ...(canonical?.id ? [String(canonical.id)] : []),
-  ]);
-
-  // Rider map listeners need vehicle availability and a fresh location, not a
-  // Driver's identity documents, payment data, or application information.
-  const presencePatch = {
-    user_id: driverId,
-    service_type: canonical?.service_type || canonical?.serviceType || 'car',
-    vehicle_type: canonical?.vehicle_type || canonical?.vehicleType || 'car',
-    vehicle_make: canonical?.vehicle_make || canonical?.vehicleMake || '',
-    vehicle_model: canonical?.vehicle_model || canonical?.vehicleModel || '',
-    vehicle_color: canonical?.vehicle_color || canonical?.vehicle_colour || '',
-    vehicle_colour: canonical?.vehicle_colour || canonical?.vehicle_color || '',
-    vehicle_colour_hex: canonical?.vehicle_colour_hex || '',
-    license_plate: canonical?.license_plate || canonical?.vehicle_plate || '',
-    vehicle_plate: canonical?.vehicle_plate || canonical?.license_plate || '',
-    rating: Number(canonical?.rating || 0),
-    ...mapSafeDriverPresenceMetadata({ ...canonical, ...patch }),
-    ...patch,
-  };
-  await Promise.all([
-    ...[...documentIds].map((id) => adminFirestore.set(
-      ADMIN_COLLECTIONS.DRIVER_PROFILES,
-      id,
-      { user_id: driverId, ...patch },
-    )),
-    adminFirestore.set('driver_presence', driverId, presencePatch),
-  ]);
+async function setDriverProfilePresence(driverId: string, patch: Record<string, any>, requireApproval = false) {
+  const db = getAdminDb();
+  return db.runTransaction(async (transaction) => {
+    const canonical = await driverProfileInTransaction(transaction, driverId);
+    if ((requireApproval || patch.is_online === true || patch.availability_status === 'online')
+      && !isApprovedDriverProfile(canonical)) throw approvalRequiredError();
+    const safePatch = isApprovedDriverProfile(canonical)
+      ? patch
+      : { ...patch, ...profilePresencePatch('offline') };
+    const documentIds = new Set([driverId, ...(canonical?.id ? [String(canonical.id)] : [])]);
+    // Map/GPS projection remains minimal; never publish private application data.
+    const presencePatch = {
+      user_id: driverId,
+      service_type: canonical?.service_type || canonical?.serviceType || 'car',
+      vehicle_type: canonical?.vehicle_type || canonical?.vehicleType || 'car',
+      vehicle_make: canonical?.vehicle_make || canonical?.vehicleMake || '',
+      vehicle_model: canonical?.vehicle_model || canonical?.vehicleModel || '',
+      vehicle_color: canonical?.vehicle_color || canonical?.vehicle_colour || '',
+      vehicle_colour: canonical?.vehicle_colour || canonical?.vehicle_color || '',
+      vehicle_colour_hex: canonical?.vehicle_colour_hex || '',
+      license_plate: canonical?.license_plate || canonical?.vehicle_plate || '',
+      vehicle_plate: canonical?.vehicle_plate || canonical?.license_plate || '',
+      rating: Number(canonical?.rating || 0),
+      ...mapSafeDriverPresenceMetadata(canonical),
+      ...safePatch,
+      updated_date: now(),
+    };
+    for (const id of documentIds) {
+      transaction.set(db.collection(ADMIN_COLLECTIONS.DRIVER_PROFILES).doc(id),
+        { user_id: driverId, ...safePatch, updated_date: now() }, { merge: true });
+    }
+    transaction.set(db.collection('driver_presence').doc(driverId), presencePatch, { merge: true });
+    return String(safePatch.availability_status || canonical?.availability_status || 'offline');
+  });
 }
 
 function hasDriverFeeTestBypass(driverId: string) {
@@ -485,8 +555,8 @@ export const driverOperations = router({
     if (input.status === 'online' && !isApprovedDriverProfile(driverProfile)) {
       throw approvalRequiredError();
     }
-    await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status), driverProfile);
-    return { success: true, status: input.status };
+    const status = await setDriverProfilePresence(input.driverId, profilePresencePatch(input.status));
+    return { success: true, status };
   }),
   updateLocation: driverProcedure(z.object({ driverId: z.string().min(1), latitude: z.number(), longitude: z.number(), heading: z.number().optional(), speedKmh: z.number().optional() })).mutation(async ({ input }) => {
     const driverProfile = await profile(input.driverId);
@@ -495,7 +565,7 @@ export const driverOperations = router({
     const patch = { user_id: input.driverId, current_location: location, latitude: input.latitude, longitude: input.longitude, last_location_update: now() };
     // Keep every profile document for this UID in sync so an offline toggle on
     // the legacy approved profile cannot leave a stale UID marker visible.
-    await setDriverProfilePresence(input.driverId, patch);
+    await setDriverProfilePresence(input.driverId, patch, true);
     void sendDriverLocationLiveActivityUpdates(input.driverId, { latitude: input.latitude, longitude: input.longitude }).catch((error) => {
       console.error('[LiveActivity] Foreground Driver location push failed:', error);
     });
@@ -634,9 +704,12 @@ export const driverTrips = router({
     return { offers };
   }),
   activateQueued: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), completedRideId: z.string().optional() })).mutation(async ({ input }) => {
-    const ride = await rideFor(input.driverId, input.rideId);
-    const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arriving', queued_after_ride_id: null, activated_at: now() });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    const updated = await updateAssignedDriverRide(input.driverId, input.rideId, ['driver_queued'], (ride) => {
+      if (input.completedRideId && ride.queued_after_ride_id !== input.completedRideId) {
+        throw new Error('This queued ride belongs to another preceding trip.');
+      }
+      return { status: 'driver_arriving', queued_after_ride_id: null, activated_at: now() };
+    }, true);
     await recordRideEvent({ rideId: input.rideId, type: 'queued_ride_activated', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: { completed_ride_id: input.completedRideId || null } });
     return { success: true, ride: updated };
   }),
@@ -674,7 +747,9 @@ export const driverTrips = router({
       await recordRideEvent({ rideId: input.rideId, type: 'offer_declined', actorId: input.driverId, actorRole: 'driver', status: updated.status });
       return { success: true, decision: input.decision };
     }
-    const ride = await rideFor(input.driverId, input.rideId);
+    const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, input.rideId);
+    if (!ride) throw new Error('Ride not found.');
+    if (ride.driver_id) throw new Error('This ride has already been accepted by another driver.');
     if (input.queueAfterRideId) {
       const currentRide = await rideFor(input.driverId, input.queueAfterRideId);
       if (currentRide.status !== 'in_progress') {
@@ -746,7 +821,7 @@ export const driverTrips = router({
       matched_at: acceptedAt,
       queued_after_ride_id: input.queueAfterRideId || null,
     };
-    const updated = await adminFirestore.claimTargetedSearchingRide(input.rideId, input.driverId, patch);
+    const updated = await claimApprovedDriverOffer(input.rideId, input.driverId, patch);
     if ((updated as Record<string, any>).status === 'cancelled') {
       throw new Error('This ride request has expired.');
     }
@@ -761,18 +836,18 @@ export const driverTrips = router({
     return { success: true, ride: updated, decision: input.decision };
   }),
   arrive: driverProcedure(z.object({ driverId: z.string(), rideId: z.string() })).mutation(async ({ input }) => {
-    const ride = await rideFor(input.driverId, input.rideId);
-    const updated = withRide(ride, { driver_id: input.driverId, status: 'driver_arrived', driver_arrived_at: now() });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    const updated = await updateAssignedDriverRide(input.driverId, input.rideId, ['driver_arriving'], () => ({
+      status: 'driver_arrived', driver_arrived_at: now(),
+    }), true);
     await recordRideEvent({ rideId: input.rideId, type: 'driver_arrived', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     await publishLiveActivity(updated, true);
     return { success: true, ride: updated };
   }),
   verifyPickup: driverProcedure(z.object({ driverId: z.string(), rideId: z.string(), pickupCode: z.string() })).mutation(async ({ input }) => {
-    const ride = await rideFor(input.driverId, input.rideId);
-    if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.');
-    const updated = withRide(ride, { pickup_verified_at: now() });
-    await adminFirestore.update(ADMIN_COLLECTIONS.RIDES, input.rideId, updated);
+    const updated = await updateAssignedDriverRide(input.driverId, input.rideId, ['driver_arrived'], (ride) => {
+      if (ride.pickup_code && String(ride.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.');
+      return { pickup_verified_at: now() };
+    });
     await recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     return { success: true, ride: updated };
   }),
@@ -800,19 +875,22 @@ export const driverTrips = router({
       tripStartedAt,
     });
     const legacyStopsPatch = legacyBookedStopsPatch(ride, tripStartedAt);
-    const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], {
-      driver_id: input.driverId,
-      status: 'in_progress',
-      pickup_verified_at: tripStartedAt,
-      trip_started_at: tripStartedAt,
-      trip_meter: initializeTripMeter(tripStartedAt, input.startLocation),
-      trip_distance_source: 'server_gps_meter',
-      actual_distance_km: 0,
-      waiting_time_minutes: waitingCharge.waitedMinutes,
-      waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
-      waiting_fee_per_minute: waitingCharge.ratePerMinute,
-      waiting_fee: waitingCharge.waitingFee,
-      ...(legacyStopsPatch || {}),
+    const updated = await updateAssignedDriverRide(input.driverId, input.rideId, ['driver_arrived'], (currentRide) => {
+      if (currentRide.pickup_code && String(currentRide.pickup_code) !== input.pickupCode.trim()) throw new Error('Invalid pickup code.');
+      return {
+        driver_id: input.driverId,
+        status: 'in_progress',
+        pickup_verified_at: tripStartedAt,
+        trip_started_at: tripStartedAt,
+        trip_meter: initializeTripMeter(tripStartedAt, input.startLocation),
+        trip_distance_source: 'server_gps_meter',
+        actual_distance_km: 0,
+        waiting_time_minutes: waitingCharge.waitedMinutes,
+        waiting_chargeable_minutes: waitingCharge.chargeableMinutes,
+        waiting_fee_per_minute: waitingCharge.ratePerMinute,
+        waiting_fee: waitingCharge.waitingFee,
+        ...(legacyStopsPatch || {}),
+      };
     });
     recordRideEvent({ rideId: input.rideId, type: 'pickup_verified', actorId: input.driverId, actorRole: 'driver', status: updated.status });
     recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
@@ -868,7 +946,10 @@ export const driverTrips = router({
       waiting_fee: waitingCharge.waitingFee,
       ...(legacyStopsPatch || {}),
     };
-    const updated = await adminFirestore.updateRideIfStatus(input.rideId, ['driver_arrived'], startPatch);
+    const updated = await updateAssignedDriverRide(input.driverId, input.rideId, ['driver_arrived'], (currentRide) => {
+      if (currentRide.pickup_code && !currentRide.pickup_verified_at) throw new Error('Pickup code must be verified before the trip can start.');
+      return startPatch;
+    });
     await recordRideEvent({ rideId: input.rideId, type: 'trip_started', actorId: input.driverId, actorRole: 'driver', status: updated.status, metadata: {
       waiting_time_minutes: waitingCharge.waitedMinutes,
       waiting_chargeable_minutes: waitingCharge.chargeableMinutes,

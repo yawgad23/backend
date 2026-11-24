@@ -1,11 +1,15 @@
-import { ADMIN_COLLECTIONS, adminFirestore } from './firebaseAdmin';
+import { ADMIN_COLLECTIONS, adminFirestore, getAdminDb } from './firebaseAdmin';
 import { driverOfferRecipients, sendDriverRideOfferPush, type DriverPresence } from './driverOfferPush';
-import { hasCurrentPlatformFee } from './driverRouters';
+import { driverCanServeRideCategory, hasCurrentPlatformFee } from './driverRouters';
+import { driverProfileForUserId, isApprovedDriverProfile } from './driverApproval';
+import { driverProfileInTransaction, isOnlineWithFreshLocation } from './driverPresence';
+import { expiredRideSearchPatch, isRideSearchExpired } from './rideSearchExpiry';
+import { excludedDriverIdsForOffer, nextDriverOfferPatch, shouldDispatchDriverOffer, waitingForDriverOfferPatch } from './rideOfferLifecycle';
 
 /**
  * Chooses one current nearby candidate and persists that choice before sending
- * a wake-up. The database transition, not the push result or a client clock,
- * is the authority for who may accept the request.
+ * a wake-up. Application authority is rechecked inside the lease transaction,
+ * so a concurrent manual rejection cannot be followed by a new offer lease.
  */
 export async function dispatchNextDriverRideOffer(rideId: string) {
   const ride = await adminFirestore.get(ADMIN_COLLECTIONS.RIDES, rideId);
@@ -14,16 +18,57 @@ export async function dispatchNextDriverRideOffer(rideId: string) {
   }
 
   const presences = await adminFirestore.list('driver_presence', {}, null, 'desc', 500) as DriverPresence[];
-  // Presence performs the cheap fresh-location/category/radius filter. The
-  // final list then rechecks the protected platform-fee gate before the server
-  // assigns the lease; a non-paying Driver must not consume a Rider's minute.
   const nearbyCandidates = driverOfferRecipients(ride, presences, Date.now(), 24);
-  const eligibility = await Promise.all(nearbyCandidates.map(async (driverId) => ({
-    driverId,
-    eligible: await hasCurrentPlatformFee(driverId),
-  })));
-  const candidates = eligibility.filter((candidate) => candidate.eligible).map((candidate) => candidate.driverId);
-  const transition = await adminFirestore.targetNextSearchingRideOffer(rideId, candidates);
+  const eligibility = await Promise.all(nearbyCandidates.map(async (driverId) => {
+    const profile = await driverProfileForUserId(driverId);
+    return {
+      driverId,
+      profile,
+      eligible: isApprovedDriverProfile(profile)
+        && driverCanServeRideCategory(profile, ride.category)
+        && await hasCurrentPlatformFee(driverId, profile),
+    };
+  }));
+  const candidates = eligibility.filter((candidate) => candidate.eligible);
+  const db = getAdminDb();
+  const rideRef = db.collection(ADMIN_COLLECTIONS.RIDES).doc(rideId);
+  const transition = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(rideRef);
+    if (!snapshot.exists) return { changed: false, dispatched: false, ride: null as Record<string, any> | null };
+    const currentRide = { id: snapshot.id, ...snapshot.data() } as Record<string, any>;
+    if (String(currentRide.status || '').toLowerCase() !== 'searching' || currentRide.driver_id) {
+      return { changed: false, dispatched: false, ride: currentRide };
+    }
+    if (isRideSearchExpired(currentRide)) {
+      const patch = expiredRideSearchPatch();
+      transaction.update(rideRef, patch);
+      return { changed: true, dispatched: false, ride: { ...currentRide, ...patch } };
+    }
+    if (!shouldDispatchDriverOffer(currentRide)) {
+      return { changed: false, dispatched: false, ride: currentRide };
+    }
+
+    const excluded = new Set(excludedDriverIdsForOffer(currentRide));
+    let nextDriverId: string | null = null;
+    for (const candidate of candidates) {
+      if (excluded.has(candidate.driverId)) continue;
+      const currentProfile = await driverProfileInTransaction(transaction, candidate.driverId);
+      const presenceSnapshot = await transaction.get(db.collection('driver_presence').doc(candidate.driverId));
+      const currentPresence = presenceSnapshot.exists ? presenceSnapshot.data() : null;
+      if (isApprovedDriverProfile(currentProfile)
+        && driverCanServeRideCategory(currentProfile, currentRide.category)
+        && isOnlineWithFreshLocation(currentPresence)
+        && driverOfferRecipients(currentRide, [{ ...currentPresence, id: candidate.driverId, user_id: candidate.driverId }], Date.now()).includes(candidate.driverId)) {
+        nextDriverId = candidate.driverId;
+        break;
+      }
+    }
+    const patch = nextDriverId
+      ? nextDriverOfferPatch(currentRide, nextDriverId)
+      : waitingForDriverOfferPatch(currentRide);
+    transaction.update(rideRef, patch);
+    return { changed: true, dispatched: Boolean(nextDriverId), ride: { ...currentRide, ...patch } };
+  });
   if (transition.dispatched && transition.ride) {
     await sendDriverRideOfferPush(rideId, transition.ride);
   }
