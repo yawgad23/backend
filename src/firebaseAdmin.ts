@@ -36,7 +36,7 @@ export function getAdminAuth() {
 
 let _app: App | null = null;
 
-function getAdminApp(): App {
+export function getAdminApp(): App {
   if (_app) return _app;
   const existing = getApps();
   if (existing.length > 0) {

@@ -10,6 +10,8 @@ import {
 import { ADMIN_COLLECTIONS, adminFirestore, getAdminAuth } from './firebaseAdmin';
 import { requiredAccountFullName, requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
 import { selectVerifiedRiderAccountRecovery } from './riderAccountRecovery';
+import { DriverManifestError } from './driverDocumentManifest';
+import { readDriverDocumentManifest } from './driverDocumentManifestRead';
 
 type AccountRole = 'rider' | 'driver';
 
@@ -192,6 +194,22 @@ async function legacyRiderRecovery(
 }
 
 export function registerAccountProfileRoutes(app: Express) {
+  app.get('/api/account/profile/driver/documents', async (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    const session = await authenticatedIdentity(request, response);
+    if (!session) return;
+    try {
+      // Target only the revocation-checked token UID, never query/body identity.
+      const manifest = await readDriverDocumentManifest(session.uid);
+      response.status(200).json({ success: true, manifest });
+    } catch (error) {
+      const failure = error instanceof DriverManifestError ? error : new DriverManifestError(
+        503, 'DOCUMENT_MANIFEST_UNAVAILABLE', 'Your Driver application could not be checked. Please try again.',
+      );
+      response.status(failure.status).json({ success: false, code: failure.code, message: failure.message });
+    }
+  });
+
   app.post('/api/account/profile/rider', async (request, response) => {
     const session = await authenticatedIdentity(request, response);
     if (!session) return;
