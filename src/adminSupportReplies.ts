@@ -29,7 +29,7 @@ const firestoreStore: SupportReplyStore = {
   async history(ticketId) {
     const db = getAdminDb();
     const ticket = await db.collection('support_tickets').doc(ticketId).get();
-    if (!ticket.exists) throw new SupportReplyRequestError(404, 'This support ticket no longer exists.');
+    if (!ticket.exists || ticket.data()?.archived === true) throw new SupportReplyRequestError(404, 'This support ticket no longer exists.');
     const result = await ticket.ref.collection('replies').orderBy('created_date', 'desc').limit(100).get();
     return result.docs.map(document => ({ ...document.data(), id: document.id }) as SupportReplyRecord).reverse();
   },
@@ -40,7 +40,7 @@ const firestoreStore: SupportReplyStore = {
     const replyRef = ticketRef.collection('replies').doc(id);
     return db.runTransaction(async transaction => {
       const [ticket, previous] = await Promise.all([transaction.get(ticketRef), transaction.get(replyRef)]);
-      if (!ticket.exists) throw new SupportReplyRequestError(404, 'This support ticket no longer exists.');
+      if (!ticket.exists || ticket.data()?.archived === true) throw new SupportReplyRequestError(404, 'This support ticket no longer exists.');
       if (previous.exists) {
         const reply = { ...previous.data(), id } as SupportReplyRecord;
         if (reply.message !== message || reply.author !== actor) throw new SupportReplyRequestError(409, 'This send request belongs to a different reply. Refresh the ticket.');
@@ -115,9 +115,9 @@ export async function executeSupportReply(ticketId: string, actor: string, body:
 }
 export function registerAdminSupportReplyRoutes(app: Express, dependencies: SupportReplyDependencies = defaults) {
   app.get('/api/admin/support/:ticketId/replies', async (request: Request, response: Response) => {
+    response.setHeader('Cache-Control', 'no-store');
     const administrator = await dependencies.authorize(request, response);
     if (!administrator) return;
-    response.setHeader('Cache-Control', 'no-store');
     const ticketId = String(request.params.ticketId || '');
     if (!identifier.safeParse(ticketId).success) { response.status(400).json({ error: 'Invalid support ticket.' }); return; }
     try {
@@ -128,9 +128,9 @@ export function registerAdminSupportReplyRoutes(app: Express, dependencies: Supp
     }
   });
   app.post('/api/admin/support/:ticketId/replies', async (request: Request, response: Response) => {
+    response.setHeader('Cache-Control', 'no-store');
     const administrator = await dependencies.authorize(request, response);
     if (!administrator) return;
-    response.setHeader('Cache-Control', 'no-store');
     try {
       const result = await executeSupportReply(String(request.params.ticketId || ''), administrator, request.body, dependencies);
       const state = result.reply.state;

@@ -257,6 +257,24 @@ describe('strict server-authoritative input and history', () => {
     expect(mocks.sendMail).not.toHaveBeenCalled();
   });
 
+  it('rejects archived tickets on both routes without creating or sending a reply', async () => {
+    put(ticketPath(), { ...data(ticketPath()), archived: true });
+    const before = structuredClone(documents);
+    expect((await invoke('get')).status).toBe(404);
+    expect((await invoke('post')).status).toBe(404);
+    expect(documents).toEqual(before);
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
+  it.each(['sending', 'accepted', 'failed', 'unknown'])('rejects archived tickets before replaying an existing %s reply', async state => {
+    put(ticketPath(), { ...data(ticketPath()), archived: true });
+    put(replyPath(), { id: replyId, request_id: requestId, author: actor, message: body.message, state });
+    const before = structuredClone(documents);
+    expect((await invoke('post')).status).toBe(404);
+    expect(documents).toEqual(before);
+    expect(mocks.sendMail).not.toHaveBeenCalled();
+  });
+
   it('returns only the latest 100 persisted replies in chronological order, never legacy saved text', async () => {
     for (let index = 0; index < 105; index++) {
       put(replyPath(`reply-${index}`), { id: 'untrusted-data-id', message: `Sent ${index}`,

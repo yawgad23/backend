@@ -44,6 +44,7 @@ import { registerPasswordResetRoutes } from './passwordReset';
 import { registerWebsiteIntakeRoutes } from './websiteIntake';
 import { registerAccountProfileRoutes } from './accountProfileRoutes';
 import { registerAdminSupportReplyRoutes } from './adminSupportReplies';
+import { registerAdminSupportTicketRoutes } from './adminSupportTickets';
 import { registerRiderHistoryRoutes } from './riderHistory';
 import { registerTripRouteChangeRoutes } from './tripRouteChange';
 import { requiredRiderIdentity, riderProfileCompletionMessage } from './riderIdentity';
@@ -317,6 +318,7 @@ export function createApp(): Express {
   registerAdminRideRoutes(app);
   registerAdminFinancialRoutes(app);
   registerAdminNotificationRoutes(app);
+  registerAdminSupportTicketRoutes(app);
   registerAdminSupportReplyRoutes(app);
   registerPasswordResetRoutes(app);
   registerAccountProfileRoutes(app);
