@@ -327,6 +327,152 @@ describe('Driver online and acceptance commit authority', () => {
   });
 });
 
+describe('Driver offer acceptance selfie snapshot', () => {
+  const selfie = 'https://images.example.test/drivers/approved-selfie.jpg';
+  const avatar = 'https://images.example.test/drivers/legacy-avatar.jpg';
+  const legacyPhoto = 'https://images.example.test/drivers/legacy-photo.jpg';
+  const identityDocuments = {
+    ghana_card_front_url: 'https://documents.example.test/identity/ghana-card-front.jpg',
+    ghana_card_back_url: 'https://documents.example.test/identity/ghana-card-back.jpg',
+    ghana_card_url: 'https://documents.example.test/identity/legacy-ghana-card.jpg',
+    id_card_url: 'https://documents.example.test/identity/legacy-id-card.jpg',
+    drivers_license_front_url: 'https://documents.example.test/identity/drivers-license-front.jpg',
+    drivers_license_back_url: 'https://documents.example.test/identity/drivers-license-back.jpg',
+    drivers_license_url: 'https://documents.example.test/identity/legacy-drivers-license.jpg',
+    license_photo_url: 'https://documents.example.test/identity/legacy-license-photo.jpg',
+    id_document_url: 'https://documents.example.test/identity/id-document.jpg',
+  };
+  function expectPhotoSnapshot(result: { ride?: Record<string, any> }, expectedPhoto: string) {
+    const returnedDriver = result.ride?.driver;
+    const persistedDriver = harness.records.get('rides/ride-1')?.driver;
+    const committedDriver = harness.writes.find((write) => write.key === 'rides/ride-1')?.data.driver;
+    expect(returnedDriver).toMatchObject({ id: 'driver-1', photo_url: expectedPhoto });
+    expect(persistedDriver).toEqual(returnedDriver);
+    expect(committedDriver).toEqual(returnedDriver);
+    for (const driver of [returnedDriver, persistedDriver, committedDriver]) {
+      expect(driver).not.toHaveProperty('profile_photo_url');
+      expect(driver).not.toHaveProperty('avatar_url');
+      for (const [field, url] of Object.entries(identityDocuments)) {
+        expect(driver).not.toHaveProperty(field);
+        expect(JSON.stringify(driver)).not.toContain(field);
+        expect(JSON.stringify(driver)).not.toContain(url);
+      }
+    }
+  }
+
+  it.each([
+    { label: 'uploaded selfie only', legacy: {} },
+    { label: 'selfie before legacy avatar', legacy: { avatar_url: avatar } },
+    { label: 'selfie before legacy photo', legacy: { photo_url: legacyPhoto } },
+    { label: 'selfie before both legacy photos', legacy: { avatar_url: avatar, photo_url: legacyPhoto } },
+  ])('copies $label into returned and persisted nested Driver photo_url', async ({ legacy }) => {
+    seed(approved({ ...identityDocuments, ...legacy, profile_photo_url: selfie }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expect(result.ride).toMatchObject({ driver_id: 'driver-1', status: 'driver_arriving' });
+    expectPhotoSnapshot(result, selfie);
+  });
+
+  it('trims the approved uploaded selfie URL before returning and persisting it', async () => {
+    seed(approved({ ...identityDocuments, profile_photo_url: `  ${selfie}\n`, avatar_url: avatar }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expectPhotoSnapshot(result, selfie);
+  });
+
+  it.each([
+    { label: 'avatar', photos: { avatar_url: avatar }, expected: avatar },
+    { label: 'photo', photos: { photo_url: legacyPhoto }, expected: legacyPhoto },
+    { label: 'avatar before photo', photos: { avatar_url: avatar, photo_url: legacyPhoto }, expected: avatar },
+    { label: 'avatar for a blank selfie', photos: { profile_photo_url: '   ', avatar_url: avatar }, expected: avatar },
+    { label: 'photo for missing selfie and blank avatar', photos: { profile_photo_url: null, avatar_url: '', photo_url: legacyPhoto }, expected: legacyPhoto },
+    { label: 'avatar for an invalid selfie URL', photos: { profile_photo_url: 'https://', avatar_url: avatar }, expected: avatar },
+    { label: 'avatar for a local selfie path', photos: { profile_photo_url: '/local/selfie.jpg', avatar_url: avatar }, expected: avatar },
+    { label: 'avatar for a non-string selfie value', photos: { profile_photo_url: { url: selfie }, avatar_url: avatar }, expected: avatar },
+    { label: 'avatar for a credential-bearing selfie URL', photos: { profile_photo_url: 'https://user:password@images.example.test/drivers/selfie.jpg', avatar_url: avatar }, expected: avatar },
+    { label: 'photo for invalid selfie and avatar URLs', photos: { profile_photo_url: 'https://', avatar_url: 'not-a-remote-url', photo_url: legacyPhoto }, expected: legacyPhoto },
+  ])('intentionally preserves legacy $label fallback', async ({ photos, expected }) => {
+    seed(approved({ ...identityDocuments, ...photos }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expectPhotoSnapshot(result, expected);
+  });
+
+  it.each([
+    { label: 'no photo fields', photos: {} },
+    { label: 'blank photo fields', photos: { profile_photo_url: '', avatar_url: '   ', photo_url: null } },
+    { label: 'invalid remote photo fields', photos: { profile_photo_url: 'https://', avatar_url: 'not-a-remote-url', photo_url: '/local/photo.jpg' } },
+  ])('uses an empty photo_url for $label and never substitutes identity documents', async ({ photos }) => {
+    seed(approved({ ...identityDocuments, ...photos }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expectPhotoSnapshot(result, '');
+  });
+
+  it('copies the same approved selfie into a queued ride without replacing the current ride Driver', async () => {
+    seed(approved({ ...identityDocuments, profile_photo_url: selfie, avatar_url: avatar, photo_url: legacyPhoto }));
+    const currentDriver = { id: 'driver-1', photo_url: 'https://images.example.test/drivers/current-trip-selfie.jpg' };
+    harness.records.set('rides/current', ride({ driver_id: 'driver-1', status: 'in_progress', driver: currentDriver }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept', queueAfterRideId: 'current' });
+    expect(result.ride).toMatchObject({ driver_id: 'driver-1', status: 'driver_queued', queued_after_ride_id: 'current' });
+    expectPhotoSnapshot(result, selfie);
+    expect(harness.records.get('rides/current')?.driver).toEqual(currentDriver);
+    expect(harness.writes.map((write) => write.key)).toEqual(['rides/ride-1']);
+  });
+
+  it.each(['beforeTransaction', 'retryWith'] as const)('selects the latest approved selfie at %s instead of the pretransaction profile', async (boundary) => {
+    seed(approved({ ...identityDocuments, profile_photo_url: selfie, avatar_url: avatar, photo_url: legacyPhoto }));
+    const latestSelfie = 'https://images.example.test/drivers/latest-approved-selfie.jpg';
+    harness[boundary] = () => harness.records.set('driver_profiles/driver-1', approved({
+      ...identityDocuments,
+      profile_photo_url: latestSelfie,
+      avatar_url: 'https://images.example.test/drivers/latest-avatar.jpg',
+      photo_url: 'https://images.example.test/drivers/latest-legacy-photo.jpg',
+    }));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expectPhotoSnapshot(result, latestSelfie);
+    expect(harness.attempts).toBe(boundary === 'retryWith' ? 2 : 1);
+    expect(harness.writes).toHaveLength(1);
+    expect(harness.reads).toContain('driver_profiles/driver-1');
+  });
+
+  it.each(['beforeTransaction', 'retryWith'] as const)('does not persist stale selfie or legacy photos removed at %s', async (boundary) => {
+    seed(approved({ ...identityDocuments, profile_photo_url: selfie, avatar_url: avatar, photo_url: legacyPhoto }));
+    harness[boundary] = () => harness.records.set('driver_profiles/driver-1', approved(identityDocuments));
+    const result = await trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' });
+    expectPhotoSnapshot(result, '');
+    expect(harness.attempts).toBe(boundary === 'retryWith' ? 2 : 1);
+    expect(harness.writes).toHaveLength(1);
+  });
+
+  it.each([
+    { label: 'pending', state: { approval_status: 'pending' } },
+    { label: 'rejected', state: { approval_status: 'rejected' } },
+    { label: 'suspended', state: { account_status: 'suspended' } },
+  ])('cannot assign a $label profile merely because it has a new uploaded selfie', async ({ state }) => {
+    seed(approved({ ...identityDocuments, ...state, profile_photo_url: selfie }));
+    await expect(trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' })).rejects.toThrow('must be approved');
+    expect(harness.records.get('rides/ride-1')).not.toHaveProperty('driver_id');
+    expect(harness.records.get('rides/ride-1')).not.toHaveProperty('driver');
+    expect(harness.writes).toEqual([]);
+  });
+
+  it.each([
+    { label: 'pending beforeTransaction', boundary: 'beforeTransaction' as const, state: { approval_status: 'pending' } },
+    { label: 'pending retryWith', boundary: 'retryWith' as const, state: { approval_status: 'pending' } },
+    { label: 'rejected beforeTransaction', boundary: 'beforeTransaction' as const, state: { approval_status: 'rejected' } },
+    { label: 'rejected retryWith', boundary: 'retryWith' as const, state: { approval_status: 'rejected' } },
+    { label: 'suspended beforeTransaction', boundary: 'beforeTransaction' as const, state: { account_status: 'suspended' } },
+    { label: 'suspended retryWith', boundary: 'retryWith' as const, state: { account_status: 'suspended' } },
+  ])('does not commit a new selfie after the profile becomes $label', async ({ boundary, state }) => {
+    seed(approved({ ...identityDocuments, profile_photo_url: selfie, avatar_url: avatar }));
+    harness[boundary] = () => harness.records.set('driver_profiles/driver-1', approved({
+      ...identityDocuments, ...state, profile_photo_url: 'https://images.example.test/drivers/new-unapproved-selfie.jpg',
+    }));
+    await expect(trips().respondToOffer({ driverId: 'driver-1', rideId: 'ride-1', decision: 'accept' })).rejects.toThrow('must be approved');
+    expect(harness.attempts).toBe(boundary === 'retryWith' ? 2 : 1);
+    expect(harness.records.get('rides/ride-1')).not.toHaveProperty('driver_id');
+    expect(harness.records.get('rides/ride-1')).not.toHaveProperty('driver');
+    expect(harness.writes).toEqual([]);
+  });
+});
+
 describe('Driver offer lease and push approval', () => {
   it.each([
     { approval_status: 'pending' }, { approval_status: 'rejected' },

@@ -82,6 +82,21 @@ async function updateAssignedDriverRide(
   });
 }
 
+/** Only the self-photo and historical avatar fields belong in the Rider card. */
+function riderDriverPhotoUrl(driverProfile: Record<string, any>): string {
+  for (const candidate of [driverProfile.profile_photo_url, driverProfile.avatar_url, driverProfile.photo_url]) {
+    if (typeof candidate !== 'string' || candidate.length > 4_000) continue;
+    const value = candidate.trim();
+    try {
+      const url = new URL(value);
+      if ((url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password) return value;
+    } catch {
+      // A missing/invalid photo must not prevent an otherwise legitimate ride.
+    }
+  }
+  return '';
+}
+
 /** Application reads and targeted ride assignment share one commit boundary. */
 async function claimApprovedDriverOffer(rideId: string, driverId: string, data: Record<string, any>) {
   const db = getAdminDb();
@@ -110,6 +125,10 @@ async function claimApprovedDriverOffer(rideId: string, driverId: string, data: 
     }
     const patch = {
       ...data,
+      // Use the approved application read inside this transaction (and every
+      // retry), not a stale avatar read before assignment. Never spread the
+      // application profile: its identity documents remain private.
+      driver: { ...data.driver, photo_url: riderDriverPhotoUrl(currentProfile) },
       driver_id: driverId,
       offered_driver_id: null,
       driver_offer_status: 'accepted',
@@ -783,7 +802,6 @@ export const driverTrips = router({
       name: input.driverName || driverProfile.full_name || driverProfile.name || 'HY3N Driver',
       phone: driverProfile.phone || driverProfile.phone_number || '',
       service_type: driverProfile.service_type || driverProfile.serviceType || ride.category || 'car',
-      photo_url: driverProfile.avatar_url || driverProfile.photo_url || '',
       rating: Number(driverProfile.rating ?? 5),
       rating_count: Math.max(0, Math.floor(Number(driverProfile.rating_count ?? 0) || 0)),
       total_trips: Number(driverProfile.total_trips ?? driverProfile.total_rides ?? 0),
